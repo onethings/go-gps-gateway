@@ -228,7 +228,44 @@ func TestStoreIntegration(t *testing.T) {
 		t.Fatalf("future window = %d positions, err = %v", len(window), err)
 	}
 
+	device := findDevice(t, store, ctx, deviceID)
+	if device.UniqueID != uniqueID || device.Protocol != "gt06" {
+		t.Fatalf("device = %+v", device)
+	}
+	if !device.LastUpdate.Equal(position.Time.UTC()) {
+		t.Fatalf("last update = %s, want %s", device.LastUpdate, position.Time)
+	}
+
+	// An older position must not rewind last_update.
+	older := samplePosition()
+	older.DeviceID = deviceID
+	older.Time = position.Time.Add(-time.Hour)
+	if err := store.Handle(older); err != nil {
+		t.Fatalf("handle older position: %v", err)
+	}
+	if rewound := findDevice(t, store, ctx, deviceID); !rewound.LastUpdate.Equal(position.Time.UTC()) {
+		t.Fatalf("last update rewound to %s", rewound.LastUpdate)
+	}
+
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM devices WHERE id = $1`, deviceID); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
+}
+
+// findDevice looks a device up through the filtered query so the test also
+// covers the protocol filter.
+func findDevice(t *testing.T, store *Store, ctx context.Context, deviceID int64) model.Device {
+	t.Helper()
+
+	devices, err := store.Devices(ctx, model.DeviceFilter{Protocol: "gt06", Limit: 1000})
+	if err != nil {
+		t.Fatalf("query devices: %v", err)
+	}
+	for _, device := range devices {
+		if device.ID == deviceID {
+			return device
+		}
+	}
+	t.Fatalf("device %d is not in the %d gt06 results", deviceID, len(devices))
+	return model.Device{}
 }

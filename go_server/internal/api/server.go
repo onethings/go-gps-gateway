@@ -21,6 +21,7 @@ const (
 	defaultQueryTimeout = 5 * time.Second
 	maxAlertLimit       = 1000
 	maxPositionLimit    = 1000
+	maxDeviceLimit      = 1000
 )
 
 // AlertQuerier is the storage contract the alerts handler needs.
@@ -44,12 +45,18 @@ type PositionQuerier interface {
 	QueryPositions(ctx context.Context, filter model.PositionFilter) ([]model.Position, error)
 }
 
+// DeviceQuerier is the storage contract the devices handler needs.
+type DeviceQuerier interface {
+	Devices(ctx context.Context, filter model.DeviceFilter) ([]model.Device, error)
+}
+
 // Server holds the handlers and their configuration.
 type Server struct {
 	alerts       AlertQuerier
 	positions    PositionQuerier
+	devices      DeviceQuerier
 	router       CommandRouter
-	devices      DeviceProtocols
+	protocols    DeviceProtocols
 	logf         func(format string, args ...any)
 	queryTimeout time.Duration
 	now          func() time.Time
@@ -78,16 +85,21 @@ func WithQueryTimeout(timeout time.Duration) Option {
 }
 
 // WithCommands enables POST /api/commands. Without it the route reports 501.
-func WithCommands(router CommandRouter, devices DeviceProtocols) Option {
+func WithCommands(router CommandRouter, protocols DeviceProtocols) Option {
 	return func(s *Server) {
 		s.router = router
-		s.devices = devices
+		s.protocols = protocols
 	}
 }
 
 // WithPositions enables GET /api/positions. Without it the route reports 501.
 func WithPositions(positions PositionQuerier) Option {
 	return func(s *Server) { s.positions = positions }
+}
+
+// WithDevices enables GET /api/devices. Without it the route reports 501.
+func WithDevices(devices DeviceQuerier) Option {
+	return func(s *Server) { s.devices = devices }
 }
 
 // WithAPIKey requires every request except /api/health to present the key.
@@ -115,6 +127,7 @@ func NewServer(alerts AlertQuerier, options ...Option) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/alerts", s.handleAlerts)
+	mux.HandleFunc("GET /api/devices", s.handleDevices)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/positions", s.handlePositions)
 	mux.HandleFunc("POST /api/commands", s.handleCommand)
@@ -245,6 +258,72 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+type deviceResponse struct {
+	ID         int64          `json:"id"`
+	UniqueID   string         `json:"uniqueId"`
+	Name       string         `json:"name"`
+	Model      string         `json:"model,omitempty"`
+	Protocol   string         `json:"protocol"`
+	Attributes map[string]any `json:"attributes"`
+	// LastUpdate stays absent until the device has reported a position.
+	LastUpdate *time.Time `json:"lastUpdate,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+}
+
+type devicesResponse struct {
+	Devices []deviceResponse `json:"devices"`
+	Count   int              `json:"count"`
+}
+
+func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
+	if s.devices == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
+		return
+	}
+
+	filter, err := deviceFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	devices, err := s.devices.Devices(ctx, filter)
+	if err != nil {
+		s.logf("api: query devices: %v", err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+
+	response := devicesResponse{
+		Devices: make([]deviceResponse, 0, len(devices)),
+		Count:   len(devices),
+	}
+	for _, device := range devices {
+		attributes := device.Attributes
+		if attributes == nil {
+			attributes = map[string]any{}
+		}
+		entry := deviceResponse{
+			ID:         device.ID,
+			UniqueID:   device.UniqueID,
+			Name:       device.Name,
+			Model:      device.Model,
+			Protocol:   device.Protocol,
+			Attributes: attributes,
+			CreatedAt:  device.CreatedAt.UTC(),
+		}
+		if !device.LastUpdate.IsZero() {
+			lastUpdate := device.LastUpdate.UTC()
+			entry.LastUpdate = &lastUpdate
+		}
+		response.Devices = append(response.Devices, entry)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
@@ -271,7 +350,7 @@ type commandResponse struct {
 // connection. Status codes are stable: 404 unknown device, 409 offline or
 // unknown protocol, 400 unsupported command, 501 commands not configured.
 func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
-	if s.router == nil || s.devices == nil {
+	if s.router == nil || s.protocols == nil {
 		writeError(w, http.StatusNotImplemented, errors.New("commands are not configured"))
 		return
 	}
@@ -295,7 +374,7 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
-	protocol, found, err := s.devices.DeviceProtocol(ctx, request.DeviceID)
+	protocol, found, err := s.protocols.DeviceProtocol(ctx, request.DeviceID)
 	if err != nil {
 		s.logf("api: device protocol %d: %v", request.DeviceID, err)
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
@@ -397,6 +476,26 @@ func positionFilter(r *http.Request) (model.PositionFilter, error) {
 		return filter, err
 	}
 	if filter.Limit, err = parseLimit(query, maxPositionLimit); err != nil {
+		return filter, err
+	}
+	if filter.Offset, err = parseOffset(query); err != nil {
+		return filter, err
+	}
+
+	return filter, nil
+}
+
+// deviceFilter parses and validates the query string:
+//
+//	protocol=gt06&limit=50&offset=0
+func deviceFilter(r *http.Request) (model.DeviceFilter, error) {
+	query := r.URL.Query()
+	var filter model.DeviceFilter
+
+	filter.Protocol = strings.TrimSpace(query.Get("protocol"))
+
+	var err error
+	if filter.Limit, err = parseLimit(query, maxDeviceLimit); err != nil {
 		return filter, err
 	}
 	if filter.Offset, err = parseOffset(query); err != nil {

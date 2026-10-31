@@ -150,6 +150,7 @@ func main() {
 				Addr: *httpAddress,
 				Handler: api.NewServer(store,
 					api.WithPositions(store),
+					api.WithDevices(store),
 					api.WithCommands(router, store),
 					api.WithAPIKey(*apiKey),
 					api.WithLogger(log.Printf),

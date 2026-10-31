@@ -253,6 +253,8 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 
 	values := make([]string, 0, len(positions))
 	args := make([]any, 0, len(positions)*positionColumns)
+	// Newest device time per device, used to advance devices.last_update.
+	touched := make(map[int64]time.Time, 4)
 
 	for _, position := range positions {
 		row, err := positionArgs(position)
@@ -261,6 +263,11 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 				continue
 			}
 			return err
+		}
+
+		deviceTime := deviceTimeOf(position)
+		if previous, ok := touched[position.DeviceID]; !ok || deviceTime.After(previous) {
+			touched[position.DeviceID] = deviceTime
 		}
 
 		placeholders := make([]string, positionColumns)
@@ -286,7 +293,49 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("postgres: insert positions: %w", err)
 	}
+	return s.updateLastUpdate(ctx, touched)
+}
+
+// updateLastUpdate advances devices.last_update for the devices in the batch in
+// a single statement. It never moves the column backwards, so a retransmitted
+// or out-of-order position cannot rewind it.
+func (s *Store) updateLastUpdate(ctx context.Context, touched map[int64]time.Time) error {
+	if len(touched) == 0 {
+		return nil
+	}
+
+	type row struct {
+		ID int64     `json:"id"`
+		At time.Time `json:"at"`
+	}
+	rows := make([]row, 0, len(touched))
+	for deviceID, at := range touched {
+		rows = append(rows, row{ID: deviceID, At: at.UTC()})
+	}
+
+	encoded, err := json.Marshal(rows)
+	if err != nil {
+		return fmt.Errorf("postgres: encode last_update: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE devices AS d SET last_update = v.at
+		 FROM jsonb_to_recordset($1::jsonb) AS v(id bigint, at timestamptz)
+		 WHERE d.id = v.id AND (d.last_update IS NULL OR d.last_update < v.at)`,
+		string(encoded),
+	); err != nil {
+		return fmt.Errorf("postgres: update device last_update: %w", err)
+	}
 	return nil
+}
+
+// deviceTimeOf returns the device time of a position, defaulting to now like
+// the insert does for positions that carry no time.
+func deviceTimeOf(position *model.Position) time.Time {
+	if position.Time.IsZero() {
+		return time.Now().UTC()
+	}
+	return position.Time.UTC()
 }
 
 // positionArgs flattens a position into the column order of the insert.
@@ -295,10 +344,7 @@ func positionArgs(position *model.Position) ([]any, error) {
 		return nil, ErrMissingDevice
 	}
 
-	deviceTime := position.Time
-	if deviceTime.IsZero() {
-		deviceTime = time.Now()
-	}
+	deviceTime := deviceTimeOf(position)
 
 	attributes, err := json.Marshal(position.Attributes)
 	if err != nil {

@@ -6,7 +6,7 @@
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
 - 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄
-  + REST（告警查詢、位置查詢、健康檢查、命令下發）全部可編譯、`go test ./...` 全綠。
+  + REST（裝置查詢、位置查詢、告警查詢、健康檢查、命令下發）全部可編譯、`go test ./...` 全綠。
 
 ## 架構
 
@@ -25,6 +25,7 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                         └─ postgres.BatchSink  positions 批次落地
 
 client ──HTTP──▶ api.Server
+                   ├─ GET /api/devices  ──▶ devices 查詢
                    ├─ GET /api/positions ──▶ positions 查詢
                    ├─ GET /api/alerts   ──▶ alerts 查詢
                    ├─ GET /api/health
@@ -46,7 +47,7 @@ client ──HTTP──▶ api.Server
 | `internal/gateway` | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由 |
 | `internal/geofence` | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線） |
 | `internal/alert` | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線 |
-| `internal/api` | REST：`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`POST /api/commands` |
+| `internal/api` | REST：`GET /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`POST /api/commands` |
 | `internal/storage/postgres` | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink` |
 | `cmd/traccar-gateway` | 啟動四個監聽埠與 REST 的 CLI |
 
@@ -120,6 +121,8 @@ go run ./cmd/traccar-gateway \
 
 `devices.protocol` 在設備首次登入（`Register`）時寫入，供 `POST /api/commands` 選擇 encoder；
 已存在且協議為 NULL 的舊資料會在下一次登入時補上（`COALESCE`，不會覆寫已知值）。
+`devices.last_update` 由 `InsertPositions` 在每批寫入後以單一
+`UPDATE ... FROM jsonb_to_recordset(...)` 推進，只前進不倒退（補傳舊資料不會讓它倒退）。
 
 ## 告警與地理圍欄
 
@@ -193,6 +196,23 @@ curl -H 'Authorization: Bearer please-change-me' 'localhost:8082/api/alerts'
 優先用環境變數，key 才不會出現在 `ps` 的參數列。
 
 下面 REST 範例省略了這個 header。
+
+## 裝置查詢
+
+`GET /api/devices` 讀 `devices` 表，預設依 `last_update DESC NULLS LAST, id DESC`：
+
+```bash
+curl 'localhost:8082/api/devices?protocol=gt06&limit=20'
+```
+
+```json
+{"devices":[{"id":7,"uniqueId":"864717003283581","name":"","protocol":"gt06",
+             "attributes":{},"lastUpdate":"2026-10-31T07:32:10Z","createdAt":"2026-10-31T06:00:00Z"}],"count":1}
+```
+
+參數：`protocol`（精確比對）、`limit`（1–1000，預設 100）、`offset`。
+`lastUpdate` 只在裝置至少上報過一筆位置時出現（不會是 `0001-01-01`），`model` 為空時同樣省略；
+`lastUpdate` 取的是**裝置時間**的最大值。
 
 ## 位置查詢
 
@@ -285,7 +305,7 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>` |
 | `alert.Pipeline` log | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>` |
 | `alert` 啟動 log | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗） |
-| `api.Server` log | `api: listening on <addr>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: send command <type> to device <id>: <err>` |
+| `api.Server` log | `api: listening on <addr>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: send command <type> to device <id>: <err>` |
 | CLI 關閉時 | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full` |
 | 記憶體模式 sink | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`） |
 
@@ -319,7 +339,7 @@ traccar_alert_dropped_total
 - REST 預設**沒有認證**：沒設 `-api-key`（或 `TRACCAR_API_KEY`）時，能連到 `-http` 位址的人
   就能讀全站告警 / 位置並下命令。對外請務必設 key，或綁內網 / 反代後面。
   只有 `/api/health` 免 key（給 probe 用）。
-- `GET /api/devices` 還沒有 HTTP 入口（`devices` 表有資料，缺查詢與序列化）。
+- 裝置只能靠 device 登入自動建立（`-auto-register` 邏輯寫在 gateway），還沒有新增 / 改名 / 刪除的 API。
 - 命令只寫進設備連線，不等 ACK、不落地，也沒有 Java 版的 `commands` 表與派送佇列；
   `devices.protocol` 為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
 - 告警只有超速 / 斷電 / 復電 / 圍欄四類，沒有通知管道（email / webhook），也沒有 per-device 門檻。
@@ -330,8 +350,8 @@ traccar_alert_dropped_total
 
 ## 下一步
 
-1. REST 查詢端點：`GET /api/devices`（含 `last_update` 維護）。
-2. 授權：API key 只有「全有全無」，還沒有 Traccar 的 user / device 權限表；對外建議加 mTLS 或反代。
-3. 每裝置 / 每圍欄門檻與通知管道（email / webhook）。
+1. 授權：API key 只有「全有全無」，還沒有 Traccar 的 user / device 權限表；對外建議加 mTLS 或反代。
+2. 裝置管理 API（新增 / 改名 / 刪除）與每裝置 / 每圍欄門檻。
+3. 通知管道（email / webhook）。
 4. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
 5. 指標（`/metrics`）與更完整的健康檢查（含 DB ping）。

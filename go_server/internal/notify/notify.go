@@ -2,16 +2,29 @@
 // SMTP email. Formatting, per-device routing and the send queue live here so
 // the alert pipeline stays free of network I/O.
 //
-// The Java server routes notifications through the notifications and
-// user_notifications tables. The gateway has no such tables yet, so it uses
-// server-wide channel settings (see the -notify-* flags) plus per-device
-// devices.attributes overrides (see AttrNotify* below).
+// Routing has three layers. Users subscribe to a notification preset (a type
+// plus channels) through the notifications and user_notifications tables, per
+// device attributes (see AttrNotify* below) override a channel for one device,
+// and the -notify-* flags provide the server-wide defaults a device or its
+// subscribers fall back to.
 package notify
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	"traccar-server_go/go_server/internal/model"
+)
+
+// Notificator names one delivery channel. The values match Channel.Notifier
+// Name(), which is what subscriptions store in notifications.notificators.
+const (
+	// NotificatorMail delivers to the account email.
+	NotificatorMail = "mail"
+	// NotificatorWebhook delivers to the server-wide webhook URLs.
+	NotificatorWebhook = "webhook"
 )
 
 // Device attributes that override a channel for one device. They live in
@@ -33,6 +46,49 @@ const (
 // implements it, which is why notifications are only wired with -dsn.
 type DeviceLookup interface {
 	Device(ctx context.Context, deviceID int64) (*model.Device, error)
+}
+
+// SubscriptionLookup resolves the user subscriptions that apply to one alert
+// on a device. *postgres.Store implements it. The dispatcher only calls it
+// when a Dispatcher was built with WithSubscriptions.
+type SubscriptionLookup interface {
+	DeviceSubscriptions(ctx context.Context, deviceID int64, alertType string) ([]model.NotificationSubscription, error)
+}
+
+// ValidNotificationType reports whether value may be stored as a preset type.
+// "all" and "*" subscribe to every alert type the engine produces.
+func ValidNotificationType(value string) bool {
+	return value == "all" || value == "*" || model.IsAlertType(value)
+}
+
+// ParseNotificators canonicalises and validates a notification channel list.
+// "email" is accepted as an alias for "mail"; duplicates are removed. An empty
+// list is an error because the preset could never deliver anything.
+func ParseNotificators(values []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(values))
+	channels := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, part := range SplitList(value) {
+			name := strings.ToLower(part)
+			if name == "email" {
+				name = NotificatorMail
+			}
+			switch name {
+			case NotificatorMail, NotificatorWebhook:
+			default:
+				return nil, fmt.Errorf("unknown notification channel %q", part)
+			}
+			if _, duplicate := seen[name]; duplicate {
+				continue
+			}
+			seen[name] = struct{}{}
+			channels = append(channels, name)
+		}
+	}
+	if len(channels) == 0 {
+		return nil, errors.New("at least one notification channel is required")
+	}
+	return channels, nil
 }
 
 // Message is one formatted alert. Device is nil when the device could not be

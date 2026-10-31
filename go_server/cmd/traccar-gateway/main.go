@@ -149,6 +149,7 @@ func main() {
 				notify.WithMetrics(meters),
 				notify.WithTimeout(*notifyTimeout),
 				notify.WithQueueSize(*notifyQueue),
+				notify.WithSubscriptions(store),
 				notify.WithTypes(deliveredTypes))
 			hook = dispatcher.Enqueue
 			log.Printf("notify: %s enabled", notifyChannelNames(channels))
@@ -240,6 +241,7 @@ func main() {
 				api.WithPositions(store),
 				api.WithDevices(store),
 				api.WithUsers(store),
+				api.WithNotifications(store),
 				api.WithCommands(router, store),
 				api.WithMetrics(meters),
 				api.WithHealthPinger(store),
@@ -458,11 +460,11 @@ func notifyTypeFilter(value string) ([]string, error) {
 	types := notify.SplitList(value)
 	for _, alertType := range types {
 		switch alertType {
-		case "none", "all", "*",
-			model.AlertOverspeed, model.AlertPowerCut, model.AlertPowerRestored,
-			model.AlertGeofenceEnter, model.AlertGeofenceExit:
+		case "none", "all", "*":
 		default:
-			return nil, fmt.Errorf("unknown alert type %q", alertType)
+			if !model.IsAlertType(alertType) {
+				return nil, fmt.Errorf("unknown alert type %q", alertType)
+			}
 		}
 	}
 	return types, nil

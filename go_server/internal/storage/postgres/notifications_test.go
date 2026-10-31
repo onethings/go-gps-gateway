@@ -1,0 +1,188 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"traccar-server_go/go_server/internal/model"
+)
+
+// TestNotificationStoreIntegration covers notifications / user_notifications
+// and the dispatcher's DeviceSubscriptions query. It runs only when
+// TRACCAR_POSTGRES_DSN is set.
+func TestNotificationStoreIntegration(t *testing.T) {
+	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+	}
+
+	ctx := context.Background()
+	store, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	suffix := time.Now().Format("150405.000000")
+	user, err := store.CreateUser(ctx, model.UserCreate{
+		Email: "notify-" + suffix + "@example.test",
+		Name:  "Notify",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.db.ExecContext(context.Background(), `DELETE FROM users WHERE id = $1`, user.ID)
+	})
+
+	deviceID, err := store.Register("NTF"+suffix, "gt06")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.db.ExecContext(context.Background(), `DELETE FROM devices WHERE id = $1`, deviceID)
+	})
+	if err := store.AssignDevice(ctx, user.ID, deviceID); err != nil {
+		t.Fatalf("assign device: %v", err)
+	}
+
+	created, err := store.CreateNotification(ctx, model.NotificationCreate{
+		Type:         model.AlertOverspeed,
+		Notificators: []string{"mail", "webhook"},
+		Description:  "fast",
+	})
+	if err != nil {
+		t.Fatalf("create notification: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.db.ExecContext(context.Background(),
+			`DELETE FROM notifications WHERE id = $1`, created.ID)
+	})
+	if created.ID == 0 || created.Type != model.AlertOverspeed ||
+		strings.Join(created.Notificators, ",") != "mail,webhook" ||
+		created.Description != "fast" || created.CreatedAt.IsZero() {
+		t.Fatalf("created = %+v", created)
+	}
+
+	listed, err := store.Notifications(ctx)
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if !containsNotification(listed, created.ID) {
+		t.Errorf("notification %d is missing from the list", created.ID)
+	}
+
+	updated, err := store.UpdateNotification(ctx, created.ID, model.NotificationUpdate{
+		Type:         stringPointer(model.AlertPowerCut),
+		Notificators: &[]string{"mail"},
+	})
+	if err != nil {
+		t.Fatalf("update notification: %v", err)
+	}
+	if updated.Type != model.AlertPowerCut || strings.Join(updated.Notificators, ",") != "mail" ||
+		updated.Description != "fast" {
+		t.Errorf("updated = %+v", updated)
+	}
+	if _, err := store.Notification(ctx, created.ID+1000); !errors.Is(err, model.ErrNotificationNotFound) {
+		t.Errorf("unknown notification err = %v, want ErrNotificationNotFound", err)
+	}
+
+	// A disabled account must not receive anything.
+	if err := store.AssignNotification(ctx, user.ID, created.ID); err != nil {
+		t.Fatalf("assign notification: %v", err)
+	}
+	if err := store.AssignNotification(ctx, user.ID, created.ID); err != nil {
+		t.Fatalf("assign notification twice: %v", err)
+	}
+
+	subscriptions, err := store.DeviceSubscriptions(ctx, deviceID, model.AlertPowerCut)
+	if err != nil {
+		t.Fatalf("device subscriptions: %v", err)
+	}
+	if len(subscriptions) != 1 || subscriptions[0].UserID != user.ID ||
+		subscriptions[0].Email != user.Email ||
+		strings.Join(subscriptions[0].Notificators, ",") != "mail" {
+		t.Fatalf("subscriptions = %+v", subscriptions)
+	}
+
+	// A wildcard preset merges into the same user instead of duplicating it.
+	wildcard, err := store.CreateNotification(ctx, model.NotificationCreate{
+		Type:         "*",
+		Notificators: []string{"webhook"},
+	})
+	if err != nil {
+		t.Fatalf("create wildcard: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.db.ExecContext(context.Background(),
+			`DELETE FROM notifications WHERE id = $1`, wildcard.ID)
+	})
+	if err := store.AssignNotification(ctx, user.ID, wildcard.ID); err != nil {
+		t.Fatalf("assign wildcard: %v", err)
+	}
+
+	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.AlertGeofenceEnter)
+	if err != nil {
+		t.Fatalf("device subscriptions: %v", err)
+	}
+	if len(subscriptions) != 1 || strings.Join(subscriptions[0].Notificators, ",") != "webhook" {
+		t.Fatalf("wildcard subscriptions = %+v", subscriptions)
+	}
+
+	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.AlertPowerCut)
+	if err != nil {
+		t.Fatalf("device subscriptions: %v", err)
+	}
+	if len(subscriptions) != 1 || strings.Join(subscriptions[0].Notificators, ",") != "mail,webhook" {
+		t.Fatalf("merged subscriptions = %+v", subscriptions)
+	}
+
+	userNotifications, err := store.UserNotifications(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("user notifications: %v", err)
+	}
+	if len(userNotifications) != 2 {
+		t.Fatalf("user notifications = %+v", userNotifications)
+	}
+
+	disabled := true
+	if _, err := store.UpdateUser(ctx, user.ID, model.UserUpdate{Disabled: &disabled}); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.AlertPowerCut)
+	if err != nil {
+		t.Fatalf("device subscriptions after disable: %v", err)
+	}
+	if len(subscriptions) != 0 {
+		t.Errorf("disabled user still has subscriptions: %+v", subscriptions)
+	}
+
+	if err := store.UnassignNotification(ctx, user.ID, wildcard.ID); err != nil {
+		t.Fatalf("unassign wildcard: %v", err)
+	}
+	if err := store.UnassignNotification(ctx, user.ID, wildcard.ID); err != nil {
+		t.Fatalf("unassign wildcard twice: %v", err)
+	}
+
+	if err := store.DeleteNotification(ctx, created.ID); err != nil {
+		t.Fatalf("delete notification: %v", err)
+	}
+	if err := store.DeleteNotification(ctx, created.ID); !errors.Is(err, model.ErrNotificationNotFound) {
+		t.Errorf("second delete err = %v, want ErrNotificationNotFound", err)
+	}
+}
+
+func containsNotification(notifications []model.Notification, id int64) bool {
+	for _, notification := range notifications {
+		if notification.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func stringPointer(value string) *string { return &value }

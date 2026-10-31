@@ -12,6 +12,17 @@ const (
 	AlertPowerRestored = "powerRestored"
 )
 
+// IsAlertType reports whether value is one of the types the alert engine
+// produces.
+func IsAlertType(value string) bool {
+	switch value {
+	case AlertOverspeed, AlertGeofenceEnter, AlertGeofenceExit, AlertPowerCut, AlertPowerRestored:
+		return true
+	default:
+		return false
+	}
+}
+
 // Alert is one row of the alerts table: a rule verdict attached to a device at
 // a point in time.
 type Alert struct {

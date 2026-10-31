@@ -5,9 +5,10 @@
 
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
-- 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄 / 告警通知（webhook / email）
+- 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄 / 告警通知（webhook / email，
+  含使用者訂閱）
   - REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`、使用者 token / 裝置擁有權、
-    帳號與 token 管理）全部可編譯、`go test ./...` 全綠。
+    帳號與 token 管理、通知訂閱）全部可編譯、`go test ./...` 全綠。
 
 ## 架構
 
@@ -34,14 +35,15 @@ client ──HTTP──▶ api.Server (RequireAuth)
                    ├─ GET /api/health
                    ├─ GET /metrics       ──▶ Prometheus 文字格式
                    ├─ POST /api/commands ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
-                   └─ /api/users/*       ──▶ 帳號 / token / 裝置授權管理（admin）
+                   ├─ /api/users/*       ──▶ 帳號 / token / 裝置授權 / 通知訂閱（admin 或本人）
+                   └─ /api/notifications ──▶ 通知範本（admin 維護，任何帳號可讀）
 ```
 
 ## 目錄
 
 | 路徑                             | 說明                                                                                                                                       |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `internal/model`                 | 統一資料模型：`Position` / `Network` / `CellTower` / `Command`                                                                             |
+| `internal/model`                 | 統一資料模型：`Position` / `Network` / `CellTower` / `Command` / `User` / `Notification`                                                    |
 | `internal/auth`                  | 權限模型：scope、`Principal`、token 產生 / SHA-256 雜湊                                                                                     |
 | `internal/codec`                 | 協議介面：`FrameDecoder`、`Decoder`、`SessionDecoder`、`Encoder`、`Base`                                                                   |
 | `internal/helper`                | Java helper 的移植：`Buffer`(Netty ByteBuf)、`PatternBuilder`、`Parser`、BCD、DateBuilder、CRC16/X25、CRC16/IBM、XOR、Luhn                 |
@@ -53,8 +55,8 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/gateway`               | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                      |
 | `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                      |
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線                                                            |
-| `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、非阻塞傳送佇列                                                            |
-| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands`、`/api/users`（帳號 / token / 裝置授權）；認證 / scope / 裝置擁有權 |
+| `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                            |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`；認證 / scope / 裝置擁有權 |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                  |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                               |
 | `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                               |
@@ -138,6 +140,8 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
   `0004_users_disabled.sql` 補上）
 - `user_devices(user_id, device_id)`（`0003_users.sql`，多對多）
 - `api_tokens(id, user_id, token_hash, scopes, expires_at, created_at)`（`0003_users.sql`）
+- `notifications(id, type, notificators, description, created_at)`（`0005_notifications.sql`）
+- `user_notifications(user_id, notification_id)`（`0005_notifications.sql`，多對多）
 - `schema_migrations(version, applied_at)`
 
 寫入路徑：`BatchSink`（非阻塞佇列 + 每批一個 multi-row `INSERT`）。
@@ -247,6 +251,14 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
 device 連線與資料庫寫入都不等網路。沒有設定任何 `-notify-*` 時整條路徑不會啟動；
 通知需要 `-dsn`（告警規則本身就要資料庫），記憶體模式只會印出「ignoring -notify-* flags」。
 
+路由分三層，依序決定：
+
+1. `-notify-types` 先決定伺服器要不要送這個告警類型。
+2. 裝置的 `notifyTypes` 再收窄；裝置的 `notifyEmail` / `notifyWebhook` 是該管道的**絕對覆寫**，
+   設了就不會再加上任何使用者訂閱。
+3. 沒有裝置覆寫時，若這台裝置的這筆告警有帳號訂閱，**訂閱者決定哪些管道要送**；
+   完全沒有訂閱者時才用伺服器 flag 的預設收件者。
+
 伺服器層級設定：
 
 | Flag                                                | 說明                                                                                                       |
@@ -282,6 +294,51 @@ UPDATE devices SET attributes = attributes || '{
 }'::jsonb WHERE id = 7;
 ```
 
+### 使用者訂閱
+
+`notifications` 是公用範本（告警類型 + 管道），`user_notifications` 是帳號的訂閱。
+帳號只會收到 `user_devices` 有授權的裝置的告警；`users.disabled = true` 的帳號不送。
+同一個帳號有多個符合的範本時，管道取聯集，同一個收件者只送一次。
+
+- `notifications.type`：`deviceOverspeed` / `powerCut` / `powerRestored` / `geofenceEnter` /
+  `geofenceExit`，或 `all` / `*`（全部類型）。
+- `notifications.notificators`：`mail`（寄到帳號的 `users.email`，`email` 是別名）與
+  `webhook`（打 `-notify-webhook` 的 URL）。至少一個，未知值會被 API 拒絕。
+
+`mail` 的收件者固定是帳號 email；`webhook` 沒有 per-user URL，訂閱只決定「這台裝置的這種
+告警要不要打伺服器 webhook」。兩個管道仍要先用 `-notify-email-smtp` / `-notify-webhook`
+啟用，否則沒有 notifier 可以送。
+
+| 路由                                                        | 說明                                                                 |
+| ----------------------------------------------------------- | -------------------------------------------------------------------- |
+| `GET /api/notifications`                                    | 列出所有範本（任何已驗證帳號）                                       |
+| `POST /api/notifications`                                   | 建立範本（admin），body `{"type","notificators","description"}`      |
+| `PUT /api/notifications/{id}`                               | 局部更新範本（admin），省略的欄位不動                                |
+| `DELETE /api/notifications/{id}`                            | 刪除範本（admin），`user_notifications` 由 FK cascade                |
+| `GET /api/users/{id}/notifications`                         | 列出帳號的訂閱（本人或 admin）                                       |
+| `PUT /api/users/{id}/notifications/{notificationId}`        | 訂閱（本人或 admin；重複呼叫不會出錯）                               |
+| `DELETE /api/users/{id}/notifications/{notificationId}`     | 取消訂閱（本人或 admin；原本沒訂閱也回 `204`）                       |
+
+```bash
+# admin 建立「超速寄 email」範本
+curl -X POST localhost:8082/api/notifications -H 'X-Api-Key: please-change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"deviceOverspeed","notificators":["mail"],"description":"overspeed mail"}'
+
+# Bob(2) 用自己的 token 訂閱；也可以由 admin 代為操作
+curl -X PUT localhost:8082/api/users/2/notifications/1 \
+  -H "Authorization: ******"
+```
+
+等價的 SQL：
+
+```sql
+INSERT INTO notifications (type, notificators, description)
+VALUES ('deviceOverspeed', ARRAY['mail'], 'overspeed mail');
+
+INSERT INTO user_notifications (user_id, notification_id) VALUES (2, 1);
+```
+
 Webhook 的 body 固定為一份 JSON：
 
 ```json
@@ -304,8 +361,10 @@ Webhook 的 body 固定為一份 JSON：
 
 已知取捨：
 
-- 通知設定只有**伺服器 + 裝置**兩層，沒有 Java 版的 `notifications` / `user_notifications`
-  表，所以不能依使用者訂閱；收件者寫在 flag 或 `devices.attributes`。
+- 使用者訂閱的 `mail` 收件者固定是 `users.email`；`webhook` 仍共用伺服器的
+  `-notify-webhook` URL，沒有 per-user / per-notification URL。
+- 裝置的 `notifyEmail` / `notifyWebhook` 是絕對覆寫：設了就不會再加上訂閱者。
+- 有訂閱者時，該裝置 / 該告警類型的訂閱集合取代伺服器預設收件者；沒人訂閱的管道不送。
 - 裝置查詢失敗（資料庫暫時不可用）時仍會送出，只是主旨 / body 只帶 device id。
 - 佇列滿時直接丟棄，**不做重試**；`-notify-queue` 要留得下告警尖峰。
 - `-notify-email-tls auto` 遇到沒有 STARTTLS 的伺服器會以明文繼續（與 `net/smtp.SendMail`
@@ -361,7 +420,8 @@ admin key 建的裝置不會自動綁定，要另外授權（見下節）。
 
 帳號相關路由全部需要 **admin 憑證**（`-api-key`，或 `users.admin = true` 的使用者 token），
 不看 scope：即使 token 帶 `*` 也不能管理帳號，避免提權。沒有配置 `-dsn` 時這些路由回 `501`；
-`-allow-anonymous` 時也會一併開放，只適合本機。
+`-allow-anonymous` 時也會一併開放，只適合本機。通知訂閱的兩條 `/api/users/{id}/notifications/...`
+路由是例外：帳號本人或 admin 都可以操作（見「使用者訂閱」）。
 
 | 路由                                       | 說明                                                               |
 | ------------------------------------------ | ------------------------------------------------------------------ |
@@ -375,6 +435,9 @@ admin key 建的裝置不會自動綁定，要另外授權（見下節）。
 | `GET /api/users/{id}/tokens`               | 列出 token 中繼資料，**不含**明文與雜湊                            |
 | `POST /api/users/{id}/tokens`              | 發 token，body `{"scopes":[...],"expiresIn":"720h"}`，明文只回這一次 |
 | `DELETE /api/users/{id}/tokens/{tokenId}`  | 撤銷 token                                                         |
+| `GET /api/users/{id}/notifications`        | 列出通知訂閱（本人或 admin）                                       |
+| `PUT /api/users/{id}/notifications/{notificationId}` | 訂閱通知範本（本人或 admin）                              |
+| `DELETE /api/users/{id}/notifications/{notificationId}` | 取消訂閱（本人或 admin）                               |
 
 `expiresIn` 是 Go duration（`720h`、`30m`），空字串表示永不過期；scopes 依上表驗證，
 未知 scope 回 `400`。停用自己、撤掉自己的 admin、刪除自己都回 `409`，避免把唯一的
@@ -577,7 +640,7 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                       |
 | `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                              |
 | `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...` |
-| `notify.Dispatcher` log  | `notify: webhook, mail enabled`、`notify: <channel>: <err>`、`notify: lookup device <id>: <err>`、`notify: queue full, dropped <type> for device <id>`             |
+| `notify.Dispatcher` log  | `notify: webhook, mail enabled`、`notify: <channel>: <err>`、`notify: lookup device <id>: <err>`、`notify: lookup subscriptions for device <id>: <err>`、`notify: queue full, dropped <type> for device <id>` |
 | `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: send command <type> to device <id>: <err>` |
 | CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`、`dropped <n> notifications because the queue was full`          |
 | `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                     |
@@ -595,7 +658,8 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
    （解析失敗會印 `alerts: load geofences: ...`，該筆圍欄會被跳過，其他圍欄照常運作）。
 5. **有告警但沒收到通知** → 看 `notify: <channel>: ...` 與 `traccar_notification_errors_total`；
    再確認 `-notify-types` 與裝置的 `notifyTypes` 沒有把它濾掉，裝置的 `notifyWebhook` /
-   `notifyEmail` 沒有被設成 `false`。
+   `notifyEmail` 沒有被設成 `false`；若有帳號訂閱，確認訂閱的 `notificators` 含該管道，
+   且 `user_devices` 有授權該裝置（`notify: lookup subscriptions...` 是查詢失敗）。
 
 `GET /metrics` 以 Prometheus 文字格式輸出（手寫實作，沒有額外依賴）：
 
@@ -645,8 +709,9 @@ scrape_configs:
   裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
 - 命令只寫進設備連線，不等 ACK、不落地，也沒有 Java 版的 `commands` 表與派送佇列；
   `devices.protocol` 為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
-- 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知只有 webhook 與 email 兩種，沒有使用者訂閱
-  （收件者由 flag 或裝置 attributes 決定）。門檻可用裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
+- 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知只有 webhook 與 email 兩種。使用者訂閱只決定
+  類型與管道：email 收件者是帳號 email，webhook 仍共用 `-notify-webhook` 的 URL。門檻可用
+  裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
 - 圍欄只能以 SQL 維護，且對所有裝置生效；`alerts.position_id` 目前是 NULL（見上節）。
 - `devices.model` 只寫不讀，車型相關的協議分支（GT06 `NT_MODELS`、JT808 門磁/撞擊）尚未啟用。
 - 報表等其餘業務層仍是 Java 版負責。
@@ -654,6 +719,5 @@ scrape_configs:
 
 ## 下一步
 
-1. 通知的使用者訂閱（`notifications` / `user_notifications`），讓帳號自己選類型與管道。
-2. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
-3. 非 admin 的 token 自我管理（列出 / 撤銷自己的 token）與密碼登入。
+1. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
+2. 非 admin 的 token 自我管理（列出 / 撤銷自己的 token）與密碼登入。

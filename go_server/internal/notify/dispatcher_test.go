@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -321,5 +322,138 @@ func TestDispatcherWithoutChannelsDoesNothing(t *testing.T) {
 
 	if got := dispatcher.Dropped(); got != 0 {
 		t.Errorf("dropped = %d, want 0", got)
+	}
+}
+
+type fakeSubscriptions struct {
+	mu            sync.Mutex
+	subscriptions []model.NotificationSubscription
+	err           error
+	calls         int
+}
+
+func (f *fakeSubscriptions) DeviceSubscriptions(_ context.Context, _ int64, _ string) ([]model.NotificationSubscription, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]model.NotificationSubscription(nil), f.subscriptions...), nil
+}
+
+func TestDispatcherSubscriptionRouting(t *testing.T) {
+	webhook := &recordingNotifier{name: "webhook"}
+	mailer := &recordingNotifier{name: "mail"}
+	subscriptions := &fakeSubscriptions{subscriptions: []model.NotificationSubscription{
+		{UserID: 1, Email: "alice@example.test", Notificators: []string{"mail"}},
+		{UserID: 2, Email: "bob@example.test", Notificators: []string{"webhook", "mail"}},
+	}}
+
+	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: testDevice()}},
+		[]Channel{
+			{Notifier: webhook, Defaults: []string{"https://global.example/hook"}, Attribute: AttrNotifyWebhook},
+			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
+		}, WithSubscriptions(subscriptions))
+
+	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	closeDispatcher(t, dispatcher)
+
+	mailCalls := mailer.snapshot()
+	if len(mailCalls) != 1 {
+		t.Fatalf("mail calls = %d, want 1", len(mailCalls))
+	}
+	// The subscription set replaces the server default "ops@example.com".
+	if got := mailCalls[0].recipients; strings.Join(got, ",") != "alice@example.test,bob@example.test" {
+		t.Errorf("mail recipients = %v", got)
+	}
+
+	webhookCalls := webhook.snapshot()
+	if len(webhookCalls) != 1 {
+		t.Fatalf("webhook calls = %d, want 1", len(webhookCalls))
+	}
+	if got := webhookCalls[0].recipients; len(got) != 1 || got[0] != "https://global.example/hook" {
+		t.Errorf("webhook recipients = %v", got)
+	}
+}
+
+func TestDispatcherSubscriptionsReplaceDefaults(t *testing.T) {
+	webhook := &recordingNotifier{name: "webhook"}
+	mailer := &recordingNotifier{name: "mail"}
+	subscriptions := &fakeSubscriptions{subscriptions: []model.NotificationSubscription{
+		{UserID: 1, Email: "alice@example.test", Notificators: []string{"mail"}},
+	}}
+
+	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: testDevice()}},
+		[]Channel{
+			{Notifier: webhook, Defaults: []string{"https://global.example/hook"}, Attribute: AttrNotifyWebhook},
+			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
+		}, WithSubscriptions(subscriptions))
+
+	dispatcher.Enqueue(testAlert(model.AlertPowerCut, nil))
+	closeDispatcher(t, dispatcher)
+
+	if calls := webhook.snapshot(); len(calls) != 0 {
+		t.Errorf("webhook calls = %d, want 0: nobody subscribed to webhook", len(calls))
+	}
+	mailCalls := mailer.snapshot()
+	if len(mailCalls) != 1 || len(mailCalls[0].recipients) != 1 ||
+		mailCalls[0].recipients[0] != "alice@example.test" {
+		t.Fatalf("mail calls = %+v", mailCalls)
+	}
+}
+
+func TestDispatcherDeviceAttributeBeatsSubscriptions(t *testing.T) {
+	device := testDevice()
+	device.Attributes = map[string]any{AttrNotifyEmail: "device@example.test"}
+
+	webhook := &recordingNotifier{name: "webhook"}
+	mailer := &recordingNotifier{name: "mail"}
+	subscriptions := &fakeSubscriptions{subscriptions: []model.NotificationSubscription{
+		{UserID: 1, Email: "alice@example.test", Notificators: []string{"mail", "webhook"}},
+	}}
+
+	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: device}},
+		[]Channel{
+			{Notifier: webhook, Defaults: []string{"https://global.example/hook"}, Attribute: AttrNotifyWebhook},
+			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
+		}, WithSubscriptions(subscriptions))
+
+	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	closeDispatcher(t, dispatcher)
+
+	mailCalls := mailer.snapshot()
+	if len(mailCalls) != 1 || len(mailCalls[0].recipients) != 1 ||
+		mailCalls[0].recipients[0] != "device@example.test" {
+		t.Errorf("mail calls = %+v", mailCalls)
+	}
+	// The webhook attribute is absent, but the subscription set controls it;
+	// the subscriber did choose webhook, so the server default is used once.
+	webhookCalls := webhook.snapshot()
+	if len(webhookCalls) != 1 {
+		t.Errorf("webhook calls = %d, want 1", len(webhookCalls))
+	}
+}
+
+func TestDispatcherSubscriptionLookupFailureFallsBack(t *testing.T) {
+	notifier := &recordingNotifier{name: "webhook"}
+	var logged bool
+	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: testDevice()}},
+		[]Channel{{Notifier: notifier, Defaults: []string{"https://global.example/hook"}, Attribute: AttrNotifyWebhook}},
+		WithSubscriptions(&fakeSubscriptions{err: errors.New("database down")}),
+		WithLogger(func(string, ...any) { logged = true }))
+
+	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	closeDispatcher(t, dispatcher)
+
+	calls := notifier.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	if got := calls[0].recipients; len(got) != 1 || got[0] != "https://global.example/hook" {
+		t.Errorf("recipients = %v", got)
+	}
+	if !logged {
+		t.Error("expected the subscription lookup failure to be logged")
 	}
 }

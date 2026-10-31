@@ -19,13 +19,14 @@ const (
 // recipients. Alerts are queued and delivered from one background goroutine so
 // that Enqueue never blocks a device connection.
 type Dispatcher struct {
-	devices   DeviceLookup
-	channels  []Channel
-	types     map[string]struct{}
-	timeout   time.Duration
-	queueSize int
-	logf      func(format string, args ...any)
-	meters    *metrics.Set
+	devices       DeviceLookup
+	subscriptions SubscriptionLookup
+	channels      []Channel
+	types         map[string]struct{}
+	timeout       time.Duration
+	queueSize     int
+	logf          func(format string, args ...any)
+	meters        *metrics.Set
 
 	queue chan *model.Alert
 
@@ -53,6 +54,14 @@ func WithLogger(logf func(format string, args ...any)) Option {
 // WithMetrics publishes delivered, failed and dropped notifications.
 func WithMetrics(set *metrics.Set) Option {
 	return func(d *Dispatcher) { d.meters = set }
+}
+
+// WithSubscriptions enables per-user routing: when an account subscribed to a
+// matching notification preset for the device, the subscribed channels replace
+// the server-wide defaults for that alert. Devices that set a channel
+// attribute still override both.
+func WithSubscriptions(subscriptions SubscriptionLookup) Option {
+	return func(d *Dispatcher) { d.subscriptions = subscriptions }
 }
 
 // WithTimeout caps the device lookup and each channel delivery.
@@ -190,13 +199,23 @@ func (d *Dispatcher) deliver(alert *model.Alert) {
 	if device != nil {
 		attributes = device.Attributes
 	}
+	subscriptions := d.subscribers(alert)
 
 	for _, channel := range d.channels {
 		if channel.Notifier == nil {
 			continue
 		}
-		targets, enabled := resolveTargets(attributes, channel)
-		if !enabled || len(targets) == 0 {
+		targets, enabled, overridden := resolveTargets(attributes, channel)
+		if !enabled {
+			continue
+		}
+		// An explicit device attribute wins over every subscription. Otherwise
+		// a matching subscription set decides which channels run; when nobody
+		// subscribed, the server-wide defaults apply.
+		if !overridden && len(subscriptions) > 0 {
+			targets = subscriptionTargets(channel, subscriptions)
+		}
+		if len(targets) == 0 {
 			continue
 		}
 
@@ -234,6 +253,25 @@ func (d *Dispatcher) lookup(deviceID int64) *model.Device {
 		return nil
 	}
 	return device
+}
+
+// subscribers resolves the user subscriptions for the alert. A failed lookup
+// is logged and treated as "nobody subscribed" so the server-wide defaults
+// still deliver the alert.
+func (d *Dispatcher) subscribers(alert *model.Alert) []model.NotificationSubscription {
+	if d.subscriptions == nil || alert == nil || alert.DeviceID == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
+	defer cancel()
+
+	subscriptions, err := d.subscriptions.DeviceSubscriptions(ctx, alert.DeviceID, alert.Type)
+	if err != nil {
+		d.logf("notify: lookup subscriptions for device %d: %v", alert.DeviceID, err)
+		return nil
+	}
+	return subscriptions
 }
 
 func (d *Dispatcher) typeEnabled(alertType string) bool {
@@ -308,24 +346,26 @@ func parseTypes(value string) map[string]struct{} {
 }
 
 // resolveTargets returns the recipients for one channel. The second result is
-// false when the device disabled the channel or when no target remains.
-func resolveTargets(attributes map[string]any, channel Channel) ([]string, bool) {
+// false when the device disabled the channel or when no target remains. The
+// third result is true when the device set the attribute, in which case
+// subscriptions must not add or replace anything.
+func resolveTargets(attributes map[string]any, channel Channel) ([]string, bool, bool) {
 	raw, ok := attributes[channel.Attribute]
 	if !ok {
-		return channel.Defaults, len(channel.Defaults) > 0
+		return channel.Defaults, len(channel.Defaults) > 0, false
 	}
 
 	switch typed := raw.(type) {
 	case nil:
-		return nil, false
+		return nil, false, true
 	case bool:
 		if !typed {
-			return nil, false
+			return nil, false, true
 		}
-		return channel.Defaults, len(channel.Defaults) > 0
+		return channel.Defaults, len(channel.Defaults) > 0, true
 	case string:
 		targets := SplitList(typed)
-		return targets, len(targets) > 0
+		return targets, len(targets) > 0, true
 	case []any:
 		var targets []string
 		for _, item := range typed {
@@ -335,16 +375,66 @@ func resolveTargets(attributes map[string]any, channel Channel) ([]string, bool)
 			}
 			targets = append(targets, SplitList(text)...)
 		}
-		return targets, len(targets) > 0
+		return targets, len(targets) > 0, true
 	case []string:
 		var targets []string
 		for _, item := range typed {
 			targets = append(targets, SplitList(item)...)
 		}
-		return targets, len(targets) > 0
+		return targets, len(targets) > 0, true
 	default:
-		return channel.Defaults, len(channel.Defaults) > 0
+		return channel.Defaults, len(channel.Defaults) > 0, true
 	}
+}
+
+// subscriptionTargets selects the recipients a channel gets from the accounts
+// subscribed for this device. Mail targets the account email; the webhook has
+// no per-account target, so a subscriber only enables the server-wide URLs.
+func subscriptionTargets(channel Channel, subscriptions []model.NotificationSubscription) []string {
+	name := channel.Notifier.Name()
+	if name == NotificatorMail {
+		var targets []string
+		for _, subscription := range subscriptions {
+			if subscription.Email == "" || !hasNotificator(subscription, NotificatorMail) {
+				continue
+			}
+			targets = appendRecipient(targets, subscription.Email)
+		}
+		return targets
+	}
+
+	for _, subscription := range subscriptions {
+		if hasNotificator(subscription, name) {
+			return channel.Defaults
+		}
+	}
+	return nil
+}
+
+// hasNotificator reports whether the subscription names the channel. "email"
+// stays an accepted alias for rows written directly with SQL.
+func hasNotificator(subscription model.NotificationSubscription, name string) bool {
+	for _, value := range subscription.Notificators {
+		channel := strings.ToLower(strings.TrimSpace(value))
+		if channel == "email" {
+			channel = NotificatorMail
+		}
+		if channel == name {
+			return true
+		}
+	}
+	return false
+}
+
+// appendRecipient adds a recipient unless it is already present, so a user
+// with several matching presets does not receive duplicates.
+func appendRecipient(recipients []string, recipient string) []string {
+	for _, existing := range recipients {
+		if existing == recipient {
+			return recipients
+		}
+	}
+	return append(recipients, recipient)
 }
 
 // SplitList accepts commas, semicolons and whitespace as separators so that a

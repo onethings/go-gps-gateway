@@ -71,19 +71,20 @@ type DeviceOwnerStore interface {
 
 // Server holds the handlers and their configuration.
 type Server struct {
-	alerts       AlertQuerier
-	positions    PositionQuerier
-	devices      DeviceStore
-	users        UserStore
-	router       CommandRouter
-	protocols    DeviceProtocols
-	pinger       Pinger
-	meters       *metrics.Set
-	logf         func(format string, args ...any)
-	queryTimeout time.Duration
-	now          func() time.Time
-	apiKey       string
-	tokens       TokenLookup
+	alerts        AlertQuerier
+	positions     PositionQuerier
+	devices       DeviceStore
+	users         UserStore
+	notifications NotificationStore
+	router        CommandRouter
+	protocols     DeviceProtocols
+	pinger        Pinger
+	meters        *metrics.Set
+	logf          func(format string, args ...any)
+	queryTimeout  time.Duration
+	now           func() time.Time
+	apiKey        string
+	tokens        TokenLookup
 }
 
 // Option customises a Server.
@@ -129,6 +130,12 @@ func WithDevices(devices DeviceStore) Option {
 // Without it they report 501.
 func WithUsers(users UserStore) Option {
 	return func(s *Server) { s.users = users }
+}
+
+// WithNotifications enables the notification preset routes and the per-user
+// subscription routes. Without it they report 501.
+func WithNotifications(notifications NotificationStore) Option {
+	return func(s *Server) { s.notifications = notifications }
 }
 
 // WithHealthPinger makes GET /api/health check the database and answer 503
@@ -197,6 +204,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/users/{id}/tokens", s.handleTokens)
 	mux.HandleFunc("POST /api/users/{id}/tokens", s.handleIssueToken)
 	mux.HandleFunc("DELETE /api/users/{id}/tokens/{tokenId}", s.handleRevokeToken)
+
+	// Notification presets are shared definitions; any authenticated caller may
+	// list them, only an admin may change them. Subscriptions are managed by
+	// the account itself or an admin.
+	mux.HandleFunc("GET /api/notifications", s.handleNotifications)
+	mux.HandleFunc("POST /api/notifications", s.handleCreateNotification)
+	mux.HandleFunc("PUT /api/notifications/{id}", s.handleUpdateNotification)
+	mux.HandleFunc("DELETE /api/notifications/{id}", s.handleDeleteNotification)
+	mux.HandleFunc("GET /api/users/{id}/notifications", s.handleUserNotifications)
+	mux.HandleFunc("PUT /api/users/{id}/notifications/{notificationId}", s.handleAssignNotification)
+	mux.HandleFunc("DELETE /api/users/{id}/notifications/{notificationId}", s.handleUnassignNotification)
 
 	if s.apiKey == "" && s.tokens == nil {
 		return mux

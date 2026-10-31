@@ -1,0 +1,13 @@
+{
+  "name": "gt06-unknown",
+  "protocol": "gt06",
+  "uniqueId": "999999999999999",
+  "handshake": true,
+  "positions": 0,
+  "steps": [
+    {
+      "name": "login",
+      "hex": "78780d01099999999999999900092f940d0a"
+    }
+  ]
+}

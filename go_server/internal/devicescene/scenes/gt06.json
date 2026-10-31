@@ -1,0 +1,17 @@
+{
+  "name": "gt06",
+  "protocol": "gt06",
+  "uniqueId": "864717003283581",
+  "handshake": true,
+  "positions": 1,
+  "steps": [
+    {
+      "name": "login",
+      "hex": "78780d01086471700328358100093f040d0a"
+    },
+    {
+      "name": "position",
+      "hex": "78781f120f0a140e150bc505e51e780293a9e800540000f601006e0055da00035f240d0a"
+    }
+  ]
+}

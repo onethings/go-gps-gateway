@@ -58,6 +58,8 @@ func main() {
 	geofenceRefresh := flag.Duration("geofence-refresh", 5*time.Minute, "geofence reload interval; 0 loads them once")
 	deviceRefresh := flag.Duration("device-refresh", 5*time.Minute,
 		"device attribute reload interval for per-device thresholds; 0 loads them once")
+	autoRegister := flag.Bool("auto-register", true,
+		"create a device row when an unknown identifier logs in; false drops the connection")
 	notifyWebhook := flag.String("notify-webhook", "",
 		"webhook URL that receives alert JSON; empty disables the webhook channel")
 	notifyWebhookAuthorization := flag.String("notify-webhook-authorization", "",
@@ -206,11 +208,15 @@ func main() {
 			log.Fatalf("%s: listen %s: %v", name, *address, err)
 		}
 
-		server, err := gateway.NewServer(registry, name, directory, sink,
-			gateway.WithReadTimeout(10*time.Minute),
-			gateway.WithAutoRegister(),
+		options := []gateway.Option{
+			gateway.WithReadTimeout(10 * time.Minute),
 			gateway.WithMetrics(meters),
-		)
+		}
+		if *autoRegister {
+			options = append(options, gateway.WithAutoRegister())
+		}
+
+		server, err := gateway.NewServer(registry, name, directory, sink, options...)
 		if err != nil {
 			log.Fatalf("%s: %v", name, err)
 		}

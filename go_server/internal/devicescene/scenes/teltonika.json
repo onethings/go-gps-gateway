@@ -1,0 +1,17 @@
+{
+  "name": "teltonika",
+  "protocol": "teltonika",
+  "uniqueId": "123456789012345",
+  "handshake": true,
+  "positions": 1,
+  "steps": [
+    {
+      "name": "imei",
+      "hex": "000F313233343536373839303132333435"
+    },
+    {
+      "name": "codec13",
+      "hex": "00000000000000240d01060000001c642b3ad14754534c7c367c317c307c31323734393838347c317c0d0a010000ec11"
+    }
+  ]
+}

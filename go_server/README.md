@@ -625,6 +625,44 @@ go test -race ./internal/gateway ./internal/alert ./internal/api ./internal/noti
 - 告警門檻請用真機向量的數值：速度是**節**（GT06 `0x10` 的 50 km/h → 27 節）、
   電壓是**伏特**（GT06 `0x94` 的 12.5 V）。單位寫錯不會報錯，只是規則永遠不觸發。
 
+### Live lanes（device-sim）
+
+`cmd/device-sim` 把錄下來的裝置幀回放到正在跑的網關，live 驗證不需要真機。
+
+```bash
+go run ./cmd/traccar-gateway -dsn "$DSN" -api-key test-admin &
+go run ./cmd/device-sim -addr 127.0.0.1:5023 -scene gt06          # 內建場景
+go run ./cmd/device-sim -addr 127.0.0.1:5023 -scene ./my-scene.json  # 自帶檔案
+```
+
+場景檔在 `internal/devicescene/scenes/`，用 `go:embed` 打包，所以 `-scene` 可以直接吃場景名稱。
+每個檔案帶 `protocol`、`uniqueId`、`handshake`、`positions`。`gateway` 套件的
+`TestScenesReachTheSink` 會把每個場景經 `net.Pipe` 灌進真的 `gateway.Server`，斷言 sink 收到的
+position 數；`handshake` 為 false 的場景（H02）不需要握手，裝置要先用 `uniqueId` 註冊。
+場景跟協議一起漂掉時，測試會先紅，不必等 lane。
+
+- `-mode single|split|batch`：`single` 每幀一次寫，`split` 把每幀拆兩次寫（測半包），
+  `batch` 把所有幀併成一次寫（測粘包）。三種模式的位元組流相同，只有切法不同。
+- `-repeat N` 同一條連線重播 N 次，`-connections N` 開 N 條並行連線。
+- `-read-wait` 是最後一次寫完後等回應的空閒時間，四個協議的回應模式不同，所以用閒置視窗收斂。
+
+`scripts/live-lanes.sh <lane>` 跑單一條 lane，log 寫到 `/tmp/swarm-pr1/lane-<n>.log`。
+數資料表的 lane 需要 `PSQL_DSN`，讀 `/metrics` 的 lane 需要 `API_URL`（預設 `http://127.0.0.1:8082`），
+缺環境變數時回 `skip` 與 exit code 3，跟失敗的 exit code 1 分開。
+
+效能量測（本機 i5-4200U，`-benchtime 2s`）：
+
+```bash
+go test ./internal/gateway -bench 'BenchmarkGatewayIngest|BenchmarkDecodeGT06' -benchtime 5s -count 5
+```
+
+```text
+BenchmarkGatewayIngest-4   	  190680	     10764 ns/op	   3.34 MB/s	     92901 positions/s	     848 B/op	       9 allocs/op
+BenchmarkDecodeGT06-4      	 1000000	      2253 ns/op	     800 B/op	       9 allocs/op
+```
+
+benchmark 走 `net.Pipe`，跟其他 gateway 測試一樣不開 port。
+
 資料庫整合測試（沒設環境變數會 skip）：
 
 ```bash

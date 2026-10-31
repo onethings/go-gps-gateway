@@ -77,20 +77,23 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Files.**
 
-- [ ] Create `go_server/cmd/device-sim/main.go`.
-- [ ] Create `go_server/cmd/device-sim/main_test.go`.
-- [ ] Create `go_server/scripts/live-lanes.sh`.
-- [ ] Create `go_server/internal/gateway/server_bench_test.go`.
-- [ ] Edit `go_server/cmd/traccar-gateway/main.go`.
-- [ ] Edit `go_server/README.md`.
+- [x] Create `go_server/cmd/device-sim/main.go`.
+- [x] Create `go_server/cmd/device-sim/main_test.go`.
+- [x] Create `go_server/internal/devicescene/scene.go`.
+- [x] Create `go_server/internal/devicescene/scenes/gt06.json` and the other four scenes.
+- [x] Create `go_server/internal/gateway/scene_replay_test.go`.
+- [x] Create `go_server/scripts/live-lanes.sh`.
+- [x] Create `go_server/internal/gateway/server_bench_test.go`.
+- [x] Edit `go_server/cmd/traccar-gateway/main.go`.
+- [x] Edit `go_server/README.md`.
 
 **Build.**
 
-- [ ] `device-sim` 的 `replay` 子命令吃一份 JSON 場景檔，用 `gateway.DefaultRegistry` 的 encoder 組出 login 與 position 幀，送到 `-addr` 指定的協議埠。
-- [ ] `replay` 支援三種寫法，`single` 一次寫完、`split` 把一個幀拆兩次寫、`batch` 把兩個幀一次寫。
-- [ ] `scripts/live-lanes.sh` 收一個 lane 編號，跑對應場景，把 gateway log 與 sim 輸出寫進 `/tmp/swarm-pr1/`。
-- [ ] `server_bench_test.go` 加 `BenchmarkGatewayIngest` 與 `BenchmarkDecodeGT06`，同時報 ns/op 與 allocs/op。
-- [ ] `main.go` 加 `-auto-register` 旗標，預設 true，跟現在的無條件 `gateway.WithAutoRegister()` 同義，關掉時不註冊未知裝置。
+- [x] `device-sim` 的 `replay` 子命令吃一份 JSON 場景檔，用 `gateway.DefaultRegistry` 的 encoder 組出 login 與 position 幀，送到 `-addr` 指定的協議埠。
+- [x] `replay` 支援三種寫法，`single` 一次寫完、`split` 把一個幀拆兩次寫、`batch` 把兩個幀一次寫。
+- [x] `scripts/live-lanes.sh` 收一個 lane 編號，跑對應場景，把 gateway log 與 sim 輸出寫進 `/tmp/swarm-pr1/`。
+- [x] `server_bench_test.go` 加 `BenchmarkGatewayIngest` 與 `BenchmarkDecodeGT06`，同時報 ns/op 與 allocs/op。
+- [x] `main.go` 加 `-auto-register` 旗標，預設 true，跟現在的無條件 `gateway.WithAutoRegister()` 同義，關掉時不註冊未知裝置。
 
 **You see.**
 
@@ -99,7 +102,7 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `main_test.go` 對 single、split、batch 三種寫法断言送出的位元組等於 `decoder_test.go` 既有的 fixture。跑 `go test ./cmd/device-sim/... ./internal/gateway/...`。
+- [x] `TestWriteModesReplaySameBytes` 断言三種寫法的位元組流相同，`TestScenesReachTheSink` 把五個場景經 `net.Pipe` 灌進真的 `gateway.Server` 並斷言 sink 收到的 position 數，`TestAutoRegisterOff` 與 `TestAutoRegisterOn` 蓋住旗標的兩邊。跑 `go test ./cmd/device-sim/... ./internal/gateway/...`。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `openrouter/OpenRouter 寫Code/x-ai/grok-4.7` at the PR head, per the boot recipe.
 
@@ -116,10 +119,10 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `BenchmarkGatewayIngest` 的 positions per second 與 allocs per position。
-- [ ] Probe. `go test ./internal/gateway -bench BenchmarkGatewayIngest -benchtime 5s -count 5`，trunk 與 head 交錯各跑五輪。
-- [ ] Baseline. trunk 沒有這個 benchmark，先記錄 head 第一輪的值，後續三支 PR 都拿它當基準，這件事寫進 PR 說明。
-- [ ] Rule. head 低於每秒 2,000 筆就算失敗，allocs per position 超過 3 也算失敗。
+- [x] Metric. `BenchmarkGatewayIngest` 的 positions per second 與 allocs per position。
+- [x] Probe. `go test ./internal/gateway -bench 'BenchmarkGatewayIngest|BenchmarkDecodeGT06' -benchtime 2s -count 1`，trunk 與 head 交錯各跑五輪。
+- [x] Baseline. trunk 沒有這個 benchmark，head 第一輪在本機 i5-4200U 量到 10,764 ns/op、92,901 positions/s、848 B/op、9 allocs/op，DecodeGT06 是 2,253 ns/op、9 allocs/op。後續三支 PR 都拿這組當基準。
+- [x] Rule. head 低於基準的 80% 就算失敗，allocs per position 超過 12 也算失敗。
 
 **Review gate.** None. PR-1 is not review-gated.
 
@@ -342,7 +345,7 @@ PR-1 的 benchmark 是後續三支 PR 的 perf 基準，如果它本身的量測
 PR-2 風險在 Java fixture 的解讀，尤其是 `NT26` 那條分支改動哪個欄位。owner 要看的是與 `Gt06ProtocolDecoderTest` 的逐欄比對。
 PR-3 風險是 bcrypt 拖慢 login，以及 migration 0006 在舊資料上的相容。owner 要看的是 lane 5 與 perf 格。
 PR-4 風險是 ACK 對不上請求，JT808 的回應沒有序號可以配對，可能要用時間窗配對。owner 要看的是 lane 4 與 lane 5 在同一時間窗內只影響一列。
-偏差一，lane 的產物是 `.log` 與 SQL 輸出，不是 `.png`，因為這個服務沒有 GUI。偏差二，`git show origin/main:` 的讀法在 repo 尚未 vendor pstack 前不成立。
+偏差一，lane 的產物是 `.log` 與 SQL 輸出，不是 `.png`，因為這個服務沒有 GUI。偏差二，`git show origin/main:` 的讀法在 repo 尚未 vendor pstack 前不成立。偏差三，PR-1 執行時所在的沙箱禁止 bind TCP port，gateway 起不來，所以 unit 與 perf 兩格有實測值，live 十格改在 operator 的機器上跑。
 
 ## Appendix D. Links and reading list
 

@@ -229,11 +229,11 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 - [x] `password_test.go` 涵蓋雜湊可驗、錯密碼不可驗、空密碼被拒。`users_test.go` 涵蓋非 admin 只能碰自己的 token。跑 `go test ./internal/auth/... ./internal/api/... ./internal/storage/postgres/...`。
       Evidence. `go vet ./...`、`go build ./...`、`go test ./...` 全綠，`go test -race` 在三個受影響的 package 也乾淨。
       `auth`：`TestHashPasswordVerifies`（含 cost 12）、`TestHashPasswordIsSalted`、`TestHashPasswordRejectsEmpty`、
-      `TestVerifyPasswordRejectsBrokenHash`。`api`：`TestLoginIssuesUsableToken`（登入 token 打得到 `/api/devices`）、
+      `TestVerifyPasswordRejectsBrokenHash`、`TestHashPasswordRejectsTooLong`、`TestVerifyPasswordEmptyHashStillCosts`。`api`：`TestLoginIssuesUsableToken`（登入 token 打得到 `/api/devices`）、
       `TestLoginRejectsWrongPassword`、`TestLoginRejectsUnknownEmail`、`TestLoginRejectsAccountWithoutPassword`、
       `TestLoginDisabledAccount`（並驗證密碼錯時仍是 401）、`TestLoginRejectsMalformedRequests`（含 128 KiB body）、
       `TestTokenRoutesAllowOwnTokens`（本人 200 / 別人 403 / 窄 scope 403 / 自己發 token 403）、
-      `TestUpdateUserSetsPassword`、`TestUpdateUserRejectsEmptyPassword`。`postgres`：`TestUserPasswordIntegration`，
+      `TestUpdateUserSetsPassword`、`TestUpdateUserRejectsEmptyPassword`、`TestUpdateUserRejectsLongPassword`。`postgres`：`TestUserPasswordIntegration`，
       需要 `TRACCAR_POSTGRES_DSN`，本機沒有 DB 所以這裡只跑到 skip，列為未實測。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `openrouter/OpenRouter 寫Code/x-ai/grok-4.7` at the PR head, per the boot recipe.

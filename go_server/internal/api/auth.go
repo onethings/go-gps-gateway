@@ -80,12 +80,6 @@ func writeUnauthorized(w http.ResponseWriter) {
 	writeError(w, http.StatusUnauthorized, errors.New("invalid API key"))
 }
 
-// noSuchAccount is a bcrypt hash of a throwaway string. A login for an unknown
-// email is checked against it so that a missing account costs the same as a
-// wrong password; without it the response time alone would list the addresses
-// that have accounts.
-const noSuchAccount = "$2a$12$wJXE5CCFMZPhdi3vmddmQu8CYgiF8I7MYaMTkxcBVji9wXYhPNBf."
-
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -119,7 +113,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	credential, err := s.users.CredentialByEmail(ctx, email)
 	if errors.Is(err, model.ErrUserNotFound) {
-		auth.VerifyPassword(noSuchAccount, request.Password)
+		// An empty hash costs the same as a real one, so an unknown address and
+		// a wrong password take the same time to answer.
+		auth.VerifyPassword("", request.Password)
 		writeError(w, http.StatusUnauthorized, errors.New("invalid email or password"))
 		return
 	}
@@ -128,8 +124,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
-	// An account that never had a password has an empty hash here and fails
-	// exactly the way a wrong password does.
+	// An account that never had a password has an empty hash, which VerifyPassword
+	// charges one bcrypt for, so it answers like a wrong password.
 	if !auth.VerifyPassword(credential.PasswordHash, request.Password) {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid email or password"))
 		return

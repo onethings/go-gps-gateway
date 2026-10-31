@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -52,6 +53,31 @@ func TestHashPasswordIsSalted(t *testing.T) {
 func TestHashPasswordRejectsEmpty(t *testing.T) {
 	if _, err := HashPassword(""); !errors.Is(err, ErrEmptyPassword) {
 		t.Fatalf("err = %v, want %v", err, ErrEmptyPassword)
+	}
+}
+
+// TestVerifyPasswordEmptyHashStillCosts guards the login timing property: an
+// account with no password must not answer faster than a wrong password, or the
+// response time lists every account that has none. The threshold is far below
+// one bcrypt at cost 12 and far above a bare return.
+func TestVerifyPasswordEmptyHashStillCosts(t *testing.T) {
+	start := time.Now()
+	if VerifyPassword("", "anything") {
+		t.Fatal("VerifyPassword accepted an empty hash")
+	}
+	if elapsed := time.Since(start); elapsed < 5*time.Millisecond {
+		t.Errorf("empty hash answered in %s, so the bcrypt was skipped", elapsed)
+	}
+}
+
+func TestHashPasswordRejectsTooLong(t *testing.T) {
+	// bcrypt only reads the first 72 bytes, so a longer password has to be
+	// refused rather than silently cut down to a shorter one.
+	if _, err := HashPassword(strings.Repeat("a", 72)); err != nil {
+		t.Fatalf("72 bytes should be accepted: %v", err)
+	}
+	if _, err := HashPassword(strings.Repeat("a", 73)); !errors.Is(err, ErrPasswordTooLong) {
+		t.Fatalf("73 bytes: err = %v, want %v", err, ErrPasswordTooLong)
 	}
 }
 

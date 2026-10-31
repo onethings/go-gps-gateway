@@ -775,6 +775,22 @@ func TestUpdateUserRejectsEmptyPassword(t *testing.T) {
 	}
 }
 
+func TestUpdateUserRejectsLongPassword(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, "alice@example.test"))
+	handler := adminUsersHandler(store, nil)
+
+	// bcrypt stops at 72 bytes, so a longer password is a bad request rather
+	// than a server error.
+	recorder := apiRequest(t, handler, http.MethodPut, "/api/users/1",
+		`{"password":"`+strings.Repeat("a", 73)+`"}`, testAdminKey)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", recorder.Code, recorder.Body)
+	}
+	if store.passwords[1] != "" {
+		t.Error("an over-long password was stored")
+	}
+}
+
 func TestTokenRoutesAllowOwnTokens(t *testing.T) {
 	store := newFakeUsers(sampleUser(1, "alice@example.test"), sampleUser(2, "bob@example.test"))
 	if _, _, err := store.IssueTokenForUser(context.Background(), 1,

@@ -292,7 +292,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var passwordHash string
 	if request.Password != nil {
 		hash, err := auth.HashPassword(*request.Password)
-		if errors.Is(err, auth.ErrEmptyPassword) {
+		if errors.Is(err, auth.ErrEmptyPassword) || errors.Is(err, auth.ErrPasswordTooLong) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}

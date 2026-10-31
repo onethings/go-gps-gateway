@@ -237,3 +237,40 @@ func TestEncodePositionPeriodic(t *testing.T) {
 		t.Errorf("payload = %x, want %x", payload, want)
 	}
 }
+
+// TestDecodeAlarmModels pins the padlock, AOVX and VL300 alarm branches. The
+// generic bits mean something else on those devices.
+func TestDecodeAlarmModels(t *testing.T) {
+	decoder := NewDecoder(Base())
+
+	for _, tc := range []struct {
+		name  string
+		value uint32
+		model string
+		want  []string
+	}{
+		{"sos", 1 << 0, "", []string{model.AlarmSOS}},
+		{"padlock removing", 1 << 4, "G-360P", []string{model.AlarmRemoving}},
+		{"padlock tampering", 1 << 1, "G-508P", []string{model.AlarmTampering}},
+		{"padlock bit0 is removing", 1 << 0, "G-360P", []string{model.AlarmRemoving}},
+		{"aovx movement", 1 << 16, "AL300", []string{model.AlarmMovement}},
+		{"aovx ignores overspeed", 1 << 1, "GL100", nil},
+		{"generic accident", 1 << 29, "", []string{model.AlarmAccident}},
+		{"vl300 drops accident", 1 << 29, "VL300", nil},
+		{"lower case model", 1 << 16, "al300", []string{model.AlarmMovement}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			position := model.NewPosition(ProtocolName)
+			decoder.decodeAlarm(position, tc.value, tc.model)
+
+			if len(position.Alarms) != len(tc.want) {
+				t.Fatalf("alarms = %v, want %v", position.Alarms, tc.want)
+			}
+			for i, want := range tc.want {
+				if position.Alarms[i] != want {
+					t.Errorf("alarm %d = %q, want %q", i, position.Alarms[i], want)
+				}
+			}
+		})
+	}
+}

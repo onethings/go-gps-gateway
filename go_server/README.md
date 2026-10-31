@@ -753,7 +753,8 @@ scrape_configs:
   類型與管道：email 收件者是帳號 email，webhook 仍共用 `-notify-webhook` 的 URL。門檻可用
   裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
 - 圍欄只能以 SQL 維護，且對所有裝置生效；`alerts.position_id` 目前是 NULL（見上節）。
-- `devices.model` 只寫不讀，車型相關的協議分支（GT06 `NT_MODELS`、JT808 門磁/撞擊）尚未啟用。
+- `devices.model` 會被讀取，但只在解讀告警碼時。GT06 的 `LW*` / `SEEWORLD` / `VL103` `LL303` `VL512` `G18` 與 JT808 的 `G-360P` `G-508P` `AL300` `GL100` `VL300` 各走自己的分支，其餘照通用規則；比對前統一轉大寫。
+  model 在裝置登入解析 session 時讀出並跟著連線走，所以改 model 要重連才生效。GT06 `NT_MODELS` 的 LBS2 / DRIVER 版面差異（Java 的 `modelNT`）還沒開，它改的是整段訊息佈局，不是只換告警名稱。
 - 報表等其餘業務層仍是 Java 版負責。
 - 記憶體目錄僅適合開發；正式環境請用 `-dsn`。
 

@@ -184,7 +184,7 @@ func (d *Decoder) generalResponse(h *header) []byte {
 func (d *Decoder) decodeLocation(session *codec.DeviceSession, buf *helper.Buffer) *model.Position {
 	position := d.newPosition(session)
 
-	d.decodeAlarm(position, buf.ReadUnsignedInt())
+	d.decodeAlarm(position, buf.ReadUnsignedInt(), session.Model)
 
 	status := uint32(buf.ReadInt())
 	position.Set(model.KeyIgnition, bitSet(status, 0))
@@ -275,7 +275,32 @@ func (d *Decoder) decodeExtensions(position *model.Position, buf *helper.Buffer)
 	}
 }
 
-func (d *Decoder) decodeAlarm(position *model.Position, value uint32) {
+// padlockModels and aovxModels branch the alarm bits, which mean something
+// else on those devices. Java compares the raw device model, and upper casing
+// both sides keeps a lower case row working the same way.
+var (
+	padlockModels = map[string]bool{"G-360P": true, "G-508P": true}
+	aovxModels    = map[string]bool{"AL300": true, "GL100": true}
+)
+
+func (d *Decoder) decodeAlarm(position *model.Position, value uint32, deviceModel string) {
+	upper := strings.ToUpper(deviceModel)
+	switch {
+	case padlockModels[upper]:
+		if bitSet(value, 0) || bitSet(value, 4) {
+			position.AddAlarm(model.AlarmRemoving)
+		}
+		if bitSet(value, 1) {
+			position.AddAlarm(model.AlarmTampering)
+		}
+		return
+	case aovxModels[upper]:
+		if bitSet(value, 16) {
+			position.AddAlarm(model.AlarmMovement)
+		}
+		return
+	}
+
 	if bitSet(value, 0) {
 		position.AddAlarm(model.AlarmSOS)
 	}
@@ -316,7 +341,9 @@ func (d *Decoder) decodeAlarm(position *model.Position, value uint32) {
 		position.AddAlarm(model.AlarmMovement)
 	}
 	if bitSet(value, 29) || bitSet(value, 30) {
-		position.AddAlarm(model.AlarmAccident)
+		if upper != "VL300" {
+			position.AddAlarm(model.AlarmAccident)
+		}
 	}
 }
 

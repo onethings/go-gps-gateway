@@ -169,17 +169,25 @@ func migrationVersion(name string) (int, error) {
 // Resolve implements codec.DeviceResolver. An unknown identifier yields a nil
 // session and a nil error, matching the interface contract.
 func (s *Store) Resolve(uniqueID string) (*codec.DeviceSession, error) {
-	var deviceID int64
+	var (
+		deviceID int64
+		model    *string
+	)
 	err := s.db.QueryRowContext(context.Background(),
-		`SELECT id FROM devices WHERE unique_id = $1`, uniqueID,
-	).Scan(&deviceID)
+		`SELECT id, model FROM devices WHERE unique_id = $1`, uniqueID,
+	).Scan(&deviceID, &model)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: resolve %q: %w", uniqueID, err)
 	}
-	return &codec.DeviceSession{DeviceID: deviceID, UniqueID: uniqueID}, nil
+
+	session := &codec.DeviceSession{DeviceID: deviceID, UniqueID: uniqueID}
+	if model != nil {
+		session.Model = *model
+	}
+	return session, nil
 }
 
 // UniqueID implements codec.UniqueIDProvider.

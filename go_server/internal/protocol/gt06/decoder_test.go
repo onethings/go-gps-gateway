@@ -183,3 +183,57 @@ func TestFrameDecoderExtended(t *testing.T) {
 		t.Fatalf("extended frame = %x, consumed = %d", got, consumed)
 	}
 }
+
+// TestDecodeAlarmModels pins the branches Gt06ProtocolDecoder switches on. The
+// same alarm byte means a different thing on an LW, SEEWORLD or VL device.
+func TestDecodeAlarmModels(t *testing.T) {
+	decoder := NewDecoder(Base())
+
+	for _, tc := range []struct {
+		value int
+		model string
+		want  string
+	}{
+		{0x09, "", model.AlarmVibration},
+		{0x09, "VL103", model.AlarmTow},
+		{0x18, "", model.AlarmRemoving},
+		{0x18, "LW12", model.AlarmAccident},
+		{0x19, "", model.AlarmLowBattery},
+		{0x19, "lw12", model.AlarmHardAcceleration},
+		{0x28, "", model.AlarmHardBraking},
+		{0x28, "SEEWORLD", model.AlarmHardCornering},
+		{0x28, "LL303", model.AlarmPowerOff},
+		{0x29, "", model.AlarmHardAcceleration},
+		{0x29, "seeworld", model.AlarmAccident},
+		{0x30, "", model.AlarmJamming},
+		{0x30, "G18", model.AlarmHardBraking},
+		{0x0C, "VL103", model.AlarmTampering},
+	} {
+		if got := decoder.decodeAlarm(tc.value, modelFlagsOf(tc.model)); got != tc.want {
+			t.Errorf("alarm %#02x on model %q = %q, want %q", tc.value, tc.model, got, tc.want)
+		}
+	}
+}
+
+// TestDecodePowerUsesModelFlags proves the model reaches the alarm byte
+// through the decode path, not only the mapping function.
+func TestDecodePowerUsesModelFlags(t *testing.T) {
+	decoder := NewDecoder(Base())
+
+	for _, tc := range []struct {
+		model string
+		want  string
+	}{
+		{"", model.AlarmVibration},
+		{"VL512", model.AlarmTow},
+	} {
+		position := model.NewPosition(ProtocolName)
+		buf := helper.NewBuffer([]byte{0x64, 0x1f, 0x09})
+
+		decoder.decodePower(position, buf, modelFlagsOf(tc.model))
+
+		if len(position.Alarms) != 1 || position.Alarms[0] != tc.want {
+			t.Errorf("model %q alarms = %v, want [%s]", tc.model, position.Alarms, tc.want)
+		}
+	}
+}

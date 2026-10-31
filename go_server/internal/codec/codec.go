@@ -16,6 +16,10 @@ import (
 type DeviceSession struct {
 	DeviceID int64
 	UniqueID string
+	// Model is the device model as stored on the device row. Protocols that
+	// change their decode path per model read it here. Empty when the device
+	// has no model set, which selects the generic path.
+	Model string
 }
 
 // DeviceResolver maps a device unique identifier (IMEI and friends) to a

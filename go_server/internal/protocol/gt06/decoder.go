@@ -3,6 +3,7 @@ package gt06
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 
@@ -177,7 +178,7 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 
 		if d.hasStatus(messageType) {
 			d.decodeStatus(position, buf)
-			d.decodePower(position, buf)
+			d.decodePower(position, buf, modelFlagsOf(session.Model))
 		}
 
 		result.AddPosition(position)
@@ -329,7 +330,7 @@ func (d *Decoder) decodeStatus(position *model.Position, buf *helper.Buffer) {
 
 // decodePower reads the battery level, RSSI and alarm nibble that follow the
 // status block.
-func (d *Decoder) decodePower(position *model.Position, buf *helper.Buffer) {
+func (d *Decoder) decodePower(position *model.Position, buf *helper.Buffer, flags modelFlags) {
 	battery := buf.ReadUnsignedByte()
 	if battery <= 6 {
 		position.Set(model.KeyBatteryLevel, battery*100/6)
@@ -339,13 +340,40 @@ func (d *Decoder) decodePower(position *model.Position, buf *helper.Buffer) {
 
 	position.Set(model.KeyRSSI, buf.ReadUnsignedByte())
 
-	if alarm := d.decodeAlarm(buf.ReadUnsignedByte()); alarm != "" {
+	if alarm := d.decodeAlarm(buf.ReadUnsignedByte(), flags); alarm != "" {
 		position.AddAlarm(alarm)
 	}
 }
 
+// modelFlags are the per model branches Gt06ProtocolDecoder switches on. They
+// change what the same alarm byte means, not how the frame is laid out.
+type modelFlags struct {
+	lw bool // model starts with LW
+	sw bool // model is SEEWORLD
+	vl bool // model is in vlModels
+}
+
+// vlModels are the models that repurpose several alarm bytes.
+var vlModels = map[string]bool{
+	"VL103": true,
+	"LL303": true,
+	"VL512": true,
+	"G18":   true,
+}
+
+// modelFlagsOf derives the branches from the device model. Java upper cases the
+// model before comparing, so a lower case row behaves the same here.
+func modelFlagsOf(model string) modelFlags {
+	upper := strings.ToUpper(model)
+	return modelFlags{
+		lw: strings.HasPrefix(upper, "LW"),
+		sw: upper == "SEEWORLD",
+		vl: vlModels[upper],
+	}
+}
+
 // decodeAlarm maps the device alarm byte, ported from Gt06ProtocolDecoder.
-func (d *Decoder) decodeAlarm(value int) string {
+func (d *Decoder) decodeAlarm(value int, flags modelFlags) string {
 	switch value {
 	case 0x01:
 		return model.AlarmSOS
@@ -360,6 +388,9 @@ func (d *Decoder) decodeAlarm(value int) string {
 	case 0x06:
 		return model.AlarmOverspeed
 	case 0x09:
+		if flags.vl {
+			return model.AlarmTow
+		}
 		return model.AlarmVibration
 	case 0x0E, 0x0F:
 		return model.AlarmLowBattery
@@ -370,8 +401,14 @@ func (d *Decoder) decodeAlarm(value int) string {
 	case 0x14:
 		return model.AlarmDoor
 	case 0x18:
+		if flags.lw {
+			return model.AlarmAccident
+		}
 		return model.AlarmRemoving
 	case 0x19:
+		if flags.lw {
+			return model.AlarmHardAcceleration
+		}
 		return model.AlarmLowBattery
 	case 0x1A, 0x27, 0xF1:
 		return model.AlarmHardBraking
@@ -382,12 +419,24 @@ func (d *Decoder) decodeAlarm(value int) string {
 	case 0x26, 0xF0:
 		return model.AlarmHardAcceleration
 	case 0x28:
+		if flags.sw {
+			return model.AlarmHardCornering
+		}
+		if flags.vl {
+			return model.AlarmPowerOff
+		}
 		return model.AlarmHardBraking
 	case 0x29:
+		if flags.sw {
+			return model.AlarmAccident
+		}
 		return model.AlarmHardAcceleration
 	case 0x2C, 0xF2:
 		return model.AlarmAccident
 	case 0x30:
+		if flags.vl {
+			return model.AlarmHardBraking
+		}
 		return model.AlarmJamming
 	case 0x33:
 		return model.AlarmLock

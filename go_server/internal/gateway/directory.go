@@ -31,6 +31,7 @@ type MemoryDirectory struct {
 	mu         sync.RWMutex
 	byUniqueID map[string]int64
 	byID       map[int64]string
+	models     map[string]string
 	nextID     int64
 }
 
@@ -39,6 +40,7 @@ func NewMemoryDirectory() *MemoryDirectory {
 	return &MemoryDirectory{
 		byUniqueID: make(map[string]int64),
 		byID:       make(map[int64]string),
+		models:     make(map[string]string),
 	}
 }
 
@@ -73,7 +75,20 @@ func (d *MemoryDirectory) Resolve(uniqueID string) (*codec.DeviceSession, error)
 	if !ok {
 		return nil, nil
 	}
-	return &codec.DeviceSession{DeviceID: id, UniqueID: uniqueID}, nil
+	return &codec.DeviceSession{DeviceID: id, UniqueID: uniqueID, Model: d.models[uniqueID]}, nil
+}
+
+// SetModel stores the model reported for a device. It exists for tests and for
+// the database-less setup, where nothing else can edit the device row.
+func (d *MemoryDirectory) SetModel(uniqueID, model string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if _, ok := d.byUniqueID[uniqueID]; !ok {
+		return ErrUnknownDevice
+	}
+	d.models[uniqueID] = model
+	return nil
 }
 
 // UniqueID implements codec.UniqueIDProvider.

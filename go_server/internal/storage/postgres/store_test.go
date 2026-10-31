@@ -167,6 +167,17 @@ func TestStoreIntegration(t *testing.T) {
 	if err != nil || session == nil || session.DeviceID != deviceID {
 		t.Fatalf("resolve = %+v, err = %v", session, err)
 	}
+	if session.Model != "" {
+		t.Errorf("model of a new device = %q, want empty", session.Model)
+	}
+
+	if _, err := store.UpdateDevice(ctx, deviceID, model.DeviceUpdate{Model: "VL103"}); err != nil {
+		t.Fatalf("update model: %v", err)
+	}
+	session, err = store.Resolve(uniqueID)
+	if err != nil || session == nil || session.Model != "VL103" {
+		t.Fatalf("resolve after model update = %+v, err = %v", session, err)
+	}
 	if resolvedID, err := store.UniqueID(deviceID); err != nil || resolvedID != uniqueID {
 		t.Fatalf("unique id = %q, err = %v", resolvedID, err)
 	}

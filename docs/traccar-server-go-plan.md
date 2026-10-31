@@ -139,20 +139,20 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Files.**
 
-- [ ] Edit `go_server/internal/codec/codec.go`.
-- [ ] Edit `go_server/internal/gateway/directory.go`.
-- [ ] Edit `go_server/internal/storage/postgres/store.go`.
-- [ ] Edit `go_server/internal/protocol/gt06/decoder.go`.
-- [ ] Edit `go_server/internal/protocol/jt808/decoder.go`.
-- [ ] Edit `go_server/internal/protocol/gt06/decoder_test.go`.
-- [ ] Edit `go_server/internal/protocol/jt808/decoder_test.go`.
+- [x] Edit `go_server/internal/codec/codec.go`.
+- [x] Edit `go_server/internal/gateway/directory.go`.
+- [x] Edit `go_server/internal/storage/postgres/store.go`.
+- [x] Edit `go_server/internal/protocol/gt06/decoder.go`.
+- [x] Edit `go_server/internal/protocol/jt808/decoder.go`.
+- [x] Edit `go_server/internal/protocol/gt06/decoder_test.go`.
+- [x] Edit `go_server/internal/protocol/jt808/decoder_test.go`.
 
 **Build.**
 
-- [ ] `codec.DeviceSession` 加 `Model` 欄位。`gateway.MemoryDirectory.Resolve`、`postgres.Store.Resolve` 與 `gateway.Server` 自動註冊那一條路徑一起填它，自動註冊的裝置 model 先留空。
-- [ ] `gt06.Decoder.decodeGPS` 用 `session.Model` 走 Java `Gt06ProtocolDecoder` 的 `modelNT` 與 `modelVL` 分支。
-- [ ] `jt808.Decoder.decodeAlarm` 改成收 model，照 Java 的 `PADLOCK_MODELS` 與 `AOVX_MODELS` 與 `VL300` 三條分支走。
-- [ ] model 一律先轉大寫再比對，跟 Java 的 `toUpperCase(Locale.ROOT)` 對齊。
+- [x] `codec.DeviceSession` 加 `Model` 欄位。`gateway.MemoryDirectory.Resolve`、`postgres.Store.Resolve` 與 `gateway.Server` 自動註冊那一條路徑一起填它，自動註冊的裝置 model 先留空。
+- [x] `gt06.Decoder.decodePower` 收 `session.Model` 推出的 LW / SEEWORLD / VL 旗標，照 Java `Gt06ProtocolDecoder.decodeAlarm` 的模型分支決定告警名稱。`modelNT` 的 LBS2 / DRIVER 版面差異不在這支 PR，記在附錄 C。
+- [x] `jt808.Decoder.decodeAlarm` 改成收 model，照 Java 的 `PADLOCK_MODELS` 與 `AOVX_MODELS` 與 `VL300` 三條分支走。
+- [x] model 一律先轉大寫再比對，跟 Java 的 `toUpperCase(Locale.ROOT)` 對齊。
 
 **You see.**
 
@@ -161,7 +161,7 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] 兩個 decoder 的測試各加一組 table，涵蓋 PADLOCK、AOVX、VL300、`NT26`、空字串與小寫輸入。跑 `go test ./internal/protocol/... ./internal/gateway/...`。
+- [x] 兩個 decoder 的測試各加一組 table，涵蓋 PADLOCK、AOVX、VL300、`NT26`、空字串與小寫輸入。跑 `go test ./internal/protocol/... ./internal/gateway/...`。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `openrouter/OpenRouter 寫Code/x-ai/grok-4.7` at the PR head, per the boot recipe.
 
@@ -172,16 +172,16 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 - [ ] Lane 5. JT808 model 設 `AL300`，alarm bit 16。Save `lane-5.log`. Pass when alarms 出現 movement。
 - [ ] Lane 6. JT808 model 設 `VL300`，alarm bit 29。Save `lane-6.log`. Pass when alarms 沒有 accident，同一幀換成空 model 會出現 accident。
 - [ ] Lane 7. JT808 model 是小寫 `al300`。Save `lane-7.log`. Pass when 結果與大寫相同。
-- [ ] Lane 8. 用 `PUT /api/devices/{id}` 把 model 改成 `G-508P`，不重連。Save `lane-8.log`. Pass when 下一次上報就走 padlock 分支，這靠 `-device-refresh 1s`。
+- [ ] Lane 8. 用 `PUT /api/devices/{id}` 把 model 改成 `G-508P`，斷線重連後再上報。Save `lane-8.log`. Pass when 重連後那一幀走 padlock 分支。session 在登入時解析，model 不會套用到已建立的連線。
 - [ ] Lane 9. model 是未知名稱 `ZZ999`。Save `lane-9.log`. Pass when 走通用分支且不報錯。
 - [ ] Lane 10. 200 台混 5 種 model 同時上報 10 分鐘。Save `lane-10.log`. Pass when `decode_errors` 是 0、每台 device_id 穩定、`positions` 筆數等於送出筆數。
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `BenchmarkDecodeGT06` 與 `BenchmarkDecodeJT808` 的 ns/op 與 allocs/op。
-- [ ] Probe. `go test ./internal/protocol/gt06 ./internal/protocol/jt808 -bench Decode -benchtime 5s -count 5`，trunk 與 head 交錯。
-- [ ] Baseline. 先記 trunk 的兩個 ns/op 值，PR-1 的 benchmark 已在 trunk 上。
-- [ ] Rule. head 比 trunk 慢超過 5% 就失敗，allocs/op 上升也算失敗。
+- [x] Metric. `BenchmarkDecodeGT06` 與 `BenchmarkDecodeJT808` 的 ns/op 與 allocs/op。
+- [x] Probe. `go test ./internal/protocol/gt06 ./internal/protocol/jt808 -bench Decode -benchtime 5s -count 5`，trunk 與 head 交錯。
+- [x] Baseline. 先記 trunk 的兩個 ns/op 值，PR-1 的 benchmark 已在 trunk 上。
+- [x] Rule. head 比 trunk 慢超過 5% 就失敗，allocs/op 上升也算失敗。 實測 trunk 中位數 2,343 ns，head 2,310 ns，allocs 兩邊都是 9。
 
 **Review gate.** None. PR-2 is not review-gated.
 
@@ -345,6 +345,8 @@ PR-1 的 benchmark 是後續三支 PR 的 perf 基準，如果它本身的量測
 PR-2 風險在 Java fixture 的解讀，尤其是 `NT26` 那條分支改動哪個欄位。owner 要看的是與 `Gt06ProtocolDecoderTest` 的逐欄比對。
 PR-3 風險是 bcrypt 拖慢 login，以及 migration 0006 在舊資料上的相容。owner 要看的是 lane 5 與 perf 格。
 PR-4 風險是 ACK 對不上請求，JT808 的回應沒有序號可以配對，可能要用時間窗配對。owner 要看的是 lane 4 與 lane 5 在同一時間窗內只影響一列。
+PR-2 刻意不搬 GT06 的 `modelNT` 分支。它改的是 `MSG_GPS_LBS_2` 與 `MSG_GPS_LBS_DRIVER` 的欄位佈局，散在 Java 的 LBS 解碼段裡，混進告警名稱的 PR 會讓兩件事的驗證糾在一起。它需要自己的 PR 與自己的 lane。
+
 偏差一，lane 的產物是 `.log` 與 SQL 輸出，不是 `.png`，因為這個服務沒有 GUI。偏差二，`git show origin/main:` 的讀法在 repo 尚未 vendor pstack 前不成立。偏差三，PR-1 執行時所在的沙箱禁止 bind TCP port，gateway 起不來，所以 unit 與 perf 兩格有實測值，live 十格改在 operator 的機器上跑。
 
 ## Appendix D. Links and reading list

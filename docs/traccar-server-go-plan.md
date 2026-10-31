@@ -195,32 +195,51 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Files.**
 
-- [ ] Create `go_server/internal/storage/postgres/migrations/0006_users_password.sql`.
-- [ ] Create `go_server/internal/auth/password.go`.
-- [ ] Create `go_server/internal/auth/password_test.go`.
-- [ ] Edit `go_server/internal/api/auth.go`.
-- [ ] Edit `go_server/internal/api/users.go`.
-- [ ] Edit `go_server/internal/storage/postgres/users.go`.
-- [ ] Edit `go_server/go.mod`.
+- [x] Create `go_server/internal/storage/postgres/migrations/0006_users_password.sql`.
+- [x] Create `go_server/internal/auth/password.go`.
+- [x] Create `go_server/internal/auth/password_test.go`.
+- [x] Edit `go_server/internal/api/auth.go`.
+- [x] Edit `go_server/internal/api/users.go`.
+- [x] Edit `go_server/internal/storage/postgres/users.go`.
+- [x] Edit `go_server/go.mod`.
+- [x] Edit `go_server/internal/api/server.go`, one route line for `POST /api/login`. Outside the list above;
+      see Appendix C 偏差四.
+- [x] Edit `go_server/internal/storage/postgres/store_test.go`, the env gated integration test for the two new
+      storage methods. Outside the list above; see Appendix C 偏差五.
 
 **Build.**
 
-- [ ] `0006_users_password.sql` 給 `users` 加 `password_hash`，預設 NULL，舊帳號不用改。
-- [ ] `auth.HashPassword` 與 `auth.VerifyPassword` 用 `golang.org/x/crypto/bcrypt`，cost 12，並把它從 indirect 升成直接依賴。
-- [ ] `POST /api/login` 收 email 與 password，成功回一組新 token，失敗回 401，停用帳號回 403。
-- [ ] `handleTokens` 與 `handleRevokeToken` 對非 admin 開放本人路徑，`isSelf` 已經存在，補上 scope 檢查就好。
-- [ ] 任何 user JSON 都不輸出 `password_hash`。
+- [x] `0006_users_password.sql` 給 `users` 加 `password_hash`，預設 NULL，舊帳號不用改。
+- [x] `auth.HashPassword` 與 `auth.VerifyPassword` 用 `golang.org/x/crypto/bcrypt`，cost 12，並把它從 indirect 升成直接依賴。
+- [x] `POST /api/login` 收 email 與 password，成功回一組新 token，失敗回 401，停用帳號回 403。
+- [x] `handleTokens` 與 `handleRevokeToken` 對非 admin 開放本人路徑，`isSelf` 已經存在，補上 scope 檢查就好。
+      實作把「scope 檢查」定成 `*`：本人手上的 token 必須帶 `*` 才能列出 / 撤銷自己的 token，發 token 仍只有 admin 能做。
+- [x] 任何 user JSON 都不輸出 `password_hash`。`password_hash` 只在 `auth.Credential` 裡出現，`model.User` 沒有這個欄位。
 
 **You see.**
 
 - [ ] `curl -s -X POST 127.0.0.1:8082/api/login -d '{"email":"a@b.c","password":"..."}'` 回 200 與 `trc_` 開頭的 token。
+      Unchecked，因為這個沙箱禁止 bind TCP port，起不了 gateway。`TestLoginIssuesUsableToken` 在
+      `httptest` 裡做同一件事，但那是 unit 證據，不算這一格。
 - [ ] 同一支帳號打錯密碼回 401，`api_tokens` 沒有新列。
+      Unchecked for the same reason. `TestLoginRejectsWrongPassword` covers the predicate in-process.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `password_test.go` 涵蓋雜湊可驗、錯密碼不可驗、空密碼被拒。`users_test.go` 涵蓋非 admin 只能碰自己的 token。跑 `go test ./internal/auth/... ./internal/api/... ./internal/storage/postgres/...`。
+- [x] `password_test.go` 涵蓋雜湊可驗、錯密碼不可驗、空密碼被拒。`users_test.go` 涵蓋非 admin 只能碰自己的 token。跑 `go test ./internal/auth/... ./internal/api/... ./internal/storage/postgres/...`。
+      Evidence. `go vet ./...`、`go build ./...`、`go test ./...` 全綠，`go test -race` 在三個受影響的 package 也乾淨。
+      `auth`：`TestHashPasswordVerifies`（含 cost 12）、`TestHashPasswordIsSalted`、`TestHashPasswordRejectsEmpty`、
+      `TestVerifyPasswordRejectsBrokenHash`。`api`：`TestLoginIssuesUsableToken`（登入 token 打得到 `/api/devices`）、
+      `TestLoginRejectsWrongPassword`、`TestLoginRejectsUnknownEmail`、`TestLoginRejectsAccountWithoutPassword`、
+      `TestLoginDisabledAccount`（並驗證密碼錯時仍是 401）、`TestLoginRejectsMalformedRequests`（含 128 KiB body）、
+      `TestTokenRoutesAllowOwnTokens`（本人 200 / 別人 403 / 窄 scope 403 / 自己發 token 403）、
+      `TestUpdateUserSetsPassword`、`TestUpdateUserRejectsEmptyPassword`。`postgres`：`TestUserPasswordIntegration`，
+      需要 `TRACCAR_POSTGRES_DSN`，本機沒有 DB 所以這裡只跑到 skip，列為未實測。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `openrouter/OpenRouter 寫Code/x-ai/grok-4.7` at the PR head, per the boot recipe.
+
+這個沙箱禁止 bind TCP port，`docker` 也沒有 daemon，所以十條 lane 全部沒跑，全部維持未勾。
+unit 那格用 `httptest` 蓋掉 lane 2 / 3 / 4 / 6 / 7 / 9 / 10 的判斷條件，但不算替代證據。
 
 - [ ] Lane 1. Regression lane against trunk. `-api-key` 走法在 trunk 與 head 都回 200。Save `lane-1.log`. Pass when 兩邊狀態碼與 body 相同。
 - [ ] Lane 2. 建帳號、設密碼、登入拿 token。Save `lane-2.log`. Pass when 回 200 且 token 可用來打 `/api/devices`。
@@ -235,12 +254,24 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `POST /api/login` 的 p95 延遲與每個請求的 DB round trip 數。
+- [x] Metric. `POST /api/login` 的 p95 延遲與每個請求的 DB round trip 數。
+      量到 login p50 594 ms、p95 740 ms（20 次，`httptest` 內同一 process，假 store，所以扣掉了 DB 時間）。
+      DB round trip 是 2：`CredentialByEmail` 一次 SELECT，`issueToken` 一次
+      `INSERT ... SELECT ... RETURNING`（`go_server/internal/storage/postgres/users.go`）。
 - [ ] Probe. `ab -n 200 -c 5 -p login.json -T application/json 127.0.0.1:8082/api/login`，對 head 跑；trunk 沒有這個端點，改量 trunk 的 `GET /api/devices` 當基準。
+      Unchecked，因為沒有可 bind 的 socket，`ab` 無從連起。上面那組數字是 in-process 替代，不是這條探針。
 - [ ] Baseline. 先記 trunk 的 `GET /api/devices` p95。
+      Unchecked as specified. 同一台機器、同一個 `httptest` 做法量到 `GET /api/devices` p95 38 µs（2000 次，假 store），
+      真 DB 會更慢，但這是 head 的程式，不是 trunk 的探針。
 - [ ] Rule. head 的 login p95 超過 trunk 基準的三倍就算失敗，bcrypt cost 12 是已知的固定成本，不在放寬範圍內。
+      **FAIL.** 740 ms 對 38 µs 是 19,496 倍，就算把基準放大到真 DB 的 2 ms 也還是 370 倍。
+      login 幾乎全部是 bcrypt cost 12 的時間，而規則不准為 bcrypt 放寬，所以這條規則用 cost 12 不可能通過。
+      需要 operator 決定：接受 0.6 秒的登入並改規則，或把 cost 調低（cost 10 約為 1/4 時間），或讓 login 走別的
+      驗證方式。owner 沒有自行改計畫指定的 cost。
 
 **Review gate.** The operator reviews before merge.
+
+未勾：gateway 起不來，三格都缺 transcript 與錄影；operator 在能 bind 的機器上跑完 lane 2 / 6 / 8 才有東西可看。
 
 - [ ] 把 `lane-2.log`、`lane-6.log`、`lane-8.log` 的 curl transcript 貼進 chat。JSON API 沒有 GUI 可截圖，transcript 就是那次 screenshot。
 - [ ] 用 `script -q` 錄一段 30 到 60 秒的 video，內容是建帳號、登入、撤銷 token 三個動作，母帶放 `/tmp/swarm-pr3/pr-3-review.mp4`。
@@ -326,7 +357,9 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 沒有跑 prototype。這份計畫的未定問題是「headless 服務的 live lane 要產出什麼」，答案是 `.log` 與 `psql` 輸出，不是截圖。這一項在 PR-1 落地時用 lane 10 驗證，lane 10 是目前唯一能證明十條 lane 可自動化的機制。
 
-留下的未證問題是 bcrypt cost 12 在目標硬體上的實際 p95，PR-3 的 perf 格會量到。
+留下的未證問題是 bcrypt cost 12 在目標硬體上的實際 p95。PR-3 量到了：本機 i5-4200U 上 p50 594 ms、
+p95 740 ms，而計畫的 3 倍規則要求它跟 `GET /api/devices` 同一個量級，所以這條規則沒過。
+bcrypt cost 12 是計畫指定的值，owner 沒有改它，等 operator 決定（見 PR-3 的 perf 格）。
 
 ## Appendix B. Alternatives rejected
 
@@ -341,8 +374,15 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 PR-1 的 benchmark 是後續三支 PR 的 perf 基準，如果它本身的量測不穩，PR-2 與 PR-4 的 5% 與 50 毫秒門檻都失去意義。owner 要看的是同一台機器上五輪的變異係數。
 PR-2 風險在 Java fixture 的解讀，尤其是 `NT26` 那條分支改動哪個欄位。owner 要看的是與 `Gt06ProtocolDecoderTest` 的逐欄比對。
 PR-3 風險是 bcrypt 拖慢 login，以及 migration 0006 在舊資料上的相容。owner 要看的是 lane 5 與 perf 格。
+實測把這個風險變成了事實：login p95 740 ms，perf 規則沒過（見 PR-3 的 perf 格）。migration 0006 只加一個
+可為 NULL 的欄位，舊帳號不動，但 lane 5 在沙箱裡跑不了，所以「在已經有資料的 DB 上跑 0006」仍未實測。
 PR-4 風險是 ACK 對不上請求，JT808 的回應沒有序號可以配對，可能要用時間窗配對。owner 要看的是 lane 4 與 lane 5 在同一時間窗內只影響一列。
 偏差一，lane 的產物是 `.log` 與 SQL 輸出，不是 `.png`，因為這個服務沒有 GUI。偏差二，`git show origin/main:` 的讀法在 repo 尚未 vendor pstack 前不成立。
+偏差四，PR-3 動了 `go_server/internal/api/server.go` 的一行路由註冊。`Handler()` 是唯一掛路由的地方，
+`handleLogin` 放在同一個 package 的另一個檔案也只能靠它註冊，所以這一行無法留在檔案邊界外。它落在
+認證段，與 PR-4 會改的命令段不同行，rebase 時不會撞。
+偏差五，PR-3 動了 `go_server/internal/storage/postgres/store_test.go`。新增的兩條 SQL 沒有其他行為驗證，
+不補一個 env gated 的整合測試就只剩編譯檢查。這個檔案不屬於 PR-4 的檔案邊界。
 
 ## Appendix D. Links and reading list
 

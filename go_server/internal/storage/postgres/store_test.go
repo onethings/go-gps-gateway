@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/model"
 )
 
@@ -344,5 +345,76 @@ func TestDeviceStoreIntegration(t *testing.T) {
 	}
 	if err := store.DeleteDevice(ctx, created.ID); !errors.Is(err, model.ErrDeviceNotFound) {
 		t.Fatalf("second delete err = %v, want ErrDeviceNotFound", err)
+	}
+}
+
+// TestUserPasswordIntegration covers the password login storage path. Every
+// query in it selects users.password_hash, so it also proves migration 0006
+// ran against an existing database.
+func TestUserPasswordIntegration(t *testing.T) {
+	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+	}
+
+	ctx := context.Background()
+	store, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	email := "password-" + time.Now().Format("150405.000000") + "@example.test"
+	user, err := store.CreateUser(ctx, model.UserCreate{Email: email, Name: "Password Test"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.DB().ExecContext(ctx, `DELETE FROM users WHERE id = $1`, user.ID)
+	})
+
+	// A new account has no password, so its hash is empty rather than a value a
+	// blank login could satisfy.
+	credential, err := store.CredentialByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("credential: %v", err)
+	}
+	if credential.UserID != user.ID || credential.PasswordHash != "" || credential.Disabled {
+		t.Fatalf("credential = %+v", credential)
+	}
+
+	hash, err := auth.HashPassword("secret")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if err := store.SetPassword(ctx, user.ID, hash); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+	credential, err = store.CredentialByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("credential after set: %v", err)
+	}
+	if credential.PasswordHash != hash {
+		t.Errorf("stored hash does not match the hash that was set")
+	}
+	if !auth.VerifyPassword(credential.PasswordHash, "secret") {
+		t.Error("stored hash does not verify the password")
+	}
+
+	// The disable flag is what turns a correct password into a 403.
+	disabled := true
+	if _, err := store.UpdateUser(ctx, user.ID, model.UserUpdate{Disabled: &disabled}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	credential, err = store.CredentialByEmail(ctx, email)
+	if err != nil || !credential.Disabled {
+		t.Fatalf("credential after disable = %+v, err = %v", credential, err)
+	}
+
+	if _, err := store.CredentialByEmail(ctx, "nobody@example.test"); !errors.Is(err, model.ErrUserNotFound) {
+		t.Errorf("unknown email err = %v, want ErrUserNotFound", err)
+	}
+	if err := store.SetPassword(ctx, user.ID+1<<20, hash); !errors.Is(err, model.ErrUserNotFound) {
+		t.Errorf("unknown user err = %v, want ErrUserNotFound", err)
 	}
 }

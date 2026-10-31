@@ -3,17 +3,22 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"traccar-server_go/go_server/internal/auth"
+	"traccar-server_go/go_server/internal/model"
 )
 
 // exemptPaths stay reachable without a key so that liveness probes keep
-// working when authentication is enabled.
+// working when authentication is enabled, and so that a caller with no
+// credential at all can obtain one.
 var exemptPaths = map[string]struct{}{
 	"/api/health": {},
+	"/api/login":  {},
 }
 
 // TokenLookup resolves a hashed bearer token to a principal. The postgres store
@@ -73,6 +78,80 @@ func RequireAuth(apiKey string, tokens TokenLookup, logf func(string, ...any), n
 func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="traccar"`)
 	writeError(w, http.StatusUnauthorized, errors.New("invalid API key"))
+}
+
+// noSuchAccount is a bcrypt hash of a throwaway string. A login for an unknown
+// email is checked against it so that a missing account costs the same as a
+// wrong password; without it the response time alone would list the addresses
+// that have accounts.
+const noSuchAccount = "$2a$12$wJXE5CCFMZPhdi3vmddmQu8CYgiF8I7MYaMTkxcBVji9wXYhPNBf."
+
+type loginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// handleLogin trades an email and a password for a new bearer token. The route
+// is exempt from authentication because a caller without a credential has no
+// other way to get one.
+//
+// The issued token carries "*": password possession is the account's own
+// authority, the same way a Traccar session is. Account administration still
+// needs users.admin, which no scope grants.
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.usersConfigured(w) {
+		return
+	}
+
+	var request loginRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxUserBody)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
+		return
+	}
+	email := strings.TrimSpace(request.Email)
+	if !validEmail(email) || request.Password == "" {
+		writeError(w, http.StatusBadRequest, errors.New("email and password are required"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	credential, err := s.users.CredentialByEmail(ctx, email)
+	if errors.Is(err, model.ErrUserNotFound) {
+		auth.VerifyPassword(noSuchAccount, request.Password)
+		writeError(w, http.StatusUnauthorized, errors.New("invalid email or password"))
+		return
+	}
+	if err != nil {
+		s.logf("api: lookup credential of %q: %v", email, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+	// An account that never had a password has an empty hash here and fails
+	// exactly the way a wrong password does.
+	if !auth.VerifyPassword(credential.PasswordHash, request.Password) {
+		writeError(w, http.StatusUnauthorized, errors.New("invalid email or password"))
+		return
+	}
+	// Checked after the password so an unauthenticated caller cannot use the
+	// status code to learn which addresses have a disabled account.
+	if credential.Disabled {
+		writeError(w, http.StatusForbidden, errors.New("account is disabled"))
+		return
+	}
+
+	token, plaintext, err := s.users.IssueTokenForUser(ctx, credential.UserID, []string{string(auth.ScopeAll)}, nil)
+	if err != nil {
+		s.logf("api: issue login token for user %d: %v", credential.UserID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, tokenIssueResponse{
+		tokenResponse: newTokenResponse(*token),
+		Token:         plaintext,
+	})
 }
 
 // requestToken reads the credential from X-Api-Key or a Bearer header.

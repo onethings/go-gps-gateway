@@ -5,7 +5,7 @@
 
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
-- 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄
+- 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄 / 告警通知（webhook / email）
   - REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`、使用者 token / 裝置擁有權、
     帳號與 token 管理）全部可編譯、`go test ./...` 全綠。
 
@@ -23,6 +23,7 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                    ├─ LocationCache    每個裝置最後一筆定位（供心跳/參數訊息補齊）
                    └─ Sink              寫入管線
                         ├─ alert.Pipeline  規則評估 → alerts 批次落地
+                        │    └─ notify.Dispatcher  webhook / SMTP 通知（背景傳送）
                         └─ postgres.BatchSink  positions 批次落地
 
 client ──HTTP──▶ api.Server (RequireAuth)
@@ -52,6 +53,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/gateway`               | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                      |
 | `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                      |
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線                                                            |
+| `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、非阻塞傳送佇列                                                            |
 | `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands`、`/api/users`（帳號 / token / 裝置授權）；認證 / scope / 裝置擁有權 |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                  |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                               |
@@ -91,7 +93,8 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 `-device-refresh`（預設 5m，0 = 只在啟動時載入一次；每裝置門檻用的 attributes）、
 `-api-key`（預設讀 `TRACCAR_API_KEY`；空 = 只用資料庫 token 認證）、
 `-issue-token` / `-token-scopes` / `-token-ttl`（發 token 後結束，需要 `-dsn`）、
-`-allow-anonymous`（關閉 REST 認證，只給本機開發用）。
+`-allow-anonymous`（關閉 REST 認證，只給本機開發用）、
+`-notify-webhook` / `-notify-email-smtp` 等通知 flag（見「通知管道」）。
 
 ## 協議支援矩陣
 
@@ -236,6 +239,77 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
 - **去重視窗比的是伺服器時間**，不是裝置時間；設備一次補傳大量歷史資料時只會留下第一筆
   （這正是避免告警風暴的目的，但會看不到歷史區間內的每一筆）。
 - 圍欄狀態存在記憶體，重啟後每個裝置的第一筆 position 只做「播種」，不會補發 enter / exit。
+
+## 通知管道
+
+告警除了寫進 `alerts` 表，還可以推到 webhook 與 email。兩個管道共用同一份格式化內容：
+`alert.Pipeline` 每產生一筆告警就丟進 `notify.Dispatcher` 的佇列，傳送在背景 goroutine 進行，
+device 連線與資料庫寫入都不等網路。沒有設定任何 `-notify-*` 時整條路徑不會啟動；
+通知需要 `-dsn`（告警規則本身就要資料庫），記憶體模式只會印出「ignoring -notify-* flags」。
+
+伺服器層級設定：
+
+| Flag                                                | 說明                                                                                                       |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `-notify-webhook`                                   | webhook URL；空 = 關閉 webhook                                                                             |
+| `-notify-webhook-authorization`                     | 每個請求帶的完整 `Authorization` 值；空 = 不帶                                                             |
+| `-notify-email-smtp`                                | SMTP `host:port`；空 = 關閉 email                                                                          |
+| `-notify-email-from`                                | 寄件者；`-notify-email-smtp` 有值時必填                                                                    |
+| `-notify-email-to`                                  | 預設收件者（逗號分隔）；空 = 只用裝置的 `notifyEmail`                                                      |
+| `-notify-email-username` / `-notify-email-password` | SMTP AUTH；密碼預設讀 `TRACCAR_SMTP_PASSWORD`，使用者名稱空 = 不做 AUTH                                    |
+| `-notify-email-tls`                                 | `auto`（預設：465 用 implicit TLS，其餘伺服器有 STARTTLS 就升級）、`starttls`、`implicit`、`none`           |
+| `-notify-types`                                     | 只送這些告警類型（逗號分隔）；空 = 全部；`none` = 全關                                                     |
+| `-notify-timeout`                                   | 單次裝置查詢 / 傳送的上限，預設 10s                                                                        |
+| `-notify-queue`                                     | 等待傳送的告警上限，預設 256；滿了就丟棄並計數                                                             |
+
+每個裝置可以用 `devices.attributes` 覆寫（與門檻共用 `-device-refresh` 的更新週期）：
+
+| Attribute       | 說明                                                                             |
+| --------------- | -------------------------------------------------------------------------------- |
+| `notifyTypes`   | 這個裝置要送的類型（逗號分隔或 JSON 陣列）；`none` = 全關，`all` / `*` = 全部     |
+| `notifyWebhook` | 覆寫 webhook URL（可多個）；`false` 或空字串 = 這個裝置不送 webhook               |
+| `notifyEmail`   | 覆寫收件者（可多個）；`false` 或空字串 = 這個裝置不寄 email                       |
+
+`-notify-types` 先過濾，裝置的 `notifyTypes` 再收窄，所以裝置沒辦法打開全域關掉的類型。
+`notifyTypes` 寫成空字串與 `none` 同義。
+
+```sql
+-- 這個裝置只送斷電 / 復電，webhook 走另一個 endpoint，email 關掉
+UPDATE devices SET attributes = attributes || '{
+  "notifyTypes": "powerCut,powerRestored",
+  "notifyWebhook": "https://ops.example.com/hooks/traccar",
+  "notifyEmail": false
+}'::jsonb WHERE id = 7;
+```
+
+Webhook 的 body 固定為一份 JSON：
+
+```json
+{
+  "type": "deviceOverspeed",
+  "deviceId": 7,
+  "uniqueId": "864717003283581",
+  "deviceName": "van-7",
+  "protocol": "gt06",
+  "time": "2026-10-31T07:32:10Z",
+  "subject": "[traccar] deviceOverspeed: van-7 (864717003283581)",
+  "message": "Device: van-7 (864717003283581)\nType: deviceOverspeed\n...",
+  "attributes": { "speed": 31.5, "limit": 30 }
+}
+```
+
+只有 2xx 算成功；其餘狀態、連線錯誤或 SMTP 失敗都會寫進 log 並累計
+`traccar_notification_errors_total`。Email 是 `text/plain; charset=utf-8`，body 以 base64
+編碼、主旨依 RFC 2047 編碼，多個收件者共用同一次 SMTP 交易。
+
+已知取捨：
+
+- 通知設定只有**伺服器 + 裝置**兩層，沒有 Java 版的 `notifications` / `user_notifications`
+  表，所以不能依使用者訂閱；收件者寫在 flag 或 `devices.attributes`。
+- 裝置查詢失敗（資料庫暫時不可用）時仍會送出，只是主旨 / body 只帶 device id。
+- 佇列滿時直接丟棄，**不做重試**；`-notify-queue` 要留得下告警尖峰。
+- `-notify-email-tls auto` 遇到沒有 STARTTLS 的伺服器會以明文繼續（與 `net/smtp.SendMail`
+  相同）；正式環境請用 `starttls` 或 `implicit`。
 
 ## 認證與權限
 
@@ -472,8 +546,8 @@ go build ./...
 go vet ./...
 go test ./...                 # 全部（含 gateway 的 net.Pipe 端到端）
 go test ./internal/protocol/gt06 -run TestDecodeGPS -v
-go test ./internal/auth ./internal/geofence ./internal/alert ./internal/api -v
-go test -race ./internal/gateway ./internal/alert ./internal/api
+go test ./internal/auth ./internal/geofence ./internal/alert ./internal/api ./internal/notify -v
+go test -race ./internal/gateway ./internal/alert ./internal/api ./internal/notify
 ```
 
 - 加測試向量：把 Java `*ProtocolDecoderTest` 的 `binary("...")` 貼進來，
@@ -503,8 +577,9 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                       |
 | `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                              |
 | `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...` |
+| `notify.Dispatcher` log  | `notify: webhook, mail enabled`、`notify: <channel>: <err>`、`notify: lookup device <id>: <err>`、`notify: queue full, dropped <type> for device <id>`             |
 | `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: send command <type> to device <id>: <err>` |
-| CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`                                                                  |
+| CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`、`dropped <n> notifications because the queue was full`          |
 | `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                     |
 | 記憶體模式 sink          | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`）                                                                                                          |
 
@@ -518,6 +593,9 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 4. **有 position 但沒有告警** → 先確認 `-overspeed-knots` / `-power-cut-volts` 不是 0，
    再看規則的單位（節 / 伏特）；圍欄告警需要 `geofences` 表有資料且 `area` 能解析
    （解析失敗會印 `alerts: load geofences: ...`，該筆圍欄會被跳過，其他圍欄照常運作）。
+5. **有告警但沒收到通知** → 看 `notify: <channel>: ...` 與 `traccar_notification_errors_total`；
+   再確認 `-notify-types` 與裝置的 `notifyTypes` 沒有把它濾掉，裝置的 `notifyWebhook` /
+   `notifyEmail` 沒有被設成 `false`。
 
 `GET /metrics` 以 Prometheus 文字格式輸出（手寫實作，沒有額外依賴）：
 
@@ -534,6 +612,9 @@ traccar_db_write_seconds_count 431
 traccar_db_write_errors_total 0
 traccar_alerts_total{type="deviceOverspeed"} 4
 traccar_alert_dropped_total 0
+traccar_notifications_total{channel="webhook"} 2
+traccar_notification_errors_total{channel="mail"} 1
+traccar_notification_dropped_total 0
 ```
 
 `/metrics` 需要 `read:metrics`（舊的 `-api-key` 是 admin，自然可讀；只有 `/api/health` 免憑證），
@@ -549,7 +630,8 @@ scrape_configs:
 語義：`connections_active` 在連線建立 / 關閉時增減；`frames` / `positions` / `decode_errors`
 在解碼執行緒累加（無鎖，per-protocol 計數器在建構時就解析好）；`db_write_seconds`
 每次真正寫入觀測一次；`alerts_total` 在告警進入佇列時累加，佇列滿或已關閉時計入
-`alert_dropped_total`。
+`alert_dropped_total`；`notifications_total` / `notification_errors_total` 在每個管道成功 / 失敗時累加，
+`notification_dropped_total` 是通知佇列滿或 dispatcher 已關閉時丟棄的筆數。
 
 ## 已知限制
 
@@ -563,8 +645,8 @@ scrape_configs:
   裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
 - 命令只寫進設備連線，不等 ACK、不落地，也沒有 Java 版的 `commands` 表與派送佇列；
   `devices.protocol` 為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
-- 告警只有超速 / 斷電 / 復電 / 圍欄四類，沒有通知管道（email / webhook）；門檻可用裝置 /
-  圍欄 attributes 覆寫，但只能以 SQL 維護。
+- 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知只有 webhook 與 email 兩種，沒有使用者訂閱
+  （收件者由 flag 或裝置 attributes 決定）。門檻可用裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
 - 圍欄只能以 SQL 維護，且對所有裝置生效；`alerts.position_id` 目前是 NULL（見上節）。
 - `devices.model` 只寫不讀，車型相關的協議分支（GT06 `NT_MODELS`、JT808 門磁/撞擊）尚未啟用。
 - 報表等其餘業務層仍是 Java 版負責。
@@ -572,6 +654,6 @@ scrape_configs:
 
 ## 下一步
 
-1. 通知管道（email / webhook）。
+1. 通知的使用者訂閱（`notifications` / `user_notifications`），讓帳號自己選類型與管道。
 2. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
 3. 非 admin 的 token 自我管理（列出 / 撤銷自己的 token）與密碼登入。

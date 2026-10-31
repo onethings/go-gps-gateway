@@ -18,9 +18,10 @@ import (
 
 // smtpRecorder is a minimal SMTP server: just enough of the dialogue for
 // net/smtp to deliver one message, recording the envelope and the payload.
+// The connection is a net.Pipe because the test sandbox does not allow
+// listening sockets.
 type smtpRecorder struct {
-	listener net.Listener
-	done     chan struct{}
+	done chan struct{}
 
 	mu         sync.Mutex
 	from       string
@@ -28,37 +29,27 @@ type smtpRecorder struct {
 	data       []byte
 }
 
-func newSMTPRecorder(t *testing.T) *smtpRecorder {
+func startSMTPRecorder(t *testing.T) (*smtpRecorder, func(ctx context.Context) (net.Conn, error)) {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-
-	recorder := &smtpRecorder{listener: listener, done: make(chan struct{})}
-	go recorder.serve()
+	client, server := net.Pipe()
+	recorder := &smtpRecorder{done: make(chan struct{})}
+	go recorder.serve(server)
 
 	t.Cleanup(func() {
-		_ = listener.Close()
+		_ = client.Close()
 		select {
 		case <-recorder.done:
 		case <-time.After(2 * time.Second):
 			t.Error("smtp recorder did not stop")
 		}
 	})
-	return recorder
+
+	return recorder, func(context.Context) (net.Conn, error) { return client, nil }
 }
 
-func (r *smtpRecorder) address() string { return r.listener.Addr().String() }
-
-func (r *smtpRecorder) serve() {
+func (r *smtpRecorder) serve(conn net.Conn) {
 	defer close(r.done)
-
-	conn, err := r.listener.Accept()
-	if err != nil {
-		return
-	}
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -147,16 +138,17 @@ func envelopeAddress(line, prefix string) string {
 }
 
 func TestMailSend(t *testing.T) {
-	recorder := newSMTPRecorder(t)
+	recorder, dial := startSMTPRecorder(t)
 
 	mailer, err := NewMail(MailConfig{
-		Address: recorder.address(),
+		Address: "smtp.example.com:25",
 		From:    "Traccar <alerts@example.com>",
 		TLS:     MailTLSNone,
 	})
 	if err != nil {
 		t.Fatalf("new mail: %v", err)
 	}
+	mailer.dialTCP = dial
 
 	message := Format(testAlert(model.AlertOverspeed, map[string]any{
 		"speed": 31.5,
@@ -232,13 +224,16 @@ func TestMailSanitizesHeaders(t *testing.T) {
 		Body:    "line",
 	}, []string{"ops@example.com"})
 
-	if strings.Contains(string(encoded), "Bcc:") {
+	if strings.Contains(string(encoded), "\r\nBcc:") {
 		t.Errorf("header injection survived:\n%s", encoded)
 	}
 
 	parsed, err := mail.ReadMessage(bytes.NewReader(encoded))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+	}
+	if got := parsed.Header.Get("Bcc"); got != "" {
+		t.Errorf("injected Bcc header = %q", got)
 	}
 	if got := parsed.Header.Get("Subject"); got != "hello  Bcc: evil@example.com" {
 		t.Errorf("subject = %q", got)
@@ -252,7 +247,7 @@ func TestNewMailValidation(t *testing.T) {
 		want   string
 	}{
 		{"empty address", MailConfig{From: "a@example.com"}, "empty SMTP address"},
-		{"missing port", MailConfig{Address: "smtp.example.com", From: "a@example.com"}, "host and port"},
+		{"missing port", MailConfig{Address: "smtp.example.com", From: "a@example.com"}, "missing port"},
 		{"unknown tls", MailConfig{Address: "smtp.example.com:25", From: "a@example.com", TLS: "ssl"}, "unknown TLS mode"},
 		{"empty sender", MailConfig{Address: "smtp.example.com:25"}, "empty sender"},
 		{"bad sender", MailConfig{Address: "smtp.example.com:25", From: "not-an-address"}, "sender"},

@@ -47,10 +47,10 @@ type MailConfig struct {
 
 // Mail sends one text/plain UTF-8 message per alert through SMTP.
 type Mail struct {
-	config MailConfig
-	host   string
-	port   string
-	dialer *net.Dialer
+	config  MailConfig
+	host    string
+	port    string
+	dialTCP func(ctx context.Context) (net.Conn, error)
 }
 
 // NewMail validates the configuration. TLS modes other than auto and implicit
@@ -84,11 +84,14 @@ func NewMail(config MailConfig) (*Mail, error) {
 	}
 	config.From = from.Address
 
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	return &Mail{
 		config: config,
 		host:   host,
 		port:   port,
-		dialer: &net.Dialer{Timeout: 10 * time.Second},
+		dialTCP: func(ctx context.Context) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp", config.Address)
+		},
 	}, nil
 }
 
@@ -160,7 +163,7 @@ func (m *Mail) implicitTLS() bool {
 }
 
 func (m *Mail) dial(ctx context.Context) (net.Conn, error) {
-	conn, err := m.dialer.DialContext(ctx, "tcp", m.config.Address)
+	conn, err := m.dialTCP(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mail: dial %s: %w", m.config.Address, err)
 	}

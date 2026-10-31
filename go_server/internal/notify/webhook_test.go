@@ -3,54 +3,105 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"sync/atomic"
+	"strings"
+	"sync"
 	"testing"
 
 	"traccar-server_go/go_server/internal/model"
 )
 
+// recordingTransport stands in for the network: the sandbox used by the test
+// suite does not allow listening sockets, and the webhook only needs to be
+// checked at the HTTP boundary.
+type recordingTransport struct {
+	status int
+	body   string
+	err    error
+
+	mu       sync.Mutex
+	requests []*http.Request
+	payloads [][]byte
+}
+
+func (r *recordingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	payload, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	r.requests = append(r.requests, request.Clone(context.Background()))
+	r.payloads = append(r.payloads, payload)
+	status := r.status
+	body := r.body
+	r.mu.Unlock()
+
+	if r.err != nil {
+		return nil, r.err
+	}
+	if status == 0 {
+		status = http.StatusOK
+	}
+
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    request,
+	}, nil
+}
+
+func (r *recordingTransport) captured(t *testing.T) ([]*http.Request, [][]byte) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*http.Request(nil), r.requests...), append([][]byte(nil), r.payloads...)
+}
+
+func webhookWith(t *testing.T, transport *recordingTransport, config WebhookConfig) *Webhook {
+	t.Helper()
+	config.Client = &http.Client{Transport: transport}
+	return NewWebhook(config)
+}
+
 func TestWebhookSendsPayload(t *testing.T) {
-	var (
-		received WebhookPayload
-		header   http.Header
-	)
+	transport := &recordingTransport{}
+	webhook := webhookWith(t, transport, WebhookConfig{Authorization: "Bearer secret"})
 
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		header = request.Header.Clone()
-
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			t.Errorf("read body: %v", err)
-		}
-		if err := json.Unmarshal(body, &received); err != nil {
-			t.Errorf("decode body: %v", err)
-		}
-		writer.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
-
-	webhook := NewWebhook(WebhookConfig{Authorization: "Bearer secret"})
 	alert := testAlert(model.AlertOverspeed, map[string]any{
 		"protocol": "gt06",
 		"speed":    31.5,
 		"limit":    float64(30),
 	})
 
-	if err := webhook.Send(context.Background(), Format(alert, testDevice()), []string{server.URL}); err != nil {
+	if err := webhook.Send(context.Background(), Format(alert, testDevice()), []string{"https://example.com/hook"}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
-	if got := header.Get("Content-Type"); got != "application/json" {
+	requests, payloads := transport.captured(t)
+	if len(requests) != 1 || len(payloads) != 1 {
+		t.Fatalf("requests = %d, payloads = %d", len(requests), len(payloads))
+	}
+
+	request := requests[0]
+	if got := request.Header.Get("Content-Type"); got != "application/json" {
 		t.Errorf("content type = %q", got)
 	}
-	if got := header.Get("Authorization"); got != "Bearer secret" {
+	if got := request.Header.Get("Authorization"); got != "Bearer secret" {
 		t.Errorf("authorization = %q", got)
 	}
-	if got := header.Get("User-Agent"); got != "traccar-gateway" {
+	if got := request.Header.Get("User-Agent"); got != "traccar-gateway" {
 		t.Errorf("user agent = %q", got)
+	}
+
+	var received WebhookPayload
+	if err := json.Unmarshal(payloads[0], &received); err != nil {
+		t.Fatalf("decode payload: %v", err)
 	}
 
 	if received.Type != model.AlertOverspeed {
@@ -77,50 +128,71 @@ func TestWebhookSendsPayload(t *testing.T) {
 }
 
 func TestWebhookReportsNon2xx(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		http.Error(writer, "boom", http.StatusInternalServerError)
-	}))
-	defer server.Close()
+	transport := &recordingTransport{status: http.StatusInternalServerError, body: "boom"}
+	webhook := webhookWith(t, transport, WebhookConfig{})
 
-	webhook := NewWebhook(WebhookConfig{})
-	message := Format(testAlert(model.AlertPowerCut, nil), testDevice())
-
-	err := webhook.Send(context.Background(), message, []string{server.URL})
+	err := webhook.Send(context.Background(), Format(testAlert(model.AlertPowerCut, nil), testDevice()),
+		[]string{"https://example.com/hook"})
 	if err == nil {
 		t.Fatal("expected an error for a 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestWebhookReportsTransportError(t *testing.T) {
+	transport := &recordingTransport{err: errors.New("connection refused")}
+	webhook := webhookWith(t, transport, WebhookConfig{})
+
+	err := webhook.Send(context.Background(), Message{}, []string{"https://example.com/hook"})
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
 func TestWebhookTriesEveryRecipient(t *testing.T) {
-	var delivered atomic.Int32
-
-	failing := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		http.Error(writer, "nope", http.StatusBadGateway)
-	}))
-	defer failing.Close()
-
-	working := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		delivered.Add(1)
-		writer.WriteHeader(http.StatusOK)
-	}))
-	defer working.Close()
-
-	webhook := NewWebhook(WebhookConfig{})
+	transport := &recordingTransport{status: http.StatusOK}
+	webhook := webhookWith(t, transport, WebhookConfig{})
 	message := Format(testAlert(model.AlertGeofenceEnter, map[string]any{"geofence": "depot"}), testDevice())
 
-	err := webhook.Send(context.Background(), message, []string{failing.URL, working.URL})
-	if err == nil {
-		t.Fatal("expected the failing recipient to be reported")
+	if err := webhook.Send(context.Background(), message,
+		[]string{"https://one.example/hook", "https://two.example/hook"}); err != nil {
+		t.Fatalf("send: %v", err)
 	}
-	if delivered.Load() != 1 {
-		t.Errorf("working recipient calls = %d, want 1", delivered.Load())
+
+	requests, _ := transport.captured(t)
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	if requests[0].URL.Host != "one.example" || requests[1].URL.Host != "two.example" {
+		t.Errorf("hosts = %s, %s", requests[0].URL.Host, requests[1].URL.Host)
+	}
+}
+
+func TestWebhookKeepsEachFailure(t *testing.T) {
+	transport := &recordingTransport{status: http.StatusBadGateway}
+	webhook := webhookWith(t, transport, WebhookConfig{})
+
+	err := webhook.Send(context.Background(), Message{},
+		[]string{"https://one.example/hook", "https://two.example/hook"})
+	if err == nil {
+		t.Fatal("expected failures to be reported")
+	}
+	if !strings.Contains(err.Error(), "one.example") || !strings.Contains(err.Error(), "two.example") {
+		t.Errorf("error should list every target: %v", err)
 	}
 }
 
 func TestWebhookIgnoresEmptyRecipients(t *testing.T) {
-	webhook := NewWebhook(WebhookConfig{})
+	transport := &recordingTransport{}
+	webhook := webhookWith(t, transport, WebhookConfig{})
+
 	if err := webhook.Send(context.Background(), Message{}, nil); err != nil {
 		t.Fatalf("send: %v", err)
+	}
+	if requests, _ := transport.captured(t); len(requests) != 0 {
+		t.Errorf("requests = %d, want 0", len(requests))
 	}
 }
 

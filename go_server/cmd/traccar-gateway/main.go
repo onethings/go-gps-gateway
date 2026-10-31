@@ -19,6 +19,7 @@ import (
 	"traccar-server_go/go_server/internal/alert"
 	"traccar-server_go/go_server/internal/api"
 	"traccar-server_go/go_server/internal/gateway"
+	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/storage/postgres"
 )
@@ -47,6 +48,7 @@ func main() {
 	defer stop()
 
 	registry := gateway.DefaultRegistry()
+	meters := metrics.New()
 
 	var (
 		directory gateway.DeviceDirectory
@@ -65,7 +67,8 @@ func main() {
 		defer store.Close()
 
 		batcher = postgres.NewBatchSink(store, *batchSize, *batchInterval,
-			postgres.WithBatchLogger(log.Printf))
+			postgres.WithBatchLogger(log.Printf),
+			postgres.WithBatchMetrics(meters))
 		directory = store
 
 		engine := alert.New(alert.Config{
@@ -74,7 +77,8 @@ func main() {
 			NotRepeat:      *alertRepeat,
 		}, nil)
 		pipeline = alert.NewPipeline(engine, batcher, store,
-			alert.WithLogger(log.Printf))
+			alert.WithLogger(log.Printf),
+			alert.WithMetrics(meters))
 		sink = pipeline
 
 		if err := reloadGeofences(ctx, store, engine); err != nil {
@@ -116,6 +120,7 @@ func main() {
 		server, err := gateway.NewServer(registry, name, directory, sink,
 			gateway.WithReadTimeout(10*time.Minute),
 			gateway.WithAutoRegister(),
+			gateway.WithMetrics(meters),
 		)
 		if err != nil {
 			log.Fatalf("%s: %v", name, err)
@@ -153,6 +158,7 @@ func main() {
 					api.WithDevices(store),
 					api.WithCommands(router, store),
 					api.WithAPIKey(*apiKey),
+					api.WithMetrics(meters),
 					api.WithLogger(log.Printf),
 				).Handler(),
 				ReadHeaderTimeout: 5 * time.Second,

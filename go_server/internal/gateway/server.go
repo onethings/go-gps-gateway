@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"traccar-server_go/go_server/internal/codec"
+	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 )
 
@@ -28,6 +29,12 @@ type Server struct {
 	maxFrameSize int
 	readTimeout  time.Duration
 	autoRegister bool
+
+	// Pre-resolved instruments keep the per frame path lock free.
+	connections  *metrics.Gauge
+	frames       *metrics.Counter
+	decodeErrors *metrics.Counter
+	positions    *metrics.Counter
 }
 
 // Option customises a Server.
@@ -60,6 +67,19 @@ func WithReadTimeout(timeout time.Duration) Option {
 // implementing DeviceRegistrar).
 func WithAutoRegister() Option {
 	return func(s *Server) { s.autoRegister = true }
+}
+
+// WithMetrics publishes connection, frame and position counters.
+func WithMetrics(set *metrics.Set) Option {
+	return func(s *Server) {
+		if set == nil {
+			return
+		}
+		s.connections = set.ConnectionsActive.With(s.protocolName)
+		s.frames = set.Frames.With(s.protocolName)
+		s.decodeErrors = set.DecodeErrors.With(s.protocolName)
+		s.positions = set.Positions.With(s.protocolName)
+	}
 }
 
 // NewServer wires a protocol from the registry. directory and sink may be nil;
@@ -126,6 +146,10 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	dc := &deviceConn{conn: conn}
+	if s.connections != nil {
+		s.connections.Inc()
+		defer s.connections.Dec()
+	}
 	protocol := s.factory(s.base)
 	frameDecoder := protocol.NewFrameDecoder()
 	decoder := protocol.NewDecoder()
@@ -198,10 +222,16 @@ func (s *Server) handleFrame(
 
 	result, err := decodeFrame(decoder, frame, *session)
 	if err != nil {
+		if s.decodeErrors != nil {
+			s.decodeErrors.Inc()
+		}
 		return fmt.Errorf("decode: %w", err)
 	}
 	if result == nil {
 		return nil
+	}
+	if s.frames != nil && result.Consumed {
+		s.frames.Inc()
 	}
 
 	if result.UniqueID != "" && *session == nil {
@@ -220,6 +250,9 @@ func (s *Server) handleFrame(
 			s.trackConnection(conn, *session)
 		}
 		s.locations.Store(position)
+		if s.positions != nil {
+			s.positions.Inc()
+		}
 		if s.sink != nil {
 			if err := s.sink.Handle(position); err != nil {
 				s.logf("%s: sink: %v", s.protocolName, err)

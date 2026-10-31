@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"traccar-server_go/go_server/internal/gateway"
+	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 )
 
@@ -57,6 +58,7 @@ type Server struct {
 	devices      DeviceQuerier
 	router       CommandRouter
 	protocols    DeviceProtocols
+	meters       *metrics.Set
 	logf         func(format string, args ...any)
 	queryTimeout time.Duration
 	now          func() time.Time
@@ -108,6 +110,11 @@ func WithAPIKey(key string) Option {
 	return func(s *Server) { s.apiKey = key }
 }
 
+// WithMetrics enables GET /metrics. Without it the route reports 501.
+func WithMetrics(set *metrics.Set) Option {
+	return func(s *Server) { s.meters = set }
+}
+
 // NewServer creates the API handlers.
 func NewServer(alerts AlertQuerier, options ...Option) *Server {
 	server := &Server{
@@ -130,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/positions", s.handlePositions)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("POST /api/commands", s.handleCommand)
 
 	if s.apiKey == "" {
@@ -322,6 +330,18 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		response.Devices = append(response.Devices, entry)
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// handleMetrics serves the Prometheus text format. It is subject to the API key
+// like every other route except /api/health.
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	if s.meters == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("metrics are not configured"))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	s.meters.Render(w)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

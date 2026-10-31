@@ -25,10 +25,11 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                         └─ postgres.BatchSink  positions 批次落地
 
 client ──HTTP──▶ api.Server
-                   ├─ GET /api/devices  ──▶ devices 查詢
+                   ├─ GET /api/devices   ──▶ devices 查詢
                    ├─ GET /api/positions ──▶ positions 查詢
-                   ├─ GET /api/alerts   ──▶ alerts 查詢
+                   ├─ GET /api/alerts    ──▶ alerts 查詢
                    ├─ GET /api/health
+                   ├─ GET /metrics       ──▶ Prometheus 文字格式
                    └─ POST /api/commands ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
 ```
 
@@ -47,7 +48,8 @@ client ──HTTP──▶ api.Server
 | `internal/gateway` | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由 |
 | `internal/geofence` | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線） |
 | `internal/alert` | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線 |
-| `internal/api` | REST：`GET /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`POST /api/commands` |
+| `internal/api` | REST：`GET /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands` |
+| `internal/metrics` | Prometheus 文字格式的計數器 / gauge / histogram（零依賴） |
 | `internal/storage/postgres` | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink` |
 | `cmd/traccar-gateway` | 啟動四個監聽埠與 REST 的 CLI |
 
@@ -320,19 +322,37 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
    再看規則的單位（節 / 伏特）；圍欄告警需要 `geofences` 表有資料且 `area` 能解析
    （解析失敗會印 `alerts: load geofences: ...`，該筆圍欄會被跳過，其他圍欄照常運作）。
 
-尚未實作、下一輪要加的指標（建議接 `/metrics`）：
+`GET /metrics` 以 Prometheus 文字格式輸出（手寫實作，沒有額外依賴）：
 
 ```
-traccar_connections_active{protocol}
-traccar_frames_total{protocol}
-traccar_decode_errors_total{protocol}
-traccar_positions_total{protocol}
-traccar_position_dropped_total
-traccar_db_write_seconds (histogram)
-traccar_db_write_errors_total
-traccar_alerts_total{type}
-traccar_alert_dropped_total
+traccar_connections_active{protocol="gt06"} 2
+traccar_frames_total{protocol="gt06"} 1520
+traccar_decode_errors_total{protocol="gt06"} 0
+traccar_positions_total{protocol="gt06"} 1498
+traccar_position_dropped_total 0
+traccar_db_write_seconds_bucket{le="0.05"} 431
+traccar_db_write_seconds_bucket{le="+Inf"} 431
+traccar_db_write_seconds_sum 3.21
+traccar_db_write_seconds_count 431
+traccar_db_write_errors_total 0
+traccar_alerts_total{type="deviceOverspeed"} 4
+traccar_alert_dropped_total 0
 ```
+
+`/metrics` 和其他端點一樣受 `-api-key` 保護（只有 `/api/health` 免 key），
+Prometheus 的 scrape 設定要帶 header：
+
+```yaml
+scrape_configs:
+  - job_name: traccar
+    authorization:
+      credentials: please-change-me
+```
+
+語義：`connections_active` 在連線建立 / 關閉時增減；`frames` / `positions` / `decode_errors`
+在解碼執行緒累加（無鎖，per-protocol 計數器在建構時就解析好）；`db_write_seconds`
+每次真正寫入觀測一次；`alerts_total` 在告警進入佇列時累加，佇列滿或已關閉時計入
+`alert_dropped_total`。
 
 ## 已知限制
 
@@ -354,4 +374,4 @@ traccar_alert_dropped_total
 2. 裝置管理 API（新增 / 改名 / 刪除）與每裝置 / 每圍欄門檻。
 3. 通知管道（email / webhook）。
 4. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
-5. 指標（`/metrics`）與更完整的健康檢查（含 DB ping）。
+5. 更完整的健康檢查（含 DB ping）。

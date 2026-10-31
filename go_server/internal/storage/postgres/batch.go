@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 )
 
@@ -37,6 +38,7 @@ type BatchSink struct {
 
 	mu      sync.Mutex
 	dropped int64
+	meters  *metrics.Set
 }
 
 // BatchOption customises a BatchSink.
@@ -58,6 +60,11 @@ func WithBatchLogger(logf func(format string, args ...any)) BatchOption {
 			b.logf = logf
 		}
 	}
+}
+
+// WithBatchMetrics publishes write durations, write failures and drops.
+func WithBatchMetrics(set *metrics.Set) BatchOption {
+	return func(b *BatchSink) { b.meters = set }
 }
 
 // NewBatchSink starts the background writer.
@@ -97,6 +104,9 @@ func (b *BatchSink) Handle(position *model.Position) error {
 		b.mu.Lock()
 		b.dropped++
 		b.mu.Unlock()
+		if b.meters != nil {
+			b.meters.PositionsDropped.Inc()
+		}
 		return ErrSinkFull
 	}
 }
@@ -163,7 +173,15 @@ func (b *BatchSink) run() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 		defer cancel()
+
+		start := time.Now()
 		err := b.writer.InsertPositions(ctx, batch)
+		if b.meters != nil {
+			b.meters.DBWriteSeconds.Observe(time.Since(start).Seconds())
+			if err != nil {
+				b.meters.DBWriteErrors.Inc()
+			}
+		}
 		if err != nil {
 			b.logf("postgres: batch write (%d positions): %v", len(batch), err)
 		}

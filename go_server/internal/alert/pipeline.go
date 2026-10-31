@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 )
 
@@ -42,6 +43,7 @@ type Pipeline struct {
 	interval time.Duration
 	timeout  time.Duration
 	logf     func(format string, args ...any)
+	meters   *metrics.Set
 
 	queue chan *model.Alert
 
@@ -93,6 +95,11 @@ func WithWriteTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithMetrics publishes generated alerts and dropped alerts.
+func WithMetrics(set *metrics.Set) Option {
+	return func(p *Pipeline) { p.meters = set }
+}
+
 // NewPipeline starts the background writer. next may be nil, which makes the
 // pipeline a terminal sink.
 func NewPipeline(engine *Engine, next Sink, writer Writer, options ...Option) *Pipeline {
@@ -140,13 +147,22 @@ func (p *Pipeline) enqueue(alert *model.Alert) {
 
 	if p.closed {
 		p.dropped++
+		if p.meters != nil {
+			p.meters.AlertsDropped.Inc()
+		}
 		return
 	}
 
 	select {
 	case p.queue <- alert:
+		if p.meters != nil {
+			p.meters.Alerts.With(alert.Type).Inc()
+		}
 	default:
 		p.dropped++
+		if p.meters != nil {
+			p.meters.AlertsDropped.Inc()
+		}
 		p.logf("alert: queue full, dropped %s for device %d", alert.Type, alert.DeviceID)
 	}
 }

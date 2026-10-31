@@ -5,11 +5,25 @@
 package alert
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"traccar-server_go/go_server/internal/geofence"
 	"traccar-server_go/go_server/internal/model"
+)
+
+// Attribute names that override the configured thresholds. They live in
+// devices.attributes and geofences.attributes, mirroring the Java server.
+const (
+	// AttrSpeedLimit overrides the overspeed threshold in knots. It is read
+	// from the device, the position (already decodable by the protocols) and
+	// from every geofence that contains the position.
+	AttrSpeedLimit = "speedLimit"
+	// AttrPowerCutVolts overrides the power cut threshold in volts for one
+	// device. Like the flag, 0 disables the rule.
+	AttrPowerCutVolts = "powerCutVolts"
 )
 
 // Config holds the rule thresholds. A zero threshold disables the rule.
@@ -24,6 +38,10 @@ type Config struct {
 	// within the window. Zero disables suppression, which matches the old
 	// behaviour of alerting on every position.
 	NotRepeat time.Duration
+	// PreferLowest picks the lowest geofence speed limit when several
+	// geofences contain a position. The Java default (false) picks the
+	// highest, matching event.overspeed.preferLowest.
+	PreferLowest bool
 }
 
 // Engine evaluates positions one at a time and remembers the geofence
@@ -34,6 +52,7 @@ type Engine struct {
 
 	mu        sync.RWMutex
 	geofences []*geofence.Geofence
+	devices   map[int64]map[string]any
 	members   map[membership]bool
 	repeats   map[repeatKey]time.Time
 	powered   map[int64]bool
@@ -63,6 +82,7 @@ func New(config Config, geofences []*geofence.Geofence) *Engine {
 	engine := &Engine{
 		config:  config,
 		now:     time.Now,
+		devices: make(map[int64]map[string]any),
 		members: make(map[membership]bool),
 		repeats: make(map[repeatKey]time.Time),
 		powered: make(map[int64]bool),
@@ -97,6 +117,27 @@ func (e *Engine) Geofences() []*geofence.Geofence {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return append([]*geofence.Geofence(nil), e.geofences...)
+}
+
+// SetDeviceAttributes replaces the per-device threshold snapshot. Devices that
+// are absent, or whose attributes hold no threshold, use the Config defaults.
+// The maps are copied so the caller may reuse them after the call.
+func (e *Engine) SetDeviceAttributes(attributes map[int64]map[string]any) {
+	snapshot := make(map[int64]map[string]any, len(attributes))
+	for deviceID, values := range attributes {
+		if len(values) == 0 {
+			continue
+		}
+		copied := make(map[string]any, len(values))
+		for key, value := range values {
+			copied[key] = value
+		}
+		snapshot[deviceID] = copied
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.devices = snapshot
 }
 
 // Evaluate returns the alerts raised by one position. It never blocks and
@@ -152,14 +193,31 @@ func (e *Engine) idle() bool {
 	if e.config.OverspeedKnots > 0 || e.config.PowerCutVolts > 0 {
 		return false
 	}
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return len(e.geofences) == 0
+
+	if len(e.geofences) > 0 {
+		return false
+	}
+	for _, attributes := range e.devices {
+		if _, ok := floatAttribute(attributes, AttrSpeedLimit); ok {
+			return false
+		}
+		if _, ok := floatAttribute(attributes, AttrPowerCutVolts); ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) overspeed(position *model.Position) []*model.Alert {
-	limit := e.config.OverspeedKnots
-	if limit <= 0 || !position.Valid || position.Speed <= limit {
+	if !position.Valid {
+		return nil
+	}
+
+	limit := e.speedLimit(position)
+	if limit <= 0 || position.Speed <= limit {
 		return nil
 	}
 
@@ -169,8 +227,51 @@ func (e *Engine) overspeed(position *model.Position) []*model.Alert {
 	return []*model.Alert{alert}
 }
 
+// speedLimit resolves the overspeed threshold for one position. The order
+// mirrors the Java handler: the configured default, then the device attribute,
+// then the position attribute, then the geofence limits of every geofence that
+// contains the position (the Java handler also lets geofences win).
+func (e *Engine) speedLimit(position *model.Position) float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	limit := e.config.OverspeedKnots
+	if value, ok := floatAttribute(e.devices[position.DeviceID], AttrSpeedLimit); ok {
+		limit = value
+	}
+	if value, ok := position.Get(model.KeySpeedLim); ok {
+		if parsed, ok := asFloat(value); ok && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	if !position.IsLocated() {
+		return limit
+	}
+
+	var fenceLimit float64
+	for _, fence := range e.geofences {
+		if fence == nil || fence.Area == nil {
+			continue
+		}
+		value, ok := floatAttribute(fence.Attributes, AttrSpeedLimit)
+		if !ok || value <= 0 || !fence.Contains(position) {
+			continue
+		}
+		if fenceLimit == 0 ||
+			(e.config.PreferLowest && value < fenceLimit) ||
+			(!e.config.PreferLowest && value > fenceLimit) {
+			fenceLimit = value
+		}
+	}
+	if fenceLimit > 0 {
+		limit = fenceLimit
+	}
+	return limit
+}
+
 func (e *Engine) powerCut(position *model.Position) []*model.Alert {
-	threshold := e.config.PowerCutVolts
+	threshold := e.powerCutThreshold(position.DeviceID)
 	if threshold <= 0 {
 		return nil
 	}
@@ -207,6 +308,20 @@ func (e *Engine) powerCut(position *model.Position) []*model.Alert {
 	alert.Set("power", power)
 	alert.Set("threshold", threshold)
 	return []*model.Alert{alert}
+}
+
+// powerCutThreshold resolves the power cut threshold for one device. A device
+// attribute of 0 disables the rule for that device, even when the server-wide
+// flag is set.
+func (e *Engine) powerCutThreshold(deviceID int64) float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	threshold := e.config.PowerCutVolts
+	if value, ok := floatAttribute(e.devices[deviceID], AttrPowerCutVolts); ok {
+		threshold = value
+	}
+	return threshold
 }
 
 func (e *Engine) geofenceTransitions(position *model.Position) []*model.Alert {
@@ -276,7 +391,8 @@ func (e *Engine) newAlert(alertType string, position *model.Position) *model.Ale
 	return alert
 }
 
-// asFloat converts the numeric attribute types the decoders produce.
+// asFloat converts the numeric attribute types the decoders produce. JSONB
+// values written by hand may be strings, so those are parsed as well.
 func asFloat(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:
@@ -287,7 +403,26 @@ func asFloat(value any) (float64, bool) {
 		return float64(typed), true
 	case int64:
 		return float64(typed), true
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
 	default:
 		return 0, false
 	}
+}
+
+// floatAttribute reads a numeric attribute from a devices.attributes or
+// geofences.attributes map.
+func floatAttribute(attributes map[string]any, key string) (float64, bool) {
+	if attributes == nil {
+		return 0, false
+	}
+	value, ok := attributes[key]
+	if !ok {
+		return 0, false
+	}
+	return asFloat(value)
 }

@@ -323,6 +323,22 @@ func TestDeviceStoreIntegration(t *testing.T) {
 		t.Fatalf("device = %+v, err = %v", fetched, err)
 	}
 
+	if _, err := store.DB().ExecContext(ctx,
+		`UPDATE devices SET attributes = '{"speedLimit": 45, "powerCutVolts": "8"}'::jsonb WHERE id = $1`,
+		created.ID); err != nil {
+		t.Fatalf("set attributes: %v", err)
+	}
+	attributes, err := store.DeviceAttributes(ctx)
+	if err != nil {
+		t.Fatalf("device attributes: %v", err)
+	}
+	if got := attributes[created.ID]["speedLimit"]; got != 45.0 {
+		t.Errorf("speedLimit = %v, want 45", got)
+	}
+	if got := attributes[created.ID]["powerCutVolts"]; got != "8" {
+		t.Errorf("powerCutVolts = %v, want the stored string", got)
+	}
+
 	if err := store.DeleteDevice(ctx, created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}

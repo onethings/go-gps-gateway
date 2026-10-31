@@ -48,6 +48,8 @@ func main() {
 	tokenTTL := flag.Duration("token-ttl", 0, "lifetime of an issued token; 0 never expires")
 	overspeedKnots := flag.Float64("overspeed-knots", 0, "overspeed alert threshold in knots; 0 disables the rule")
 	powerCutVolts := flag.Float64("power-cut-volts", 0, "power cut alert threshold in volts; 0 disables the rule")
+	preferLowest := flag.Bool("overspeed-prefer-lowest", false,
+		"use the lowest geofence speedLimit when several geofences contain a position (default: highest)")
 	alertRepeat := flag.Duration("alert-repeat", 0,
 		"suppress repeat overspeed/powerCut alerts per device within this window; 0 disables")
 	geofenceRefresh := flag.Duration("geofence-refresh", 5*time.Minute, "geofence reload interval; 0 loads them once")
@@ -97,6 +99,7 @@ func main() {
 			OverspeedKnots: *overspeedKnots,
 			PowerCutVolts:  *powerCutVolts,
 			NotRepeat:      *alertRepeat,
+			PreferLowest:   *preferLowest,
 		}, nil)
 		pipeline = alert.NewPipeline(engine, batcher, store,
 			alert.WithLogger(log.Printf),
@@ -300,11 +303,14 @@ func refreshGeofences(ctx context.Context, store *postgres.Store, engine *alert.
 
 // reloadDeviceAttributes refreshes the per-device threshold snapshot. Devices
 // are created by the gateway itself, so the attributes set later with SQL are
-// picked up on the next reload.
+// picked up on the next reload. A failed query keeps the previous snapshot.
 func reloadDeviceAttributes(ctx context.Context, store *postgres.Store, engine *alert.Engine) error {
 	attributes, err := store.DeviceAttributes(ctx)
+	if err != nil {
+		return err
+	}
 	engine.SetDeviceAttributes(attributes)
-	return err
+	return nil
 }
 
 func refreshDeviceAttributes(ctx context.Context, store *postgres.Store, engine *alert.Engine, interval time.Duration) {

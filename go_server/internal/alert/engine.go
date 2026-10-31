@@ -28,11 +28,13 @@ const (
 
 // Config holds the rule thresholds. A zero threshold disables the rule.
 type Config struct {
-	// OverspeedKnots is compared against Position.Speed, which every decoder
-	// already converts to knots.
+	// OverspeedKnots is the default threshold compared against Position.Speed,
+	// which every decoder already converts to knots. A device, position or
+	// geofence attribute can override it (see AttrSpeedLimit).
 	OverspeedKnots float64
-	// PowerCutVolts is compared against the "power" attribute, which the
-	// protocols report in volts (GT06 0x94 sends 12.5, not 12500).
+	// PowerCutVolts is the default threshold compared against the "power"
+	// attribute, which the protocols report in volts (GT06 0x94 sends 12.5,
+	// not 12500). A device attribute can override it (see AttrPowerCutVolts).
 	PowerCutVolts float64
 	// NotRepeat suppresses a second alert of the same type for one device
 	// within the window. Zero disables suppression, which matches the old
@@ -53,9 +55,12 @@ type Engine struct {
 	mu        sync.RWMutex
 	geofences []*geofence.Geofence
 	devices   map[int64]map[string]any
-	members   map[membership]bool
-	repeats   map[repeatKey]time.Time
-	powered   map[int64]bool
+	// geofenceSpeeds records whether any geofence has a speedLimit, so the
+	// per position overspeed check can skip the containment scan otherwise.
+	geofenceSpeeds bool
+	members        map[membership]bool
+	repeats        map[repeatKey]time.Time
+	powered        map[int64]bool
 }
 
 type membership struct {
@@ -95,9 +100,14 @@ func New(config Config, geofences []*geofence.Geofence) *Engine {
 // geofences that no longer exist.
 func (e *Engine) SetGeofences(geofences []*geofence.Geofence) {
 	known := make(map[int64]struct{}, len(geofences))
+	hasSpeedLimit := false
 	for _, fence := range geofences {
-		if fence != nil && fence.Area != nil {
-			known[fence.ID] = struct{}{}
+		if fence == nil || fence.Area == nil {
+			continue
+		}
+		known[fence.ID] = struct{}{}
+		if _, ok := floatAttribute(fence.Attributes, AttrSpeedLimit); ok {
+			hasSpeedLimit = true
 		}
 	}
 
@@ -105,6 +115,7 @@ func (e *Engine) SetGeofences(geofences []*geofence.Geofence) {
 	defer e.mu.Unlock()
 
 	e.geofences = append(e.geofences[:0], geofences...)
+	e.geofenceSpeeds = hasSpeedLimit
 	for key := range e.members {
 		if _, ok := known[key.geofenceID]; !ok {
 			delete(e.members, key)
@@ -245,7 +256,7 @@ func (e *Engine) speedLimit(position *model.Position) float64 {
 		}
 	}
 
-	if !position.IsLocated() {
+	if !position.IsLocated() || !e.geofenceSpeeds {
 		return limit
 	}
 

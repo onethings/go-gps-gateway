@@ -86,7 +86,9 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 
 其他 flag：`-batch-size`（預設 500）、`-batch-interval`（預設 1s）、`-dsn`（空 = 記憶體模式）、
 `-overspeed-knots`（預設 0 = 關閉規則）、`-power-cut-volts`（預設 0 = 關閉規則）、
+`-overspeed-prefer-lowest`（多個圍欄重疊時取最低限速；預設取最高）、
 `-alert-repeat`（預設 0 = 不抑制重複告警）、`-geofence-refresh`（預設 5m，0 = 只在啟動時載入一次）、
+`-device-refresh`（預設 5m，0 = 只在啟動時載入一次；每裝置門檻用的 attributes）、
 `-api-key`（預設讀 `TRACCAR_API_KEY`；空 = 只用資料庫 token 認證）、
 `-issue-token` / `-token-scopes` / `-token-ttl`（發 token 後結束，需要 `-dsn`）、
 `-allow-anonymous`（關閉 REST 認證，只給本機開發用）。
@@ -147,12 +149,36 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 
 `alert.Pipeline` 包在 `BatchSink` 前面，每個 position 先過規則再進批次寫入：
 
-| 規則            | 觸發條件                                                                   | `type`                           |
-| --------------- | -------------------------------------------------------------------------- | -------------------------------- |
-| 超速            | `Speed`（**節**，decoder 已從 km/h 換算）高於 `-overspeed-knots`           | `deviceOverspeed`                |
-| 斷電            | `attributes.power`（**伏特**，GT06 `0x94` 是 12.5）低於 `-power-cut-volts` | `powerCut`                       |
+| 規則            | 觸發條件                                                                    | `type`                           |
+| --------------- | --------------------------------------------------------------------------- | -------------------------------- |
+| 超速            | `Speed`（**節**，decoder 已從 km/h 換算）高於解析後的門檻（見下）           | `deviceOverspeed`                |
+| 斷電            | `attributes.power`（**伏特**，GT06 `0x94` 是 12.5）低於解析後的門檻（見下） | `powerCut`                       |
 | 復電            | 同一裝置上一個 `power` 低於門檻、這一筆回到門檻以上                        | `powerRestored`                  |
-| 進入 / 離開圍欄 | `geofences` 表的幾何內含判定變化（每個裝置各自記狀態）                     | `geofenceEnter` / `geofenceExit` |
+| 進入 / 離開圍欄 | `geofences` 表的幾何內含判定變化（每個裝置各自記狀態）                      | `geofenceEnter` / `geofenceExit` |
+
+門檻可以全域設定，也可以依裝置 / 圍欄覆寫。超速的解析順序（後者覆蓋前者）：
+
+1. `-overspeed-knots`：伺服器預設，`0` = 停用。
+2. `devices.attributes.speedLimit`（**節**）：`0` 表示該裝置停用超速規則。
+3. `positions.attributes.speedLimit`（**節**）：協議或後處理帶來的位置門檻，`> 0` 才生效。
+4. 包含該位置的 `geofences.attributes.speedLimit`（**節**）：`> 0` 才生效；多個圍欄同時包含時
+   預設取**最大**值（與 Java `event.overspeed.preferLowest` 未設定時一致），
+   加上 `-overspeed-prefer-lowest`（Java 的 `event.overspeed.preferLowest=true`）則取**最小**值。
+
+斷電只有前兩層：`-power-cut-volts` → `devices.attributes.powerCutVolts`（**伏特**，
+`0` = 該裝置停用）。`devices.attributes` 仍以 SQL 維護，啟動時載入、之後每 `-device-refresh`
+重新載入（預設 5m；`0` 表示只載入一次）。
+
+```sql
+-- 單一裝置限速 45 節、斷電門檻 10 V
+UPDATE devices SET attributes = '{"speedLimit": 45, "powerCutVolts": 10}'::jsonb WHERE id = 7;
+
+-- 工業區內限速 20 節；高度低於 0 m 或高於 200 m 不算進入
+UPDATE geofences SET attributes = '{"speedLimit": 20, "floor": 0, "ceiling": 200}'::jsonb WHERE id = 3;
+```
+
+JSONB 的數字與字串形式都接受（`"speedLimit": 45` 或 `"speedLimit": "45"`），寫錯型別會被忽略，
+沿用下一層門檻。
 
 `-alert-repeat`（例如 `-alert-repeat 10m`）對超速與斷電做去重：同一裝置、同一類型在視窗內
 只寫第一筆。圍欄進出與復電是狀態轉換，不受影響。`0`（預設）維持舊行為，每筆 position 都寫。
@@ -202,9 +228,11 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
   需要精確關聯時用 `alerts.device_id` + `alert_time` 去 join `positions`，或之後改成
   `INSERT ... RETURNING`（會犧牲批次吞吐）。告警的 `attributes` 已內含 `latitude` / `longitude` /
   `speed` / `protocol` 快照，單看 `alerts` 表也夠用。
-- **門檻是全域的**：`-overspeed-knots` / `-power-cut-volts` 對所有裝置生效，
-  Java 版的 per-device 門檻還沒移植。
 - **去重與圍欄狀態都在記憶體**：重啟後去重視窗重新計時、圍欄只做「播種」。
+- **門檻 / 圍欄變更最多延遲一個 refresh 週期**：`devices.attributes` 依 `-device-refresh`、
+  `geofences` 依 `-geofence-refresh` 重新載入（兩者預設 5m）；設 `0` 表示只在啟動時載入一次。
+  調整 SQL 後若要立刻生效，重啟程式即可。
+- **圍欄門檻只影響超速**：斷電是裝置狀態，只有全域與 per-device 兩層。
 - **去重視窗比的是伺服器時間**，不是裝置時間；設備一次補傳大量歷史資料時只會留下第一筆
   （這正是避免告警風暴的目的，但會看不到歷史區間內的每一筆）。
 - 圍欄狀態存在記憶體，重啟後每個裝置的第一筆 position 只做「播種」，不會補發 enter / exit。
@@ -474,7 +502,7 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`                                   |
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                       |
 | `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                              |
-| `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）                                                                                 |
+| `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...` |
 | `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: send command <type> to device <id>: <err>` |
 | CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`                                                                  |
 | `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                     |
@@ -543,7 +571,6 @@ scrape_configs:
 
 ## 下一步
 
-1. 每裝置 / 每圍欄門檻（`geofences.attributes` 已有 `floor` / `ceiling` 雛形）。
-2. 通知管道（email / webhook）。
-3. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
-4. 非 admin 的 token 自我管理（列出 / 撤銷自己的 token）與密碼登入。
+1. 通知管道（email / webhook）。
+2. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
+3. 非 admin 的 token 自我管理（列出 / 撤銷自己的 token）與密碼登入。

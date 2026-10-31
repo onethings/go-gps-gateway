@@ -6,7 +6,7 @@
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
 - 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄
-  + REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`）全部可編譯、`go test ./...` 全綠。
+  - REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`、使用者 token / 裝置擁有權）全部可編譯、`go test ./...` 全綠。
 
 ## 架構
 
@@ -24,10 +24,11 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                         ├─ alert.Pipeline  規則評估 → alerts 批次落地
                         └─ postgres.BatchSink  positions 批次落地
 
-client ──HTTP──▶ api.Server
+client ──HTTP──▶ api.Server (RequireAuth)
+                   ├─ 憑證：-api-key（admin）或 api_tokens（scope + user_devices）
                    ├─ GET /api/devices   ──▶ devices 查詢 / 新增 / 修改 / 刪除
-                   ├─ GET /api/positions ──▶ positions 查詢
-                   ├─ GET /api/alerts    ──▶ alerts 查詢
+                   ├─ GET /api/positions ──▶ positions 查詢（自動加裝置條件）
+                   ├─ GET /api/alerts    ──▶ alerts 查詢（自動加裝置條件）
                    ├─ GET /api/health
                    ├─ GET /metrics       ──▶ Prometheus 文字格式
                    └─ POST /api/commands ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
@@ -35,23 +36,24 @@ client ──HTTP──▶ api.Server
 
 ## 目錄
 
-| 路徑 | 說明 |
-|---|---|
-| `internal/model` | 統一資料模型：`Position` / `Network` / `CellTower` / `Command` |
-| `internal/codec` | 協議介面：`FrameDecoder`、`Decoder`、`SessionDecoder`、`Encoder`、`Base` |
-| `internal/helper` | Java helper 的移植：`Buffer`(Netty ByteBuf)、`PatternBuilder`、`Parser`、BCD、DateBuilder、CRC16/X25、CRC16/IBM、XOR、Luhn |
-| `internal/protocol/h02` | H02 / TK102 系 |
-| `internal/protocol/gt06` | GT06 / Concox / Jimi 系 |
-| `internal/protocol/jt808` | JT/T 808（中國交通部標準） |
-| `internal/protocol/teltonika` | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13） |
-| `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植） |
-| `internal/gateway` | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由 |
-| `internal/geofence` | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線） |
-| `internal/alert` | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線 |
-| `internal/api` | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands` |
-| `internal/metrics` | Prometheus 文字格式的計數器 / gauge / histogram（零依賴） |
-| `internal/storage/postgres` | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink` |
-| `cmd/traccar-gateway` | 啟動四個監聽埠與 REST 的 CLI |
+| 路徑                             | 說明                                                                                                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `internal/model`                 | 統一資料模型：`Position` / `Network` / `CellTower` / `Command`                                                                             |
+| `internal/auth`                  | 權限模型：scope、`Principal`、token 產生 / SHA-256 雜湊                                                                                     |
+| `internal/codec`                 | 協議介面：`FrameDecoder`、`Decoder`、`SessionDecoder`、`Encoder`、`Base`                                                                   |
+| `internal/helper`                | Java helper 的移植：`Buffer`(Netty ByteBuf)、`PatternBuilder`、`Parser`、BCD、DateBuilder、CRC16/X25、CRC16/IBM、XOR、Luhn                 |
+| `internal/protocol/h02`          | H02 / TK102 系                                                                                                                             |
+| `internal/protocol/gt06`         | GT06 / Concox / Jimi 系                                                                                                                    |
+| `internal/protocol/jt808`        | JT/T 808（中國交通部標準）                                                                                                                 |
+| `internal/protocol/teltonika`    | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13）                                                                                            |
+| `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植）                                                                                                      |
+| `internal/gateway`               | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                      |
+| `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                      |
+| `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線                                                            |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands`；認證 / scope / 裝置擁有權 |
+| `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                  |
+| `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                               |
+| `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                               |
 
 ## 快速開始
 
@@ -67,29 +69,36 @@ go run ./cmd/traccar-gateway \
   -dsn 'postgres://postgres:traccar@localhost:5432/postgres?sslmode=disable'
 ```
 
+REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 curl 可加 `-allow-anonymous`
+（見「認證與權限」）。
+
 預設監聽（可用同名 flag 覆寫，傳空字串可關閉該協議）：
 
-| 協議 / 服務 | Flag | 預設位址 |
-|---|---|---|
-| H02 | `-h02` | `0.0.0.0:5013` |
-| GT06 | `-gt06` | `0.0.0.0:5023` |
-| JT808 | `-jt808` | `0.0.0.0:8610` |
-| Teltonika | `-teltonika` | `0.0.0.0:5027` |
-| REST | `-http` | `0.0.0.0:8082`（需要 `-dsn`；空 = 關閉） |
+| 協議 / 服務 | Flag         | 預設位址                                 |
+| ----------- | ------------ | ---------------------------------------- |
+| H02         | `-h02`       | `0.0.0.0:5013`                           |
+| GT06        | `-gt06`      | `0.0.0.0:5023`                           |
+| JT808       | `-jt808`     | `0.0.0.0:8610`                           |
+| Teltonika   | `-teltonika` | `0.0.0.0:5027`                           |
+| REST        | `-http`      | `0.0.0.0:8082`（需要 `-dsn`；空 = 關閉） |
 
 其他 flag：`-batch-size`（預設 500）、`-batch-interval`（預設 1s）、`-dsn`（空 = 記憶體模式）、
 `-overspeed-knots`（預設 0 = 關閉規則）、`-power-cut-volts`（預設 0 = 關閉規則）、
 `-alert-repeat`（預設 0 = 不抑制重複告警）、`-geofence-refresh`（預設 5m，0 = 只在啟動時載入一次）、
-`-api-key`（預設讀 `TRACCAR_API_KEY`；空 = 關閉認證）。
+`-api-key`（預設讀 `TRACCAR_API_KEY`；空 = 只用資料庫 token 認證）、
+`-issue-token` / `-token-scopes` / `-token-ttl`（發 token 後結束，需要 `-dsn`）、
+`-allow-anonymous`（關閉 REST 認證，只給本機開發用）。
 
 ## 協議支援矩陣
 
 ### H02
+
 - 文字：`V1/V3/V4/V5/V6/V8/V19`、`NBR`、`LINK`、`VP1`、`HTBT`、`SMS`、心跳。
 - 二進位：32 byte 短幀與 45 byte 長幀、`X` 幀、`R12` 應答（`Base.Ack`）。
 - 待補：無（以 Java 測試向量覆蓋）。
 
 ### GT06
+
 - 已支援：`0x01` 登入（含時區偏移）、`0x23` 心跳、GPS/LBS/狀態主線
   （`0x10/0x11/0x12/0x16/0x1A/0x1E/0x22/0x25/0x26/0x27/0x31/0x32/0x37/0x39/0xA0/0xA4`）、
   `0x2A` 位址查詢、`0x8A` 對時、`0x94` 電壓、所有訊息回 `CRC16/X25` ACK。
@@ -97,6 +106,7 @@ go run ./cmd/traccar-gateway \
   odometer/driver 的車型分支、`0xA3` variant 判定、ADAS/DMS。
 
 ### JT808
+
 - 已支援：標頭（2013 六碼 / 2019 十碼 + 版本號）、`0x7E` 轉義、XOR 校驗、
   `0x0100` 註冊 → `0x8100`、`0x0102/0x0002/0x0003/0x1007` → `0x8001`、
   `0x0200` 位置（警報 32 bit、狀態 32 bit、BCD 時間、常用附加項）、`0x0201`、`0x0107` ICCID、`0x0109` 對時。
@@ -104,6 +114,7 @@ go run ./cmd/traccar-gateway \
   `0x0900/0x8900` 透傳、ADAS/DMS/胎壓/OBD 區塊。
 
 ### Teltonika
+
 - 已支援：IMEI 握手（回 `0x01/0x00`）、`0xFF` 心跳、Codec 8 / 8E / 12 / 13、
   1/2/4/8 byte IO 區塊、Codec 8E 可變長度元素（VIN、DTC、未知項 hex）、LAC/CID → CellTower。
 - 待補：Codec 7 (GH3000)、Codec 16 完整支援、BLE beacon、`io78` driver id（LE）、車型專屬參數表、圖片傳輸。
@@ -116,6 +127,9 @@ go run ./cmd/traccar-gateway \
 - `positions(id, device_id, protocol, device_time, server_time, valid, latitude, longitude, altitude, speed, course, accuracy, attributes)`
 - `alerts(id, device_id, position_id, type, alert_time, geofence_id, attributes)`（`0002_alerts.sql`）
 - `geofences(id, name, area, attributes, created_at)`（`0002_alerts.sql`）
+- `users(id, email, name, admin, created_at)`（`0003_users.sql`）
+- `user_devices(user_id, device_id)`（`0003_users.sql`，多對多）
+- `api_tokens(id, user_id, token_hash, scopes, expires_at, created_at)`（`0003_users.sql`）
 - `schema_migrations(version, applied_at)`
 
 寫入路徑：`BatchSink`（非阻塞佇列 + 每批一個 multi-row `INSERT`）。
@@ -130,12 +144,12 @@ go run ./cmd/traccar-gateway \
 
 `alert.Pipeline` 包在 `BatchSink` 前面，每個 position 先過規則再進批次寫入：
 
-| 規則 | 觸發條件 | `type` |
-|---|---|---|
-| 超速 | `Speed`（**節**，decoder 已從 km/h 換算）高於 `-overspeed-knots` | `deviceOverspeed` |
-| 斷電 | `attributes.power`（**伏特**，GT06 `0x94` 是 12.5）低於 `-power-cut-volts` | `powerCut` |
-| 復電 | 同一裝置上一個 `power` 低於門檻、這一筆回到門檻以上 | `powerRestored` |
-| 進入 / 離開圍欄 | `geofences` 表的幾何內含判定變化（每個裝置各自記狀態） | `geofenceEnter` / `geofenceExit` |
+| 規則            | 觸發條件                                                                   | `type`                           |
+| --------------- | -------------------------------------------------------------------------- | -------------------------------- |
+| 超速            | `Speed`（**節**，decoder 已從 km/h 換算）高於 `-overspeed-knots`           | `deviceOverspeed`                |
+| 斷電            | `attributes.power`（**伏特**，GT06 `0x94` 是 12.5）低於 `-power-cut-volts` | `powerCut`                       |
+| 復電            | 同一裝置上一個 `power` 低於門檻、這一筆回到門檻以上                        | `powerRestored`                  |
+| 進入 / 離開圍欄 | `geofences` 表的幾何內含判定變化（每個裝置各自記狀態）                     | `geofenceEnter` / `geofenceExit` |
 
 `-alert-repeat`（例如 `-alert-repeat 10m`）對超速與斷電做去重：同一裝置、同一類型在視窗內
 只寫第一筆。圍欄進出與復電是狀態轉換，不受影響。`0`（預設）維持舊行為，每筆 position 都寫。
@@ -162,8 +176,18 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
 ```
 
 ```json
-{"alerts":[{"id":1,"deviceId":7,"type":"deviceOverspeed","alertTime":"2026-10-31T07:32:10Z",
-            "attributes":{"limit":30,"protocol":"gt06","speed":31.5}}],"count":1}
+{
+  "alerts": [
+    {
+      "id": 1,
+      "deviceId": 7,
+      "type": "deviceOverspeed",
+      "alertTime": "2026-10-31T07:32:10Z",
+      "attributes": { "limit": 30, "protocol": "gt06", "speed": 31.5 }
+    }
+  ],
+  "count": 1
+}
 ```
 
 參數：`deviceId`、`type`（可重複或逗號分隔）、`from` / `to`（RFC3339 或 epoch 毫秒）、
@@ -182,20 +206,74 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
   （這正是避免告警風暴的目的，但會看不到歷史區間內的每一筆）。
 - 圍欄狀態存在記憶體，重啟後每個裝置的第一筆 position 只做「播種」，不會補發 enter / exit。
 
-## 認證
+## 認證與權限
 
-設 `-api-key`（預設取環境變數 `TRACCAR_API_KEY`）之後，除了 `/api/health` 以外的端點都要帶 key：
+除了 `/api/health`，REST 每個請求都要帶憑證，放在 `X-Api-Key` 或
+`Authorization: Bearer <token>`（兩者等價）：
+
+| 憑證         | 來源                                  | 權限                         |
+| ------------ | ------------------------------------- | ---------------------------- |
+| 共用 API key | `-api-key` / `TRACCAR_API_KEY`        | admin：所有 scope、所有裝置  |
+| 使用者 token | `api_tokens` 表，用 `-issue-token` 發 | 依 `scopes` + `user_devices` |
+
+憑證以常數時間比較；token 只存 SHA-256（`api_tokens.token_hash`），資料庫外洩也拿不到原值。
+缺憑證或不符回 `401`（帶 `WWW-Authenticate: Bearer`），scope 不足或裝置未授權回 `403`。
+接了 `-dsn` 之後 token 認證一律啟用：**沒設 `-api-key` 又沒有任何有效 token 時，REST 是全關的**
+（只有 `/api/health` 例外）。舊的 `-api-key` 仍然可用，等於 admin。
+本機開發若不想每次帶憑證，可以加 `-allow-anonymous`（啟動會印警告，不要用在對外環境）。
 
 ```bash
-TRACCAR_API_KEY='please-change-me' go run ./cmd/traccar-gateway -dsn '******localhost:5432/postgres?sslmode=disable'
-
+# 共用 API key
 curl -H 'X-Api-Key: please-change-me' 'localhost:8082/api/positions'
-curl -H 'Authorization: Bearer please-change-me' 'localhost:8082/api/alerts'
+# 使用者 token
+curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 ```
 
-兩者等價，key 以常數時間比較。缺 key 或 key 不對回 `401`，並帶 `WWW-Authenticate: Bearer`。
-沒設 key 時 REST 完全開放，啟動會印 `api: no -api-key set, REST is unauthenticated`。
-優先用環境變數，key 才不會出現在 `ps` 的參數列。
+### Scope
+
+| scope             | 端點                             |
+| ----------------- | -------------------------------- |
+| `read:positions`  | `GET /api/positions`             |
+| `read:devices`    | `GET /api/devices`               |
+| `read:alerts`     | `GET /api/alerts`                |
+| `read:metrics`    | `GET /metrics`                   |
+| `write:devices`   | `POST/PUT/DELETE /api/devices`   |
+| `write:commands`  | `POST /api/commands`             |
+| `*`               | 全部（給機器用，等同舊 API key） |
+
+### 使用者與裝置擁有權
+
+`users.admin = true` 的使用者不受 scope 與裝置限制；其他使用者只看得到 `user_devices`
+有授權的裝置。所有查詢（devices / positions / alerts）都會自動加上裝置條件，**沒有授權任何裝置
+就回空結果，而不是全部**。修改 / 刪除裝置與下命令也要擁有該裝置，否則 `403`。
+
+目前沒有使用者管理 API，先以 SQL 維護：
+
+```bash
+# 1) 建立使用者
+psql "$DSN" -c "INSERT INTO users (email, name, admin)
+                VALUES ('alice@example.com', 'Alice', false)"
+
+# 2) 發 token（只印一次，之後無法取回）
+go run ./cmd/traccar-gateway -dsn "$DSN" \
+  -issue-token alice@example.com \
+  -token-scopes read:positions,read:devices,read:alerts \
+  -token-ttl 720h
+# trc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 3) 授權裝置（多對多）
+psql "$DSN" -c "INSERT INTO user_devices (user_id, device_id)
+                SELECT u.id, d.id FROM users u, devices d
+                WHERE u.email = 'alice@example.com' AND d.unique_id = '864717003283581'
+                ON CONFLICT DO NOTHING"
+```
+
+`-token-ttl 0`（預設）表示永不過期；scopes 也可以用 SQL 直接改。
+撤銷只要 `DELETE FROM api_tokens WHERE id = ...` 或設 `expires_at`，下一個請求就失效
+（每個請求查一次 `api_tokens` + `user_devices`，沒有快取）。
+
+非 admin token 用 `POST /api/devices` 建檔時，會自動寫入 `user_devices`，建立者立刻看得到；
+admin key 建的裝置不會自動綁定，要另外授權。
 
 下面 REST 範例省略了這個 header。
 
@@ -208,8 +286,20 @@ curl 'localhost:8082/api/devices?protocol=gt06&limit=20'
 ```
 
 ```json
-{"devices":[{"id":7,"uniqueId":"864717003283581","name":"","protocol":"gt06",
-             "attributes":{},"lastUpdate":"2026-10-31T07:32:10Z","createdAt":"2026-10-31T06:00:00Z"}],"count":1}
+{
+  "devices": [
+    {
+      "id": 7,
+      "uniqueId": "864717003283581",
+      "name": "",
+      "protocol": "gt06",
+      "attributes": {},
+      "lastUpdate": "2026-10-31T07:32:10Z",
+      "createdAt": "2026-10-31T06:00:00Z"
+    }
+  ],
+  "count": 1
+}
 ```
 
 參數：`protocol`（精確比對）、`limit`（1–1000，預設 100）、`offset`。
@@ -235,6 +325,9 @@ curl -i -X DELETE localhost:8082/api/devices/7
 # 204；不存在回 404
 ```
 
+非 admin token 需要 `write:devices`，而且只能修改 / 刪除 `user_devices` 內的裝置，否則回 403；
+`POST /api/devices` 建檔後會自動把新裝置綁給該 token 的使用者。
+
 `uniqueId`、`name`、`model`、`protocol` 兩端都會 trim；空白的 `uniqueId` 回 400。
 id 不是正整數回 400。`attributes` 目前只能以 SQL 維護。
 
@@ -248,9 +341,26 @@ curl 'localhost:8082/api/positions?deviceId=7&limit=2'
 ```
 
 ```json
-{"positions":[{"id":42,"deviceId":7,"protocol":"gt06","deviceTime":"2026-10-31T07:32:10Z",
-               "serverTime":"2026-10-31T07:32:11Z","valid":true,"latitude":54.943,"longitude":25.206,
-               "altitude":100,"speed":27,"course":180,"accuracy":5,"attributes":{"sat":9}}],"count":1}
+{
+  "positions": [
+    {
+      "id": 42,
+      "deviceId": 7,
+      "protocol": "gt06",
+      "deviceTime": "2026-10-31T07:32:10Z",
+      "serverTime": "2026-10-31T07:32:11Z",
+      "valid": true,
+      "latitude": 54.943,
+      "longitude": 25.206,
+      "altitude": 100,
+      "speed": 27,
+      "course": 180,
+      "accuracy": 5,
+      "attributes": { "sat": 9 }
+    }
+  ],
+  "count": 1
+}
 ```
 
 參數與告警查詢一致：`deviceId`、`from` / `to`（RFC3339 或 epoch 毫秒）、`limit`（1–1000，預設 100，
@@ -270,13 +380,14 @@ curl -i -X POST localhost:8082/api/commands \
 # {"deviceId":7,"type":"engineStop","protocol":"gt06","queued":true}
 ```
 
-| 狀態 | 意義 |
-|---|---|
-| `202` | 已寫入設備連線 |
-| `400` | body 不合法，或該協議不支援這個命令 |
-| `404` | 裝置不存在 |
+| 狀態  | 意義                                                        |
+| ----- | ----------------------------------------------------------- |
+| `202` | 已寫入設備連線                                              |
+| `400` | body 不合法，或該協議不支援這個命令                         |
+| `403` | 缺少 `write:commands`，或該裝置不在 `user_devices` 內        |
+| `404` | 裝置不存在                                                  |
 | `409` | 裝置離線，或 `devices.protocol` 還是 NULL（讓設備重連一次） |
-| `501` | 沒有配置命令路由 |
+| `501` | 沒有配置命令路由                                            |
 
 各協議支援的命令以 encoder 為準：H02 `alarmArm` / `alarmDisarm` / `engineStop` / `engineResume` /
 `positionPeriodic`；GT06 `engineStop` / `engineResume` / `custom`；JT808 `positionSingle` /
@@ -298,7 +409,7 @@ go build ./...
 go vet ./...
 go test ./...                 # 全部（含 gateway 的 net.Pipe 端到端）
 go test ./internal/protocol/gt06 -run TestDecodeGPS -v
-go test ./internal/geofence ./internal/alert ./internal/api -v
+go test ./internal/auth ./internal/geofence ./internal/alert ./internal/api -v
 go test -race ./internal/gateway ./internal/alert ./internal/api
 ```
 
@@ -316,22 +427,22 @@ go test -race ./internal/gateway ./internal/alert ./internal/api
 
 ```bash
 TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmode=disable' \
-  go test ./internal/storage/postgres -run 'TestStoreIntegration|TestAlertStoreIntegration' -v
+  go test ./internal/storage/postgres -run 'TestStoreIntegration|TestAlertStoreIntegration|TestTokenStoreIntegration' -v
 ```
 
 ## 監控（開發期）
 
 目前可觀察的輸出：
 
-| 來源 | 內容 |
-|---|---|
-| `gateway.Server` log | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes` |
-| `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>` |
-| `alert.Pipeline` log | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>` |
-| `alert` 啟動 log | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗） |
-| `api.Server` log | `api: listening on <addr>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: send command <type> to device <id>: <err>` |
-| CLI 關閉時 | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full` |
-| 記憶體模式 sink | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`） |
+| 來源                     | 內容                                                                                                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`                                   |
+| `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                       |
+| `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                              |
+| `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）                                                                                 |
+| `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: send command <type> to device <id>: <err>` |
+| CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`                                                                  |
+| 記憶體模式 sink          | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`）                                                                                                          |
 
 排查順序建議：
 
@@ -361,7 +472,7 @@ traccar_alerts_total{type="deviceOverspeed"} 4
 traccar_alert_dropped_total 0
 ```
 
-`/metrics` 和其他端點一樣受 `-api-key` 保護（只有 `/api/health` 免 key），
+`/metrics` 需要 `read:metrics`（舊的 `-api-key` 是 admin，自然可讀；只有 `/api/health` 免憑證），
 Prometheus 的 scrape 設定要帶 header：
 
 ```yaml
@@ -378,9 +489,12 @@ scrape_configs:
 
 ## 已知限制
 
-- REST 預設**沒有認證**：沒設 `-api-key`（或 `TRACCAR_API_KEY`）時，能連到 `-http` 位址的人
-  就能讀全站告警 / 位置並下命令。對外請務必設 key，或綁內網 / 反代後面。
-  只有 `/api/health` 免 key（給 probe 用）。
+- 接了 `-dsn` 之後 REST 預設是**全關**的：沒設 `-api-key` 又沒有有效 token 時，除了
+  `/api/health` 以外的請求都會回 401。第一次使用要先建 `users` 再用 `-issue-token` 發一把
+  （見「認證與權限」），或暫時用 `-api-key`；`-allow-anonymous` 只適合本機。
+  對外仍建議加 TLS / 反代。
+- 使用者與裝置授權只能用 SQL 維護，還沒有使用者管理 API；`api_tokens` 也沒有列表端點。
+  每個請求都會查一次 token 與裝置清單，撤銷立即生效但也多一次 DB round trip。
 - 裝置的 `attributes` 只能以 SQL 維護；`PUT` 只改 `name` / `model`，`protocol` 建立後不可改。
   裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
 - 命令只寫進設備連線，不等 ACK、不落地，也沒有 Java 版的 `commands` 表與派送佇列；
@@ -393,7 +507,7 @@ scrape_configs:
 
 ## 下一步
 
-1. 授權：API key 只有「全有全無」，還沒有 Traccar 的 user / device 權限表；對外建議加 mTLS 或反代。
+1. 使用者管理 API（建立 / 停用使用者、列出與撤銷 token），目前只能以 SQL 維護。
 2. 每裝置 / 每圍欄門檻（`geofences.attributes` 已有 `floor` / `ceiling` 雛形）。
 3. 通知管道（email / webhook）。
 4. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。

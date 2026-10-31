@@ -41,9 +41,13 @@ func (a *Alert) Set(key string, value any) {
 // Limit and Offset are clamped by the storage layer.
 type AlertFilter struct {
 	DeviceID int64
-	Types    []string
-	From     time.Time
-	To       time.Time
-	Limit    int
-	Offset   int
+	// DeviceIDs restricts the result to a set of devices. Nil means "no
+	// restriction"; a non-nil empty slice matches nothing, which is how a
+	// token without device grants stays isolated.
+	DeviceIDs []int64
+	Types     []string
+	From      time.Time
+	To        time.Time
+	Limit     int
+	Offset    int
 }

@@ -33,8 +33,11 @@ type Device struct {
 // Limit and Offset are clamped by the storage layer.
 type DeviceFilter struct {
 	Protocol string
-	Limit    int
-	Offset   int
+	// DeviceIDs restricts the result to a set of devices. Nil means "no
+	// restriction"; a non-nil empty slice matches nothing.
+	DeviceIDs []int64
+	Limit     int
+	Offset    int
 }
 
 // DeviceCreate holds the fields accepted when creating a device. The gateway

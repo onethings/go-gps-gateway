@@ -1,5 +1,7 @@
 // Package api exposes the REST endpoints of the gateway on top of net/http:
-// alert queries, a liveness probe and device commands.
+// alerts, positions and devices, a liveness probe, device commands and
+// Prometheus metrics. Authentication is either the legacy shared API key
+// (admin) or a database token with scopes and device ownership.
 package api
 
 import (
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
@@ -54,6 +57,13 @@ type DeviceStore interface {
 	DeleteDevice(ctx context.Context, deviceID int64) error
 }
 
+// DeviceOwnerStore is the optional capability that links a newly created
+// device to its owner. Without it only admins may create devices, because a
+// non-admin would otherwise create a device it cannot see.
+type DeviceOwnerStore interface {
+	AssignDevice(ctx context.Context, userID, deviceID int64) error
+}
+
 // Server holds the handlers and their configuration.
 type Server struct {
 	alerts       AlertQuerier
@@ -66,6 +76,7 @@ type Server struct {
 	queryTimeout time.Duration
 	now          func() time.Time
 	apiKey       string
+	tokens       TokenLookup
 }
 
 // Option customises a Server.
@@ -107,10 +118,19 @@ func WithDevices(devices DeviceStore) Option {
 	return func(s *Server) { s.devices = devices }
 }
 
-// WithAPIKey requires every request except /api/health to present the key.
-// An empty key leaves the API open, which is only meant for local development.
+// WithAPIKey requires every request except /api/health to present a
+// credential. An empty key disables the legacy shared key; database tokens
+// (WithTokens) may still authenticate. The key is an admin credential: it
+// bypasses scope and device checks.
 func WithAPIKey(key string) Option {
 	return func(s *Server) { s.apiKey = key }
+}
+
+// WithTokens enables per-user bearer tokens. A token carries scopes and the
+// devices of its user; see auth.Scope and the users/user_devices/api_tokens
+// tables.
+func WithTokens(tokens TokenLookup) Option {
+	return func(s *Server) { s.tokens = tokens }
 }
 
 // WithMetrics enables GET /metrics. Without it the route reports 501.
@@ -146,10 +166,77 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("POST /api/commands", s.handleCommand)
 
-	if s.apiKey == "" {
+	if s.apiKey == "" && s.tokens == nil {
 		return mux
 	}
-	return RequireAPIKey(s.apiKey, mux)
+	return RequireAuth(s.apiKey, s.tokens, s.logf, mux)
+}
+
+// authEnabled reports whether the API is protected at all.
+func (s *Server) authEnabled() bool {
+	return s.apiKey != "" || s.tokens != nil
+}
+
+// authorize checks the scope a handler needs. It writes the response itself
+// and returns false when the caller must stop.
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request, scope auth.Scope) bool {
+	if !s.authEnabled() {
+		return true
+	}
+	principal := auth.FromContext(r.Context())
+	if principal == nil {
+		// The middleware attaches a principal to every authenticated request;
+		// this is only reachable if a handler is mounted outside it.
+		writeUnauthorized(w)
+		return false
+	}
+	if !principal.Has(scope) {
+		writeError(w, http.StatusForbidden, fmt.Errorf("missing scope %q", scope))
+		return false
+	}
+	return true
+}
+
+// isAdmin reports whether the caller may see every device. When authentication
+// is disabled every request is treated as admin.
+func (s *Server) isAdmin(r *http.Request) bool {
+	if !s.authEnabled() {
+		return true
+	}
+	principal := auth.FromContext(r.Context())
+	return principal != nil && principal.Admin
+}
+
+// deviceScope returns the device ids a non-admin may see, or nil when the
+// result is unrestricted.
+func (s *Server) deviceScope(r *http.Request) []int64 {
+	if !s.authEnabled() {
+		return nil
+	}
+	principal := auth.FromContext(r.Context())
+	if principal == nil || principal.Admin {
+		return nil
+	}
+	return principal.DeviceIDs()
+}
+
+// canAccessDevice reports whether the caller owns the device.
+func (s *Server) canAccessDevice(r *http.Request, deviceID int64) bool {
+	if !s.authEnabled() {
+		return true
+	}
+	principal := auth.FromContext(r.Context())
+	if principal == nil {
+		return false
+	}
+	return principal.CanAccessDevice(deviceID)
+}
+
+// forbiddenDevice writes the 403 used when a device exists but is not granted
+// to the caller. It deliberately does not distinguish "unknown" from "not
+// yours" when the caller has no device at all.
+func writeForbiddenDevice(w http.ResponseWriter, deviceID int64) {
+	writeError(w, http.StatusForbidden, fmt.Errorf("device %d is not accessible", deviceID))
 }
 
 type alertResponse struct {
@@ -168,11 +255,15 @@ type alertsResponse struct {
 }
 
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.ScopeReadAlerts) {
+		return
+	}
 	filter, err := alertFilter(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	filter.DeviceIDs = s.deviceScope(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
@@ -227,12 +318,16 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, errors.New("positions are not configured"))
 		return
 	}
+	if !s.authorize(w, r, auth.ScopeReadPositions) {
+		return
+	}
 
 	filter, err := positionFilter(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	filter.DeviceIDs = s.deviceScope(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
@@ -294,12 +389,16 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
 		return
 	}
+	if !s.authorize(w, r, auth.ScopeReadDevices) {
+		return
+	}
 
 	filter, err := deviceFilter(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	filter.DeviceIDs = s.deviceScope(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
@@ -363,6 +462,9 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
 		return
 	}
+	if !s.authorize(w, r, auth.ScopeWriteDevices) {
+		return
+	}
 
 	var request deviceCreateRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxDeviceBody)).Decode(&request); err != nil {
@@ -373,6 +475,14 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	request.UniqueID = strings.TrimSpace(request.UniqueID)
 	if request.UniqueID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("uniqueId is required"))
+		return
+	}
+
+	ownerStore, ownsDevices := s.devices.(DeviceOwnerStore)
+	assignOwner := ownsDevices && !s.isAdmin(r)
+	if !s.isAdmin(r) && !ownsDevices {
+		writeError(w, http.StatusForbidden,
+			errors.New("only an admin token may create devices without ownership support"))
 		return
 	}
 
@@ -395,6 +505,20 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if assignOwner {
+		principal := auth.FromContext(r.Context())
+		if err := ownerStore.AssignDevice(ctx, principal.UserID, device.ID); err != nil {
+			s.logf("api: assign device %d to user %d: %v", device.ID, principal.UserID, err)
+			// Without the ownership row the creator could not manage the
+			// device, so undo the create instead of leaving it orphaned.
+			if cleanupErr := s.devices.DeleteDevice(ctx, device.ID); cleanupErr != nil {
+				s.logf("api: rollback device %d: %v", device.ID, cleanupErr)
+			}
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, newDeviceResponse(*device))
 }
 
@@ -403,10 +527,17 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
 		return
 	}
+	if !s.authorize(w, r, auth.ScopeWriteDevices) {
+		return
+	}
 
 	deviceID, err := deviceIDFromPath(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !s.canAccessDevice(r, deviceID) {
+		writeForbiddenDevice(w, deviceID)
 		return
 	}
 
@@ -441,10 +572,17 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
 		return
 	}
+	if !s.authorize(w, r, auth.ScopeWriteDevices) {
+		return
+	}
 
 	deviceID, err := deviceIDFromPath(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !s.canAccessDevice(r, deviceID) {
+		writeForbiddenDevice(w, deviceID)
 		return
 	}
 
@@ -476,9 +614,12 @@ func deviceIDFromPath(r *http.Request) (int64, error) {
 
 // handleMetrics serves the Prometheus text format. It is subject to the API key
 // like every other route except /api/health.
-func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if s.meters == nil {
 		writeError(w, http.StatusNotImplemented, errors.New("metrics are not configured"))
+		return
+	}
+	if !s.authorize(w, r, auth.ScopeReadMetrics) {
 		return
 	}
 
@@ -516,6 +657,9 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, errors.New("commands are not configured"))
 		return
 	}
+	if !s.authorize(w, r, auth.ScopeWriteCommands) {
+		return
+	}
 
 	// Extra fields are tolerated on purpose: Traccar clients send more than
 	// deviceId/type/attributes.
@@ -530,6 +674,10 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Type == "" {
 		writeError(w, http.StatusBadRequest, errors.New("type is required"))
+		return
+	}
+	if !s.canAccessDevice(r, request.DeviceID) {
+		writeForbiddenDevice(w, request.DeviceID)
 		return
 	}
 

@@ -227,6 +227,9 @@ func alertQuery(filter model.AlertFilter) (string, []any) {
 	if filter.DeviceID != 0 {
 		conditions = append(conditions, "device_id = "+placeholder(filter.DeviceID))
 	}
+	if filter.DeviceIDs != nil {
+		conditions = append(conditions, deviceIDsClause(&args, "device_id", filter.DeviceIDs))
+	}
 	if len(filter.Types) > 0 {
 		types := make([]string, 0, len(filter.Types))
 		for _, alertType := range filter.Types {

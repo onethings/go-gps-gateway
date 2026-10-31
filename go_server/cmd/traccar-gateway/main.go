@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	"traccar-server_go/go_server/internal/alert"
 	"traccar-server_go/go_server/internal/api"
+	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
@@ -36,13 +38,24 @@ func main() {
 	batchInterval := flag.Duration("batch-interval", time.Second, "maximum delay before a batch is written")
 	httpAddress := flag.String("http", "0.0.0.0:8082", "REST listen address; empty disables the API")
 	apiKey := flag.String("api-key", os.Getenv("TRACCAR_API_KEY"),
-		"REST API key (defaults to TRACCAR_API_KEY); empty disables authentication")
+		"REST API key (defaults to TRACCAR_API_KEY); empty means database tokens only")
+	allowAnonymous := flag.Bool("allow-anonymous", false,
+		"disable REST authentication entirely; local development only")
+	issueToken := flag.String("issue-token", "",
+		"issue an API token for this user email and exit (needs -dsn)")
+	tokenScopes := flag.String("token-scopes", "read:positions,read:devices,read:alerts",
+		"comma separated scopes for -issue-token")
+	tokenTTL := flag.Duration("token-ttl", 0, "lifetime of an issued token; 0 never expires")
 	overspeedKnots := flag.Float64("overspeed-knots", 0, "overspeed alert threshold in knots; 0 disables the rule")
 	powerCutVolts := flag.Float64("power-cut-volts", 0, "power cut alert threshold in volts; 0 disables the rule")
 	alertRepeat := flag.Duration("alert-repeat", 0,
 		"suppress repeat overspeed/powerCut alerts per device within this window; 0 disables")
 	geofenceRefresh := flag.Duration("geofence-refresh", 5*time.Minute, "geofence reload interval; 0 loads them once")
 	flag.Parse()
+
+	if *issueToken != "" && *dsn == "" {
+		log.Fatal("-issue-token needs -dsn")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -65,6 +78,13 @@ func main() {
 			log.Fatalf("postgres: %v", err)
 		}
 		defer store.Close()
+
+		if *issueToken != "" {
+			if err := issueAPIToken(ctx, store, *issueToken, *tokenScopes, *tokenTTL); err != nil {
+				log.Fatalf("issue token: %v", err)
+			}
+			return
+		}
 
 		batcher = postgres.NewBatchSink(store, *batchSize, *batchInterval,
 			postgres.WithBatchLogger(log.Printf),
@@ -148,19 +168,25 @@ func main() {
 		if store == nil {
 			log.Print("no -dsn given, REST API disabled")
 		} else {
-			if *apiKey == "" {
-				log.Print("api: no -api-key set, REST is unauthenticated")
+			options := []api.Option{
+				api.WithPositions(store),
+				api.WithDevices(store),
+				api.WithCommands(router, store),
+				api.WithMetrics(meters),
+				api.WithLogger(log.Printf),
+			}
+			switch {
+			case *allowAnonymous:
+				log.Print("api: -allow-anonymous set, REST is unauthenticated")
+			case *apiKey == "":
+				log.Print("api: no -api-key set; REST accepts only database tokens")
+				options = append(options, api.WithTokens(store))
+			default:
+				options = append(options, api.WithAPIKey(*apiKey), api.WithTokens(store))
 			}
 			apiServer = &http.Server{
-				Addr: *httpAddress,
-				Handler: api.NewServer(store,
-					api.WithPositions(store),
-					api.WithDevices(store),
-					api.WithCommands(router, store),
-					api.WithAPIKey(*apiKey),
-					api.WithMetrics(meters),
-					api.WithLogger(log.Printf),
-				).Handler(),
+				Addr:              *httpAddress,
+				Handler:           api.NewServer(store, options...).Handler(),
 				ReadHeaderTimeout: 5 * time.Second,
 				ReadTimeout:       15 * time.Second,
 				WriteTimeout:      30 * time.Second,
@@ -211,6 +237,31 @@ func main() {
 			log.Printf("dropped %d positions because the queue was full", dropped)
 		}
 	}
+}
+
+// issueAPIToken prints a fresh token for an existing user. Only the SHA-256
+// hash is stored, so the value printed here cannot be recovered later.
+func issueAPIToken(ctx context.Context, store *postgres.Store, email, rawScopes string, ttl time.Duration) error {
+	if ttl < 0 {
+		return errors.New("token ttl must not be negative")
+	}
+	scopes, err := auth.ParseScopes(rawScopes)
+	if err != nil {
+		return err
+	}
+
+	var expiresAt *time.Time
+	if ttl > 0 {
+		deadline := time.Now().Add(ttl)
+		expiresAt = &deadline
+	}
+
+	token, err := store.IssueToken(ctx, email, scopes, expiresAt)
+	if err != nil {
+		return err
+	}
+	fmt.Println(token)
+	return nil
 }
 
 // reloadGeofences replaces the engine's geofence set. A row with an

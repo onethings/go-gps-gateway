@@ -234,10 +234,13 @@ func (p *Position) IsLocated() bool {
 // are compared against the device time, which is what the reports use.
 type PositionFilter struct {
 	DeviceID int64
-	From     time.Time
-	To       time.Time
-	Limit    int
-	Offset   int
+	// DeviceIDs restricts the result to a set of devices. Nil means "no
+	// restriction"; a non-nil empty slice matches nothing.
+	DeviceIDs []int64
+	From      time.Time
+	To        time.Time
+	Limit     int
+	Offset    int
 }
 
 // String renders a compact human readable description, used by tests and

@@ -54,6 +54,9 @@ func deviceQuery(filter model.DeviceFilter) (string, []any) {
 		args = append(args, filter.Protocol)
 		clauses = append(clauses, fmt.Sprintf("protocol = $%d", len(args)))
 	}
+	if filter.DeviceIDs != nil {
+		clauses = append(clauses, deviceIDsClause(&args, "id", filter.DeviceIDs))
+	}
 
 	limit := filter.Limit
 	if limit <= 0 {

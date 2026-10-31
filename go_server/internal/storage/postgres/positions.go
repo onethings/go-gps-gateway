@@ -82,6 +82,9 @@ func positionQuery(filter model.PositionFilter) (string, []any) {
 	if filter.DeviceID != 0 {
 		add("device_id", "=", filter.DeviceID)
 	}
+	if filter.DeviceIDs != nil {
+		clauses = append(clauses, deviceIDsClause(&args, "device_id", filter.DeviceIDs))
+	}
 	if !filter.From.IsZero() {
 		add("device_time", ">=", filter.From.UTC())
 	}

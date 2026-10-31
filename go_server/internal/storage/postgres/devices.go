@@ -127,6 +127,42 @@ func (s *Store) Device(ctx context.Context, deviceID int64) (*model.Device, erro
 	return device, nil
 }
 
+// DeviceAttributes returns the attributes of every device, keyed by device id.
+// The alert engine keeps this snapshot in memory so evaluating a position
+// never queries the database. Rows without attributes are omitted.
+func (s *Store) DeviceAttributes(ctx context.Context) (map[int64]map[string]any, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, attributes FROM devices`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query device attributes: %w", err)
+	}
+	defer rows.Close()
+
+	attributes := make(map[int64]map[string]any)
+	for rows.Next() {
+		var (
+			deviceID int64
+			encoded  []byte
+		)
+		if err := rows.Scan(&deviceID, &encoded); err != nil {
+			return nil, fmt.Errorf("postgres: scan device attributes: %w", err)
+		}
+		if len(encoded) == 0 {
+			continue
+		}
+		values := map[string]any{}
+		if err := json.Unmarshal(encoded, &values); err != nil {
+			return nil, fmt.Errorf("postgres: decode device attributes: %w", err)
+		}
+		if len(values) > 0 {
+			attributes[deviceID] = values
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: query device attributes: %w", err)
+	}
+	return attributes, nil
+}
+
 // CreateDevice inserts a device and returns the stored row. A unique id that
 // already exists returns model.ErrDuplicateDevice instead of touching the row.
 func (s *Store) CreateDevice(ctx context.Context, create model.DeviceCreate) (*model.Device, error) {

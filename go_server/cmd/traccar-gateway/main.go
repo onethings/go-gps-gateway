@@ -51,6 +51,8 @@ func main() {
 	alertRepeat := flag.Duration("alert-repeat", 0,
 		"suppress repeat overspeed/powerCut alerts per device within this window; 0 disables")
 	geofenceRefresh := flag.Duration("geofence-refresh", 5*time.Minute, "geofence reload interval; 0 loads them once")
+	deviceRefresh := flag.Duration("device-refresh", 5*time.Minute,
+		"device attribute reload interval for per-device thresholds; 0 loads them once")
 	flag.Parse()
 
 	if *issueToken != "" && *dsn == "" {
@@ -106,6 +108,12 @@ func main() {
 		}
 		if *geofenceRefresh > 0 {
 			go refreshGeofences(ctx, store, engine, *geofenceRefresh)
+		}
+		if err := reloadDeviceAttributes(ctx, store, engine); err != nil {
+			log.Printf("alerts: load device attributes: %v", err)
+		}
+		if *deviceRefresh > 0 {
+			go refreshDeviceAttributes(ctx, store, engine, *deviceRefresh)
 		}
 	} else {
 		log.Print("no -dsn given, using the in-memory directory and a log sink")
@@ -285,6 +293,31 @@ func refreshGeofences(ctx context.Context, store *postgres.Store, engine *alert.
 		case <-ticker.C:
 			if err := reloadGeofences(ctx, store, engine); err != nil {
 				log.Printf("alerts: reload geofences: %v", err)
+			}
+		}
+	}
+}
+
+// reloadDeviceAttributes refreshes the per-device threshold snapshot. Devices
+// are created by the gateway itself, so the attributes set later with SQL are
+// picked up on the next reload.
+func reloadDeviceAttributes(ctx context.Context, store *postgres.Store, engine *alert.Engine) error {
+	attributes, err := store.DeviceAttributes(ctx)
+	engine.SetDeviceAttributes(attributes)
+	return err
+}
+
+func refreshDeviceAttributes(ctx context.Context, store *postgres.Store, engine *alert.Engine, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := reloadDeviceAttributes(ctx, store, engine); err != nil {
+				log.Printf("alerts: reload device attributes: %v", err)
 			}
 		}
 	}

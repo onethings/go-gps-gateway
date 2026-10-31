@@ -325,9 +325,10 @@ curl -X POST localhost:8082/api/notifications -H 'X-Api-Key: please-change-me' \
   -H 'Content-Type: application/json' \
   -d '{"type":"deviceOverspeed","notificators":["mail"],"description":"overspeed mail"}'
 
-# Bob(2) 用自己的 token 訂閱；也可以由 admin 代為操作
+# Bob(2) 用自己的 token 訂閱（發 token 見「帳號管理 API」）；admin 也可代為操作。
+# 使用者 token 可以放在 X-Api-Key 或 Authorization: Bearer。
 curl -X PUT localhost:8082/api/users/2/notifications/1 \
-  -H "Authorization: ******"
+  -H "X-Api-Key: $TRACCAR_TOKEN"
 ```
 
 等價的 SQL：
@@ -365,7 +366,8 @@ Webhook 的 body 固定為一份 JSON：
   `-notify-webhook` URL，沒有 per-user / per-notification URL。
 - 裝置的 `notifyEmail` / `notifyWebhook` 是絕對覆寫：設了就不會再加上訂閱者。
 - 有訂閱者時，該裝置 / 該告警類型的訂閱集合取代伺服器預設收件者；沒人訂閱的管道不送。
-- 裝置查詢失敗（資料庫暫時不可用）時仍會送出，只是主旨 / body 只帶 device id。
+- 裝置查詢失敗（資料庫暫時不可用）時仍會送出，只是主旨 / body 只帶 device id；訂閱查詢失敗
+  也一樣退回伺服器預設收件者，不會因為一次 DB hiccup 靜默丟掉告警。
 - 佇列滿時直接丟棄，**不做重試**；`-notify-queue` 要留得下告警尖峰。
 - `-notify-email-tls auto` 遇到沒有 STARTTLS 的伺服器會以明文繼續（與 `net/smtp.SendMail`
   相同）；正式環境請用 `starttls` 或 `implicit`。

@@ -1,7 +1,8 @@
 // Package api exposes the REST endpoints of the gateway on top of net/http:
-// alerts, positions and devices, a liveness probe, device commands and
-// Prometheus metrics. Authentication is either the legacy shared API key
-// (admin) or a database token with scopes and device ownership.
+// alerts, positions, devices, notification presets and subscriptions, a
+// liveness probe, device commands and Prometheus metrics. Authentication is
+// either the legacy shared API key (admin) or a database token with scopes and
+// device ownership.
 package api
 
 import (

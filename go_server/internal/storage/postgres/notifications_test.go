@@ -186,3 +186,32 @@ func containsNotification(notifications []model.Notification, id int64) bool {
 }
 
 func stringPointer(value string) *string { return &value }
+
+func TestAppendUniqueStrings(t *testing.T) {
+	values := appendUniqueStrings(nil, "mail", "webhook", "mail")
+	if strings.Join(values, ",") != "mail,webhook" {
+		t.Errorf("values = %v", values)
+	}
+	values = appendUniqueStrings(values, "webhook", "sms")
+	if strings.Join(values, ",") != "mail,webhook,sms" {
+		t.Errorf("values = %v", values)
+	}
+}
+
+func TestEncodeNotificators(t *testing.T) {
+	encoded, err := encodeNotificators([]string{"mail", "webhook"})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if encoded != `["mail","webhook"]` {
+		t.Errorf("encoded = %s", encoded)
+	}
+
+	encoded, err = encodeNotificators(nil)
+	if err != nil {
+		t.Fatalf("encode nil: %v", err)
+	}
+	if encoded != `[]` {
+		t.Errorf("encoded nil = %s, want []", encoded)
+	}
+}

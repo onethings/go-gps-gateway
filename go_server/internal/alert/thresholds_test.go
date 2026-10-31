@@ -169,6 +169,22 @@ func TestOverspeedGeofenceThresholdAppliesOnlyInside(t *testing.T) {
 	}
 }
 
+func TestOverspeedGeofenceThresholdRespectsAltitude(t *testing.T) {
+	fence := fenceWithLimit(t, 1, 50)
+	fence.Attributes["ceiling"] = 100.0
+	engine := New(Config{OverspeedKnots: 30}, []*geofence.Geofence{fence})
+
+	// Inside the polygon but above the ceiling, so the geofence is not
+	// entered and its speed limit does not apply.
+	position := locatedPosition(1, 0.5, 0.5)
+	position.Altitude = 150
+	position.Speed = 40
+	alerts := alertsOfType(engine.Evaluate(position), model.AlertOverspeed)
+	if len(alerts) != 1 || alerts[0].Attributes["limit"] != 30.0 {
+		t.Fatalf("alerts = %#v, want the global limit 30 above the ceiling", alerts)
+	}
+}
+
 func TestPowerCutPerDeviceThreshold(t *testing.T) {
 	engine := New(Config{PowerCutVolts: 10}, nil)
 	engine.SetDeviceAttributes(map[int64]map[string]any{

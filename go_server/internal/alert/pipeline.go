@@ -44,6 +44,7 @@ type Pipeline struct {
 	timeout  time.Duration
 	logf     func(format string, args ...any)
 	meters   *metrics.Set
+	hook     func(*model.Alert)
 
 	queue chan *model.Alert
 
@@ -100,6 +101,17 @@ func WithMetrics(set *metrics.Set) Option {
 	return func(p *Pipeline) { p.meters = set }
 }
 
+// WithAlertHook observes every alert the engine raises, including the ones the
+// write queue drops. The hook runs on the device goroutine, so it must not
+// block; the notify dispatcher only enqueues.
+func WithAlertHook(hook func(*model.Alert)) Option {
+	return func(p *Pipeline) {
+		if hook != nil {
+			p.hook = hook
+		}
+	}
+}
+
 // NewPipeline starts the background writer. next may be nil, which makes the
 // pipeline a terminal sink.
 func NewPipeline(engine *Engine, next Sink, writer Writer, options ...Option) *Pipeline {
@@ -133,6 +145,9 @@ func (p *Pipeline) Handle(position *model.Position) error {
 	if p.engine != nil {
 		for _, alert := range p.engine.Evaluate(position) {
 			p.enqueue(alert)
+			if p.hook != nil {
+				p.hook(alert)
+			}
 		}
 	}
 	if p.next == nil {

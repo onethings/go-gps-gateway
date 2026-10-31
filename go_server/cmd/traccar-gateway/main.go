@@ -11,8 +11,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/notify"
 	"traccar-server_go/go_server/internal/storage/postgres"
 )
 
@@ -55,10 +58,47 @@ func main() {
 	geofenceRefresh := flag.Duration("geofence-refresh", 5*time.Minute, "geofence reload interval; 0 loads them once")
 	deviceRefresh := flag.Duration("device-refresh", 5*time.Minute,
 		"device attribute reload interval for per-device thresholds; 0 loads them once")
+	notifyWebhook := flag.String("notify-webhook", "",
+		"webhook URL that receives alert JSON; empty disables the webhook channel")
+	notifyWebhookAuthorization := flag.String("notify-webhook-authorization", "",
+		"Authorization header sent with every webhook request")
+	notifySMTP := flag.String("notify-email-smtp", "",
+		"SMTP host:port for alert email; empty disables the mail channel")
+	notifyEmailFrom := flag.String("notify-email-from", "", "sender address of alert email")
+	notifyEmailTo := flag.String("notify-email-to", "",
+		"default alert email recipients, comma separated; empty uses only per-device notifyEmail")
+	notifyEmailUsername := flag.String("notify-email-username", "", "SMTP username; empty disables AUTH")
+	notifyEmailPassword := flag.String("notify-email-password", os.Getenv("TRACCAR_SMTP_PASSWORD"),
+		"SMTP password (defaults to TRACCAR_SMTP_PASSWORD)")
+	notifyEmailTLS := flag.String("notify-email-tls", notify.MailTLSAuto,
+		"SMTP TLS mode: auto, starttls, implicit or none")
+	notifyTypes := flag.String("notify-types", "",
+		"comma separated alert types to deliver; empty delivers every type")
+	notifyTimeout := flag.Duration("notify-timeout", 10*time.Second,
+		"timeout of one device lookup or notification send")
+	notifyQueue := flag.Int("notify-queue", 256, "alerts that may wait for notification delivery")
 	flag.Parse()
 
 	if *issueToken != "" && *dsn == "" {
 		log.Fatal("-issue-token needs -dsn")
+	}
+
+	deliveredTypes, err := notifyTypeFilter(*notifyTypes)
+	if err != nil {
+		log.Fatalf("-notify-types: %v", err)
+	}
+	channels, err := notifyChannels(notifyChannelConfig{
+		WebhookURL:           *notifyWebhook,
+		WebhookAuthorization: *notifyWebhookAuthorization,
+		SMTPAddress:          *notifySMTP,
+		EmailFrom:            *notifyEmailFrom,
+		EmailTo:              *notifyEmailTo,
+		EmailUsername:        *notifyEmailUsername,
+		EmailPassword:        *notifyEmailPassword,
+		EmailTLS:             *notifyEmailTLS,
+	})
+	if err != nil {
+		log.Fatalf("notify: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -68,15 +108,15 @@ func main() {
 	meters := metrics.New()
 
 	var (
-		directory gateway.DeviceDirectory
-		sink      gateway.Sink
-		batcher   *postgres.BatchSink
-		store     *postgres.Store
-		pipeline  *alert.Pipeline
+		directory  gateway.DeviceDirectory
+		sink       gateway.Sink
+		batcher    *postgres.BatchSink
+		store      *postgres.Store
+		pipeline   *alert.Pipeline
+		dispatcher *notify.Dispatcher
 	)
 
 	if *dsn != "" {
-		var err error
 		store, err = postgres.New(ctx, *dsn)
 		if err != nil {
 			log.Fatalf("postgres: %v", err)
@@ -101,9 +141,23 @@ func main() {
 			NotRepeat:      *alertRepeat,
 			PreferLowest:   *preferLowest,
 		}, nil)
+
+		var hook func(*model.Alert)
+		if len(channels) > 0 {
+			dispatcher = notify.NewDispatcher(store, channels,
+				notify.WithLogger(log.Printf),
+				notify.WithMetrics(meters),
+				notify.WithTimeout(*notifyTimeout),
+				notify.WithQueueSize(*notifyQueue),
+				notify.WithTypes(deliveredTypes))
+			hook = dispatcher.Enqueue
+			log.Printf("notify: %s enabled", notifyChannelNames(channels))
+		}
+
 		pipeline = alert.NewPipeline(engine, batcher, store,
 			alert.WithLogger(log.Printf),
-			alert.WithMetrics(meters))
+			alert.WithMetrics(meters),
+			alert.WithAlertHook(hook))
 		sink = pipeline
 
 		if err := reloadGeofences(ctx, store, engine); err != nil {
@@ -122,6 +176,9 @@ func main() {
 		log.Print("no -dsn given, using the in-memory directory and a log sink")
 		if *overspeedKnots != 0 || *powerCutVolts != 0 {
 			log.Print("alert rules need -dsn, ignoring -overspeed-knots and -power-cut-volts")
+		}
+		if len(channels) > 0 {
+			log.Print("alert notifications need -dsn, ignoring -notify-* flags")
 		}
 		directory = gateway.NewMemoryDirectory()
 		sink = gateway.SinkFunc(func(position *model.Position) error {
@@ -240,6 +297,18 @@ func main() {
 		}
 	}
 
+	// The pipeline feeds the notification queue, so it has to stop first.
+	if dispatcher != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := dispatcher.Close(shutdownCtx); err != nil {
+			log.Printf("flush notifications: %v", err)
+		}
+		cancel()
+		if dropped := dispatcher.Dropped(); dropped > 0 {
+			log.Printf("dropped %d notifications because the queue was full", dropped)
+		}
+	}
+
 	if batcher != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -327,4 +396,82 @@ func refreshDeviceAttributes(ctx context.Context, store *postgres.Store, engine 
 			}
 		}
 	}
+}
+
+// notifyChannelConfig collects the -notify-* flags that configure the channels.
+type notifyChannelConfig struct {
+	WebhookURL           string
+	WebhookAuthorization string
+	SMTPAddress          string
+	EmailFrom            string
+	EmailTo              string
+	EmailUsername        string
+	EmailPassword        string
+	EmailTLS             string
+}
+
+// notifyChannels builds the channels the flags enable. A channel with no flag
+// is skipped; a partial configuration is an error so that a typo does not
+// silently turn notifications off.
+func notifyChannels(config notifyChannelConfig) ([]notify.Channel, error) {
+	var channels []notify.Channel
+
+	if config.WebhookURL != "" {
+		parsed, err := url.Parse(config.WebhookURL)
+		if err != nil {
+			return nil, fmt.Errorf("webhook %q: %w", config.WebhookURL, err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("webhook %q: want an http or https URL", config.WebhookURL)
+		}
+		channels = append(channels, notify.Channel{
+			Notifier:  notify.NewWebhook(notify.WebhookConfig{Authorization: config.WebhookAuthorization}),
+			Defaults:  []string{config.WebhookURL},
+			Attribute: notify.AttrNotifyWebhook,
+		})
+	}
+
+	if config.SMTPAddress != "" || config.EmailFrom != "" || config.EmailTo != "" {
+		mailer, err := notify.NewMail(notify.MailConfig{
+			Address:  config.SMTPAddress,
+			From:     config.EmailFrom,
+			Username: config.EmailUsername,
+			Password: config.EmailPassword,
+			TLS:      config.EmailTLS,
+		})
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, notify.Channel{
+			Notifier:  mailer,
+			Defaults:  notify.SplitList(config.EmailTo),
+			Attribute: notify.AttrNotifyEmail,
+		})
+	}
+
+	return channels, nil
+}
+
+// notifyTypeFilter validates -notify-types so that a misspelled type fails at
+// startup instead of silently never matching. An empty value keeps every type.
+func notifyTypeFilter(value string) ([]string, error) {
+	types := notify.SplitList(value)
+	for _, alertType := range types {
+		switch alertType {
+		case "none", "all", "*",
+			model.AlertOverspeed, model.AlertPowerCut, model.AlertPowerRestored,
+			model.AlertGeofenceEnter, model.AlertGeofenceExit:
+		default:
+			return nil, fmt.Errorf("unknown alert type %q", alertType)
+		}
+	}
+	return types, nil
+}
+
+func notifyChannelNames(channels []notify.Channel) string {
+	names := make([]string, 0, len(channels))
+	for _, channel := range channels {
+		names = append(names, channel.Notifier.Name())
+	}
+	return strings.Join(names, ", ")
 }

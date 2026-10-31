@@ -256,15 +256,18 @@ func (h *Histogram) writeTo(w io.Writer) {
 
 // Set holds every metric the gateway exports.
 type Set struct {
-	ConnectionsActive *GaugeVec
-	Frames            *CounterVec
-	DecodeErrors      *CounterVec
-	Positions         *CounterVec
-	PositionsDropped  *Counter
-	DBWriteSeconds    *Histogram
-	DBWriteErrors     *Counter
-	Alerts            *CounterVec
-	AlertsDropped     *Counter
+	ConnectionsActive    *GaugeVec
+	Frames               *CounterVec
+	DecodeErrors         *CounterVec
+	Positions            *CounterVec
+	PositionsDropped     *Counter
+	DBWriteSeconds       *Histogram
+	DBWriteErrors        *Counter
+	Alerts               *CounterVec
+	AlertsDropped        *Counter
+	Notifications        *CounterVec
+	NotificationErrors   *CounterVec
+	NotificationsDropped *Counter
 }
 
 // New creates the metric set with the documented names.
@@ -288,6 +291,12 @@ func New() *Set {
 			"Alerts accepted for writing.", "type"),
 		AlertsDropped: NewCounter("traccar_alert_dropped_total",
 			"Alerts dropped because the write queue was full."),
+		Notifications: NewCounterVec("traccar_notifications_total",
+			"Alert notifications delivered.", "channel"),
+		NotificationErrors: NewCounterVec("traccar_notification_errors_total",
+			"Failed alert notification sends.", "channel"),
+		NotificationsDropped: NewCounter("traccar_notification_dropped_total",
+			"Notifications dropped because the send queue was full."),
 	}
 }
 
@@ -317,6 +326,9 @@ func (s *Set) collectors() []collector {
 		s.DBWriteErrors,
 		s.Alerts,
 		s.AlertsDropped,
+		s.Notifications,
+		s.NotificationErrors,
+		s.NotificationsDropped,
 	}
 }
 

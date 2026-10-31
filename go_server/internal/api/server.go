@@ -46,16 +46,19 @@ type PositionQuerier interface {
 	QueryPositions(ctx context.Context, filter model.PositionFilter) ([]model.Position, error)
 }
 
-// DeviceQuerier is the storage contract the devices handler needs.
-type DeviceQuerier interface {
+// DeviceStore is the storage contract the devices handlers need.
+type DeviceStore interface {
 	Devices(ctx context.Context, filter model.DeviceFilter) ([]model.Device, error)
+	CreateDevice(ctx context.Context, create model.DeviceCreate) (*model.Device, error)
+	UpdateDevice(ctx context.Context, deviceID int64, update model.DeviceUpdate) (*model.Device, error)
+	DeleteDevice(ctx context.Context, deviceID int64) error
 }
 
 // Server holds the handlers and their configuration.
 type Server struct {
 	alerts       AlertQuerier
 	positions    PositionQuerier
-	devices      DeviceQuerier
+	devices      DeviceStore
 	router       CommandRouter
 	protocols    DeviceProtocols
 	meters       *metrics.Set
@@ -99,8 +102,8 @@ func WithPositions(positions PositionQuerier) Option {
 	return func(s *Server) { s.positions = positions }
 }
 
-// WithDevices enables GET /api/devices. Without it the route reports 501.
-func WithDevices(devices DeviceQuerier) Option {
+// WithDevices enables the device routes. Without it they report 501.
+func WithDevices(devices DeviceStore) Option {
 	return func(s *Server) { s.devices = devices }
 }
 
@@ -135,6 +138,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/alerts", s.handleAlerts)
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
+	mux.HandleFunc("POST /api/devices", s.handleCreateDevice)
+	mux.HandleFunc("PUT /api/devices/{id}", s.handleUpdateDevice)
+	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/positions", s.handlePositions)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
@@ -310,26 +316,162 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		Count:   len(devices),
 	}
 	for _, device := range devices {
-		attributes := device.Attributes
-		if attributes == nil {
-			attributes = map[string]any{}
-		}
-		entry := deviceResponse{
-			ID:         device.ID,
-			UniqueID:   device.UniqueID,
-			Name:       device.Name,
-			Model:      device.Model,
-			Protocol:   device.Protocol,
-			Attributes: attributes,
-			CreatedAt:  device.CreatedAt.UTC(),
-		}
-		if !device.LastUpdate.IsZero() {
-			lastUpdate := device.LastUpdate.UTC()
-			entry.LastUpdate = &lastUpdate
-		}
-		response.Devices = append(response.Devices, entry)
+		response.Devices = append(response.Devices, newDeviceResponse(device))
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// newDeviceResponse renders one device. lastUpdate and model stay absent while
+// empty so clients do not have to special case zero values.
+func newDeviceResponse(device model.Device) deviceResponse {
+	attributes := device.Attributes
+	if attributes == nil {
+		attributes = map[string]any{}
+	}
+	response := deviceResponse{
+		ID:         device.ID,
+		UniqueID:   device.UniqueID,
+		Name:       device.Name,
+		Model:      device.Model,
+		Protocol:   device.Protocol,
+		Attributes: attributes,
+		CreatedAt:  device.CreatedAt.UTC(),
+	}
+	if !device.LastUpdate.IsZero() {
+		lastUpdate := device.LastUpdate.UTC()
+		response.LastUpdate = &lastUpdate
+	}
+	return response
+}
+
+const maxDeviceBody = 1 << 16
+
+type deviceCreateRequest struct {
+	UniqueID string `json:"uniqueId"`
+	Name     string `json:"name"`
+	Model    string `json:"model"`
+	Protocol string `json:"protocol"`
+}
+
+type deviceUpdateRequest struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
+	if s.devices == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
+		return
+	}
+
+	var request deviceCreateRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxDeviceBody)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
+		return
+	}
+
+	request.UniqueID = strings.TrimSpace(request.UniqueID)
+	if request.UniqueID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("uniqueId is required"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	device, err := s.devices.CreateDevice(ctx, model.DeviceCreate{
+		UniqueID: request.UniqueID,
+		Name:     strings.TrimSpace(request.Name),
+		Model:    strings.TrimSpace(request.Model),
+		Protocol: strings.TrimSpace(request.Protocol),
+	})
+	if errors.Is(err, model.ErrDuplicateDevice) {
+		writeError(w, http.StatusConflict, fmt.Errorf("device %q already exists", request.UniqueID))
+		return
+	}
+	if err != nil {
+		s.logf("api: create device %q: %v", request.UniqueID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newDeviceResponse(*device))
+}
+
+func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
+	if s.devices == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
+		return
+	}
+
+	deviceID, err := deviceIDFromPath(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var request deviceUpdateRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxDeviceBody)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	device, err := s.devices.UpdateDevice(ctx, deviceID, model.DeviceUpdate{
+		Name:  strings.TrimSpace(request.Name),
+		Model: strings.TrimSpace(request.Model),
+	})
+	if errors.Is(err, model.ErrDeviceNotFound) {
+		writeError(w, http.StatusNotFound, fmt.Errorf("unknown device %d", deviceID))
+		return
+	}
+	if err != nil {
+		s.logf("api: update device %d: %v", deviceID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newDeviceResponse(*device))
+}
+
+func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
+	if s.devices == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
+		return
+	}
+
+	deviceID, err := deviceIDFromPath(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	if err := s.devices.DeleteDevice(ctx, deviceID); err != nil {
+		if errors.Is(err, model.ErrDeviceNotFound) {
+			writeError(w, http.StatusNotFound, fmt.Errorf("unknown device %d", deviceID))
+			return
+		}
+		s.logf("api: delete device %d: %v", deviceID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deviceIDFromPath reads the {id} path segment.
+func deviceIDFromPath(r *http.Request) (int64, error) {
+	raw := r.PathValue("id")
+	deviceID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || deviceID <= 0 {
+		return 0, fmt.Errorf("invalid device id %q", raw)
+	}
+	return deviceID, nil
 }
 
 // handleMetrics serves the Prometheus text format. It is subject to the API key

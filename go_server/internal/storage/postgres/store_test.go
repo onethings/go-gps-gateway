@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -268,4 +269,64 @@ func findDevice(t *testing.T, store *Store, ctx context.Context, deviceID int64)
 	}
 	t.Fatalf("device %d is not in the %d gt06 results", deviceID, len(devices))
 	return model.Device{}
+}
+
+// TestDeviceStoreIntegration covers the CRUD path against a real database.
+func TestDeviceStoreIntegration(t *testing.T) {
+	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+	}
+
+	ctx := context.Background()
+	store, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	uniqueID := "CRUD" + time.Now().Format("150405.000000")
+	created, err := store.CreateDevice(ctx, model.DeviceCreate{
+		UniqueID: uniqueID,
+		Name:     "van",
+		Model:    "GT06N",
+		Protocol: "gt06",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.DB().ExecContext(ctx, `DELETE FROM devices WHERE id = $1`, created.ID)
+	})
+
+	if created.UniqueID != uniqueID || created.Name != "van" || created.Protocol != "gt06" {
+		t.Fatalf("created = %+v", created)
+	}
+	if _, err := store.CreateDevice(ctx, model.DeviceCreate{UniqueID: uniqueID}); !errors.Is(err, model.ErrDuplicateDevice) {
+		t.Fatalf("duplicate err = %v, want ErrDuplicateDevice", err)
+	}
+
+	updated, err := store.UpdateDevice(ctx, created.ID, model.DeviceUpdate{Name: "van-2"})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Name != "van-2" || updated.Model != "" {
+		t.Fatalf("updated = %+v", updated)
+	}
+
+	if _, err := store.UpdateDevice(ctx, created.ID+1<<20, model.DeviceUpdate{}); !errors.Is(err, model.ErrDeviceNotFound) {
+		t.Fatalf("unknown id err = %v, want ErrDeviceNotFound", err)
+	}
+
+	fetched, err := store.Device(ctx, created.ID)
+	if err != nil || fetched.UniqueID != uniqueID {
+		t.Fatalf("device = %+v, err = %v", fetched, err)
+	}
+
+	if err := store.DeleteDevice(ctx, created.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := store.DeleteDevice(ctx, created.ID); !errors.Is(err, model.ErrDeviceNotFound) {
+		t.Fatalf("second delete err = %v, want ErrDeviceNotFound", err)
+	}
 }

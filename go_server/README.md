@@ -6,7 +6,7 @@
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
 - 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄
-  + REST（裝置查詢、位置查詢、告警查詢、健康檢查、命令下發）全部可編譯、`go test ./...` 全綠。
+  + REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`）全部可編譯、`go test ./...` 全綠。
 
 ## 架構
 
@@ -25,7 +25,7 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                         └─ postgres.BatchSink  positions 批次落地
 
 client ──HTTP──▶ api.Server
-                   ├─ GET /api/devices   ──▶ devices 查詢
+                   ├─ GET /api/devices   ──▶ devices 查詢 / 新增 / 修改 / 刪除
                    ├─ GET /api/positions ──▶ positions 查詢
                    ├─ GET /api/alerts    ──▶ alerts 查詢
                    ├─ GET /api/health
@@ -48,7 +48,7 @@ client ──HTTP──▶ api.Server
 | `internal/gateway` | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由 |
 | `internal/geofence` | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線） |
 | `internal/alert` | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線 |
-| `internal/api` | REST：`GET /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands` |
+| `internal/api` | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands` |
 | `internal/metrics` | Prometheus 文字格式的計數器 / gauge / histogram（零依賴） |
 | `internal/storage/postgres` | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink` |
 | `cmd/traccar-gateway` | 啟動四個監聽埠與 REST 的 CLI |
@@ -199,7 +199,7 @@ curl -H 'Authorization: Bearer please-change-me' 'localhost:8082/api/alerts'
 
 下面 REST 範例省略了這個 header。
 
-## 裝置查詢
+## 裝置管理
 
 `GET /api/devices` 讀 `devices` 表，預設依 `last_update DESC NULLS LAST, id DESC`：
 
@@ -215,6 +215,28 @@ curl 'localhost:8082/api/devices?protocol=gt06&limit=20'
 參數：`protocol`（精確比對）、`limit`（1–1000，預設 100）、`offset`。
 `lastUpdate` 只在裝置至少上報過一筆位置時出現（不會是 `0001-01-01`），`model` 為空時同樣省略；
 `lastUpdate` 取的是**裝置時間**的最大值。
+
+寫入端點（用來預先建檔或改名，不必等裝置上線）：
+
+```bash
+# 新增（uniqueId 必填；protocol 建議一併給，裝置登入後不會被覆寫）
+curl -i -X POST localhost:8082/api/devices \
+  -H 'Content-Type: application/json' \
+  -d '{"uniqueId":"864717003283581","name":"van-7","model":"GT06N","protocol":"gt06"}'
+# 201 + 裝置 JSON；uniqueId 重複回 409
+
+# 修改：name / model 是整欄取代，省略等於清空
+curl -i -X PUT localhost:8082/api/devices/7 \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"van-7","model":"GT06N"}'
+
+# 刪除：positions / alerts 由 FK CASCADE 一併刪除
+curl -i -X DELETE localhost:8082/api/devices/7
+# 204；不存在回 404
+```
+
+`uniqueId`、`name`、`model`、`protocol` 兩端都會 trim；空白的 `uniqueId` 回 400。
+id 不是正整數回 400。`attributes` 目前只能以 SQL 維護。
 
 ## 位置查詢
 
@@ -359,7 +381,8 @@ scrape_configs:
 - REST 預設**沒有認證**：沒設 `-api-key`（或 `TRACCAR_API_KEY`）時，能連到 `-http` 位址的人
   就能讀全站告警 / 位置並下命令。對外請務必設 key，或綁內網 / 反代後面。
   只有 `/api/health` 免 key（給 probe 用）。
-- 裝置只能靠 device 登入自動建立（`-auto-register` 邏輯寫在 gateway），還沒有新增 / 改名 / 刪除的 API。
+- 裝置的 `attributes` 只能以 SQL 維護；`PUT` 只改 `name` / `model`，`protocol` 建立後不可改。
+  裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
 - 命令只寫進設備連線，不等 ACK、不落地，也沒有 Java 版的 `commands` 表與派送佇列；
   `devices.protocol` 為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
 - 告警只有超速 / 斷電 / 復電 / 圍欄四類，沒有通知管道（email / webhook），也沒有 per-device 門檻。
@@ -371,7 +394,7 @@ scrape_configs:
 ## 下一步
 
 1. 授權：API key 只有「全有全無」，還沒有 Traccar 的 user / device 權限表；對外建議加 mTLS 或反代。
-2. 裝置管理 API（新增 / 改名 / 刪除）與每裝置 / 每圍欄門檻。
+2. 每裝置 / 每圍欄門檻（`geofences.attributes` 已有 `floor` / `ceiling` 雛形）。
 3. 通知管道（email / webhook）。
 4. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
 5. 更完整的健康檢查（含 DB ping）。

@@ -127,7 +127,7 @@ func nextPosition(t *testing.T, positions <-chan *model.Position) *model.Positio
 // location report on the same connection.
 func TestGT06(t *testing.T) {
 	directory := gateway.NewMemoryDirectory()
-	if _, err := directory.Register("864717003283581"); err != nil {
+	if _, err := directory.Register("864717003283581", "gt06"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestGT06(t *testing.T) {
 // TestJT808 decodes a real 0x0200 report and checks the 0x8001 response.
 func TestJT808(t *testing.T) {
 	directory := gateway.NewMemoryDirectory()
-	if _, err := directory.Register("071604684030"); err != nil {
+	if _, err := directory.Register("071604684030", "jt808"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -198,7 +198,7 @@ func TestJT808(t *testing.T) {
 // and that the heartbeat byte produces neither a position nor a reply.
 func TestTeltonikaHandshake(t *testing.T) {
 	directory := gateway.NewMemoryDirectory()
-	if _, err := directory.Register("123456789012345"); err != nil {
+	if _, err := directory.Register("123456789012345", "teltonika"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -228,7 +228,7 @@ func TestTeltonikaHandshake(t *testing.T) {
 // and needs no session binding.
 func TestH02(t *testing.T) {
 	directory := gateway.NewMemoryDirectory()
-	if _, err := directory.Register("135790246811220"); err != nil {
+	if _, err := directory.Register("135790246811220", "h02"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestH02(t *testing.T) {
 // does not tear the connection down.
 func TestGarbageKeepsConnectionAlive(t *testing.T) {
 	directory := gateway.NewMemoryDirectory()
-	if _, err := directory.Register("864717003283581"); err != nil {
+	if _, err := directory.Register("864717003283581", "gt06"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 

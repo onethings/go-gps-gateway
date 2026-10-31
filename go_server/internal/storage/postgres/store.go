@@ -197,17 +197,40 @@ func (s *Store) UniqueID(deviceID int64) (string, error) {
 	return uniqueID, nil
 }
 
-// Register creates the device if needed and returns its id.
-func (s *Store) Register(uniqueID string) (int64, error) {
+// DeviceProtocol returns the protocol recorded for the device. found is false
+// when the device does not exist; protocol is empty when the column is still
+// NULL, which happens for devices registered before the gateway recorded it.
+func (s *Store) DeviceProtocol(ctx context.Context, deviceID int64) (string, bool, error) {
+	var protocol *string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT protocol FROM devices WHERE id = $1`, deviceID,
+	).Scan(&protocol)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("postgres: device protocol %d: %w", deviceID, err)
+	}
+	if protocol == nil {
+		return "", true, nil
+	}
+	return *protocol, true, nil
+}
+
+// Register creates the device if needed and returns its id. The protocol is
+// recorded on first sight and never overwritten, so a device that is moved to
+// another protocol has to be corrected in SQL.
+func (s *Store) Register(uniqueID, protocol string) (int64, error) {
 	if uniqueID == "" {
 		return 0, ErrUnknownDevice
 	}
 
 	var deviceID int64
 	err := s.db.QueryRowContext(context.Background(),
-		`INSERT INTO devices (unique_id) VALUES ($1)
-		 ON CONFLICT (unique_id) DO UPDATE SET unique_id = EXCLUDED.unique_id
-		 RETURNING id`, uniqueID,
+		`INSERT INTO devices (unique_id, protocol) VALUES ($1, NULLIF($2, ''))
+		 ON CONFLICT (unique_id) DO UPDATE
+		 SET protocol = COALESCE(devices.protocol, EXCLUDED.protocol)
+		 RETURNING id`, uniqueID, protocol,
 	).Scan(&deviceID)
 	if err != nil {
 		return 0, fmt.Errorf("postgres: register %q: %w", uniqueID, err)

@@ -5,8 +5,8 @@
 
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
-- 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄 + 唯讀 REST
-  全部可編譯、`go test ./...` 全綠。
+- 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄
+  + REST（告警查詢、位置查詢、健康檢查、命令下發）全部可編譯、`go test ./...` 全綠。
 
 ## 架構
 
@@ -24,7 +24,11 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                         ├─ alert.Pipeline  規則評估 → alerts 批次落地
                         └─ postgres.BatchSink  positions 批次落地
 
-client ──HTTP──▶ api.Server（GET /api/alerts、GET /api/health）──▶ alerts 查詢
+client ──HTTP──▶ api.Server
+                   ├─ GET /api/positions ──▶ positions 查詢
+                   ├─ GET /api/alerts   ──▶ alerts 查詢
+                   ├─ GET /api/health
+                   └─ POST /api/commands ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
 ```
 
 ## 目錄
@@ -39,10 +43,10 @@ client ──HTTP──▶ api.Server（GET /api/alerts、GET /api/health）─�
 | `internal/protocol/jt808` | JT/T 808（中國交通部標準） |
 | `internal/protocol/teltonika` | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13） |
 | `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植） |
-| `internal/gateway` | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面 |
+| `internal/gateway` | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由 |
 | `internal/geofence` | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線） |
 | `internal/alert` | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線 |
-| `internal/api` | 唯讀 REST：`GET /api/alerts`、`GET /api/health` |
+| `internal/api` | REST：`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`POST /api/commands` |
 | `internal/storage/postgres` | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink` |
 | `cmd/traccar-gateway` | 啟動四個監聽埠與 REST 的 CLI |
 
@@ -72,7 +76,8 @@ go run ./cmd/traccar-gateway \
 
 其他 flag：`-batch-size`（預設 500）、`-batch-interval`（預設 1s）、`-dsn`（空 = 記憶體模式）、
 `-overspeed-knots`（預設 0 = 關閉規則）、`-power-cut-volts`（預設 0 = 關閉規則）、
-`-geofence-refresh`（預設 5m，0 = 只在啟動時載入一次）。
+`-alert-repeat`（預設 0 = 不抑制重複告警）、`-geofence-refresh`（預設 5m，0 = 只在啟動時載入一次）、
+`-api-key`（預設讀 `TRACCAR_API_KEY`；空 = 關閉認證）。
 
 ## 協議支援矩陣
 
@@ -113,6 +118,9 @@ go run ./cmd/traccar-gateway \
 寫入路徑：`BatchSink`（非阻塞佇列 + 每批一個 multi-row `INSERT`）。
 佇列滿時 `Handle` 回傳 `ErrSinkFull` 並累計 `Dropped()`，不會拖慢 device 連線。
 
+`devices.protocol` 在設備首次登入（`Register`）時寫入，供 `POST /api/commands` 選擇 encoder；
+已存在且協議為 NULL 的舊資料會在下一次登入時補上（`COALESCE`，不會覆寫已知值）。
+
 ## 告警與地理圍欄
 
 `alert.Pipeline` 包在 `BatchSink` 前面，每個 position 先過規則再進批次寫入：
@@ -121,7 +129,11 @@ go run ./cmd/traccar-gateway \
 |---|---|---|
 | 超速 | `Speed`（**節**，decoder 已從 km/h 換算）高於 `-overspeed-knots` | `deviceOverspeed` |
 | 斷電 | `attributes.power`（**伏特**，GT06 `0x94` 是 12.5）低於 `-power-cut-volts` | `powerCut` |
+| 復電 | 同一裝置上一個 `power` 低於門檻、這一筆回到門檻以上 | `powerRestored` |
 | 進入 / 離開圍欄 | `geofences` 表的幾何內含判定變化（每個裝置各自記狀態） | `geofenceEnter` / `geofenceExit` |
+
+`-alert-repeat`（例如 `-alert-repeat 10m`）對超速與斷電做去重：同一裝置、同一類型在視窗內
+只寫第一筆。圍欄進出與復電是狀態轉換，不受影響。`0`（預設）維持舊行為，每筆 position 都寫。
 
 `type` 字串沿用 Java `Event.TYPE_*`，之後要跟母本合併時不用改前端。
 
@@ -158,9 +170,82 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
   需要精確關聯時用 `alerts.device_id` + `alert_time` 去 join `positions`，或之後改成
   `INSERT ... RETURNING`（會犧牲批次吞吐）。告警的 `attributes` 已內含 `latitude` / `longitude` /
   `speed` / `protocol` 快照，單看 `alerts` 表也夠用。
-- **沒有去重視窗**（Traccar 的 `notRepeat`）：超速期間每個 position 都寫一筆。需要降噪時
-  在 `alert.Engine` 的 `overspeed` / `powerCut` 加狀態即可，schema 不用改。
+- **門檻是全域的**：`-overspeed-knots` / `-power-cut-volts` 對所有裝置生效，
+  Java 版的 per-device 門檻還沒移植。
+- **去重與圍欄狀態都在記憶體**：重啟後去重視窗重新計時、圍欄只做「播種」。
+- **去重視窗比的是伺服器時間**，不是裝置時間；設備一次補傳大量歷史資料時只會留下第一筆
+  （這正是避免告警風暴的目的，但會看不到歷史區間內的每一筆）。
 - 圍欄狀態存在記憶體，重啟後每個裝置的第一筆 position 只做「播種」，不會補發 enter / exit。
+
+## 認證
+
+設 `-api-key`（預設取環境變數 `TRACCAR_API_KEY`）之後，除了 `/api/health` 以外的端點都要帶 key：
+
+```bash
+TRACCAR_API_KEY='please-change-me' go run ./cmd/traccar-gateway -dsn '******localhost:5432/postgres?sslmode=disable'
+
+curl -H 'X-Api-Key: please-change-me' 'localhost:8082/api/positions'
+curl -H 'Authorization: Bearer please-change-me' 'localhost:8082/api/alerts'
+```
+
+兩者等價，key 以常數時間比較。缺 key 或 key 不對回 `401`，並帶 `WWW-Authenticate: Bearer`。
+沒設 key 時 REST 完全開放，啟動會印 `api: no -api-key set, REST is unauthenticated`。
+優先用環境變數，key 才不會出現在 `ps` 的參數列。
+
+下面 REST 範例省略了這個 header。
+
+## 位置查詢
+
+`GET /api/positions` 讀 `positions` 表，`from` / `to` 比對的是**裝置時間**（`device_time`），
+排序固定 `device_time DESC, id DESC`：
+
+```bash
+curl 'localhost:8082/api/positions?deviceId=7&limit=2'
+```
+
+```json
+{"positions":[{"id":42,"deviceId":7,"protocol":"gt06","deviceTime":"2026-10-31T07:32:10Z",
+               "serverTime":"2026-10-31T07:32:11Z","valid":true,"latitude":54.943,"longitude":25.206,
+               "altitude":100,"speed":27,"course":180,"accuracy":5,"attributes":{"sat":9}}],"count":1}
+```
+
+參數與告警查詢一致：`deviceId`、`from` / `to`（RFC3339 或 epoch 毫秒）、`limit`（1–1000，預設 100，
+超過會回 400）、`offset`。`attributes` 永遠是物件（沒有額外欄位時是 `{}`，不是 `null`）。
+
+## 命令下發
+
+`POST /api/commands` 把命令編碼成該協議的位元組，直接寫進裝置目前那條 TCP 連線
+（需要 `-dsn`，因為要靠 `devices.protocol` 選 encoder）：
+
+```bash
+curl -i -X POST localhost:8082/api/commands \
+  -H 'Content-Type: application/json' \
+  -d '{"deviceId":7,"type":"engineStop","attributes":{}}'
+
+# HTTP/1.1 202 Accepted
+# {"deviceId":7,"type":"engineStop","protocol":"gt06","queued":true}
+```
+
+| 狀態 | 意義 |
+|---|---|
+| `202` | 已寫入設備連線 |
+| `400` | body 不合法，或該協議不支援這個命令 |
+| `404` | 裝置不存在 |
+| `409` | 裝置離線，或 `devices.protocol` 還是 NULL（讓設備重連一次） |
+| `501` | 沒有配置命令路由 |
+
+各協議支援的命令以 encoder 為準：H02 `alarmArm` / `alarmDisarm` / `engineStop` / `engineResume` /
+`positionPeriodic`；GT06 `engineStop` / `engineResume` / `custom`；JT808 `positionSingle` /
+`positionStop` / `rebootDevice` / `positionPeriodic` / `alarmArm` / `alarmDisarm` / `alarmDismiss` /
+`engineStop` / `engineResume` / `custom`；Teltonika `engineStop` / `engineResume` / `custom`。
+`custom` 的內容放 `attributes.data`（JT808 需要十六進位字串）。
+
+寫入是序列化的：解碼執行緒的 ACK 與 REST 的命令共用同一把連線鎖，不會把兩個幀交錯。
+同一裝置重新登入時舊連線會被關閉，命令只送到最新那條。
+
+裝置與連線的綁定時機：GT06 / JT808 / Teltonika 在握手（登入 / IMEI 封包）時綁定；
+H02 沒有握手，第一筆能解析出裝置的訊息就會綁定。因此對「從未上報過」或「尚未登入」的裝置
+下命令會得到 `409`。
 
 ## 開發
 
@@ -170,7 +255,7 @@ go vet ./...
 go test ./...                 # 全部（含 gateway 的 net.Pipe 端到端）
 go test ./internal/protocol/gt06 -run TestDecodeGPS -v
 go test ./internal/geofence ./internal/alert ./internal/api -v
-go test -race ./internal/gateway ./internal/alert
+go test -race ./internal/gateway ./internal/alert ./internal/api
 ```
 
 - 加測試向量：把 Java `*ProtocolDecoderTest` 的 `binary("...")` 貼進來，
@@ -200,7 +285,7 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>` |
 | `alert.Pipeline` log | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>` |
 | `alert` 啟動 log | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗） |
-| `api.Server` log | `api: listening on <addr>`、`api: query alerts: <err>` |
+| `api.Server` log | `api: listening on <addr>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: send command <type> to device <id>: <err>` |
 | CLI 關閉時 | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full` |
 | 記憶體模式 sink | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`） |
 
@@ -231,11 +316,13 @@ traccar_alert_dropped_total
 
 ## 已知限制
 
-- REST 只有唯讀的 `GET /api/alerts`、`GET /api/health`：**沒有任何認證**，
-  能連到 `-http` 位址的人就能讀全站告警。目前只適合綁內網 / 反代後面。
-- 命令下發（`POST /api/commands`）、`GET /api/positions` 還沒有 HTTP 入口
-  （encoder 已可用，缺路由與連線查找）。
-- 告警沒有去重視窗（`notRepeat`）與通知管道（email / webhook），也不做 per-device 門檻。
+- REST 預設**沒有認證**：沒設 `-api-key`（或 `TRACCAR_API_KEY`）時，能連到 `-http` 位址的人
+  就能讀全站告警 / 位置並下命令。對外請務必設 key，或綁內網 / 反代後面。
+  只有 `/api/health` 免 key（給 probe 用）。
+- `GET /api/devices` 還沒有 HTTP 入口（`devices` 表有資料，缺查詢與序列化）。
+- 命令只寫進設備連線，不等 ACK、不落地，也沒有 Java 版的 `commands` 表與派送佇列；
+  `devices.protocol` 為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
+- 告警只有超速 / 斷電 / 復電 / 圍欄四類，沒有通知管道（email / webhook），也沒有 per-device 門檻。
 - 圍欄只能以 SQL 維護，且對所有裝置生效；`alerts.position_id` 目前是 NULL（見上節）。
 - `devices.model` 只寫不讀，車型相關的協議分支（GT06 `NT_MODELS`、JT808 門磁/撞擊）尚未啟用。
 - 報表等其餘業務層仍是 Java 版負責。
@@ -243,8 +330,8 @@ traccar_alert_dropped_total
 
 ## 下一步
 
-1. REST 寫入端點：`POST /api/commands`（接 `gateway.Server` 的 encoder）、`GET /api/positions`。
-2. 認證 / 授權（至少 API key 或 mTLS），讓 `-http` 能對外。
-3. 告警降噪：`notRepeat` 視窗 + 每台裝置 / 每個圍欄的門檻（`geofences.attributes` 已有雛形）。
+1. REST 查詢端點：`GET /api/devices`（含 `last_update` 維護）。
+2. 授權：API key 只有「全有全無」，還沒有 Traccar 的 user / device 權限表；對外建議加 mTLS 或反代。
+3. 每裝置 / 每圍欄門檻與通知管道（email / webhook）。
 4. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
 5. 指標（`/metrics`）與更完整的健康檢查（含 DB ping）。

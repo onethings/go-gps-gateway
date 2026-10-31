@@ -9,6 +9,7 @@ const (
 	AlertGeofenceEnter = "geofenceEnter"
 	AlertGeofenceExit  = "geofenceExit"
 	AlertPowerCut      = "powerCut"
+	AlertPowerRestored = "powerRestored"
 )
 
 // Alert is one row of the alerts table: a rule verdict attached to a device at

@@ -23,6 +23,7 @@ type Server struct {
 	directory    DeviceDirectory
 	sink         Sink
 	locations    *LocationCache
+	conns        *connectionSet
 	logf         func(format string, args ...any)
 	maxFrameSize int
 	readTimeout  time.Duration
@@ -79,6 +80,7 @@ func NewServer(
 		directory:    directory,
 		sink:         sink,
 		locations:    NewLocationCache(),
+		conns:        newConnectionSet(),
 		logf:         log.Printf,
 		maxFrameSize: defaultMaxFrameSize,
 	}
@@ -123,6 +125,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
+	dc := &deviceConn{conn: conn}
 	protocol := s.factory(s.base)
 	frameDecoder := protocol.NewFrameDecoder()
 	decoder := protocol.NewDecoder()
@@ -136,6 +139,13 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 		buffer  = make([]byte, 0, 4096)
 		readBuf = make([]byte, 4096)
 	)
+	// Registered after conn.Close, so the device is unregistered before the
+	// socket goes away and Send cannot target a dead connection for long.
+	defer func() {
+		if session != nil {
+			s.conns.detach(session.DeviceID, dc)
+		}
+	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -161,7 +171,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 				if frame == nil {
 					break
 				}
-				if err := s.handleFrame(conn, decoder, frame, &session); err != nil {
+				if err := s.handleFrame(dc, decoder, frame, &session); err != nil {
 					s.logf("%s: %v", s.protocolName, err)
 					return
 				}
@@ -183,7 +193,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 }
 
 func (s *Server) handleFrame(
-	conn net.Conn, decoder codec.Decoder, frame []byte, session **codec.DeviceSession,
+	conn *deviceConn, decoder codec.Decoder, frame []byte, session **codec.DeviceSession,
 ) error {
 
 	result, err := decodeFrame(decoder, frame, *session)
@@ -196,11 +206,18 @@ func (s *Server) handleFrame(
 
 	if result.UniqueID != "" && *session == nil {
 		*session = s.bindSession(result.UniqueID)
+		s.trackConnection(conn, *session)
 	}
 
 	for _, position := range result.Positions {
 		if position.DeviceID == 0 && *session != nil {
 			position.DeviceID = (*session).DeviceID
+		}
+		if *session == nil && position.DeviceID != 0 {
+			// Protocols without a handshake (H02) identify the device in every
+			// frame, so the first position is what binds the connection.
+			*session = &codec.DeviceSession{DeviceID: position.DeviceID}
+			s.trackConnection(conn, *session)
 		}
 		s.locations.Store(position)
 		if s.sink != nil {
@@ -211,7 +228,7 @@ func (s *Server) handleFrame(
 	}
 
 	for _, response := range result.Responses {
-		if _, err := conn.Write(response); err != nil {
+		if err := conn.write(response); err != nil {
 			return fmt.Errorf("write response: %w", err)
 		}
 	}
@@ -226,6 +243,24 @@ func decodeFrame(decoder codec.Decoder, frame []byte, session *codec.DeviceSessi
 	return decoder.Decode(frame)
 }
 
+// trackConnection records dc as the live connection of the session's device and
+// closes the connection it replaces, so a reconnecting device never leaves a
+// zombie goroutine holding the same device id.
+func (s *Server) trackConnection(conn *deviceConn, session *codec.DeviceSession) {
+	if session == nil {
+		return
+	}
+
+	previous := s.conns.attach(session.DeviceID, conn)
+	if previous == nil || previous == conn {
+		return
+	}
+
+	s.logf("%s: device %d reconnected, closing previous connection",
+		s.protocolName, session.DeviceID)
+	_ = previous.conn.Close()
+}
+
 func (s *Server) bindSession(uniqueID string) *codec.DeviceSession {
 	if s.directory == nil {
 		return nil
@@ -236,7 +271,7 @@ func (s *Server) bindSession(uniqueID string) *codec.DeviceSession {
 	}
 
 	if registrar, ok := s.directory.(DeviceRegistrar); ok && s.autoRegister {
-		deviceID, err := registrar.Register(uniqueID)
+		deviceID, err := registrar.Register(uniqueID, s.protocolName)
 		if err != nil {
 			s.logf("%s: register %q: %v", s.protocolName, uniqueID, err)
 			return nil
@@ -250,4 +285,23 @@ func (s *Server) bindSession(uniqueID string) *codec.DeviceSession {
 // LastLocation exposes the position cache, e.g. for REST handlers.
 func (s *Server) LastLocation(deviceID int64) *model.Position {
 	return s.locations.LastLocation(deviceID)
+}
+
+// Send writes an already encoded payload to the live connection of deviceID.
+// It returns ErrDeviceOffline when the device is not connected to this server.
+func (s *Server) Send(deviceID int64, payload []byte) error {
+	if len(payload) == 0 {
+		return nil
+	}
+
+	conn := s.conns.get(deviceID)
+	if conn == nil {
+		return ErrDeviceOffline
+	}
+	return conn.write(payload)
+}
+
+// Online reports whether the device currently holds a connection.
+func (s *Server) Online(deviceID int64) bool {
+	return s.conns.get(deviceID) != nil
 }

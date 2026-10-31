@@ -19,9 +19,10 @@ type DeviceDirectory interface {
 }
 
 // DeviceRegistrar is optionally implemented by a directory that can create
-// devices for unknown identifiers on the fly.
+// devices for unknown identifiers on the fly. The protocol is recorded on the
+// device row so that downlink commands know which encoder to use.
 type DeviceRegistrar interface {
-	Register(uniqueID string) (int64, error)
+	Register(uniqueID, protocol string) (int64, error)
 }
 
 // MemoryDirectory is an in-memory directory, useful for tests and for running
@@ -42,8 +43,10 @@ func NewMemoryDirectory() *MemoryDirectory {
 }
 
 // Register adds a device and returns its id. Registering an existing
-// identifier returns the previous id.
-func (d *MemoryDirectory) Register(uniqueID string) (int64, error) {
+// identifier returns the previous id. The protocol is ignored here: the
+// in-memory directory exists for tests and for running without a database,
+// where the REST API is disabled anyway.
+func (d *MemoryDirectory) Register(uniqueID, _ string) (int64, error) {
 	if uniqueID == "" {
 		return 0, ErrUnknownDevice
 	}

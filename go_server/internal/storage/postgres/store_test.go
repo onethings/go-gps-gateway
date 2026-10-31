@@ -157,7 +157,7 @@ func TestStoreIntegration(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	uniqueID := "TEST" + time.Now().Format("150405.000000")
-	deviceID, err := store.Register(uniqueID)
+	deviceID, err := store.Register(uniqueID, "gt06")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -168,6 +168,12 @@ func TestStoreIntegration(t *testing.T) {
 	}
 	if resolvedID, err := store.UniqueID(deviceID); err != nil || resolvedID != uniqueID {
 		t.Fatalf("unique id = %q, err = %v", resolvedID, err)
+	}
+	if protocol, found, err := store.DeviceProtocol(ctx, deviceID); err != nil || !found || protocol != "gt06" {
+		t.Fatalf("device protocol = %q, found = %v, err = %v", protocol, found, err)
+	}
+	if _, found, err := store.DeviceProtocol(ctx, deviceID+1<<20); err != nil || found {
+		t.Fatalf("unknown device protocol: found = %v, err = %v", found, err)
 	}
 
 	position := samplePosition()
@@ -193,6 +199,33 @@ func TestStoreIntegration(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal(attributes, &decoded); err != nil || decoded["sat"] != float64(9) {
 		t.Errorf("attributes = %s, err = %v", attributes, err)
+	}
+
+	positions, err := store.QueryPositions(ctx, model.PositionFilter{DeviceID: deviceID, Limit: 10})
+	if err != nil {
+		t.Fatalf("query positions: %v", err)
+	}
+	if len(positions) == 0 {
+		t.Fatal("query positions returned nothing")
+	}
+	got := positions[0]
+	if got.ID == 0 || got.DeviceID != deviceID || got.Protocol != position.Protocol {
+		t.Fatalf("position = %+v", got)
+	}
+	if got.Latitude != position.Latitude || got.Attributes["sat"] != float64(9) {
+		t.Fatalf("position = %+v", got)
+	}
+	if got.ServerTime.IsZero() || got.Time.Format(time.RFC3339) != position.Time.Format(time.RFC3339) {
+		t.Fatalf("times = %s / %s", got.Time, got.ServerTime)
+	}
+
+	// A window that starts after the row returns nothing.
+	future := time.Now().Add(time.Hour)
+	if window, err := store.QueryPositions(ctx, model.PositionFilter{
+		DeviceID: deviceID,
+		From:     future,
+	}); err != nil || len(window) != 0 {
+		t.Fatalf("future window = %d positions, err = %v", len(window), err)
 	}
 
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM devices WHERE id = $1`, deviceID); err != nil {

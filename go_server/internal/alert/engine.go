@@ -20,6 +20,10 @@ type Config struct {
 	// PowerCutVolts is compared against the "power" attribute, which the
 	// protocols report in volts (GT06 0x94 sends 12.5, not 12500).
 	PowerCutVolts float64
+	// NotRepeat suppresses a second alert of the same type for one device
+	// within the window. Zero disables suppression, which matches the old
+	// behaviour of alerting on every position.
+	NotRepeat time.Duration
 }
 
 // Engine evaluates positions one at a time and remembers the geofence
@@ -31,6 +35,8 @@ type Engine struct {
 	mu        sync.RWMutex
 	geofences []*geofence.Geofence
 	members   map[membership]bool
+	repeats   map[repeatKey]time.Time
+	powered   map[int64]bool
 }
 
 type membership struct {
@@ -38,9 +44,29 @@ type membership struct {
 	geofenceID int64
 }
 
+// repeatKey identifies the per-device state of a rule that can fire on every
+// position.
+type repeatKey struct {
+	deviceID  int64
+	alertType string
+}
+
+// repeatable lists the alert types that NotRepeat applies to. Geofence
+// transitions and the power recovery are edge triggered and never suppressed.
+var repeatable = map[string]struct{}{
+	model.AlertOverspeed: {},
+	model.AlertPowerCut:  {},
+}
+
 // New creates an engine with the given thresholds and geofences.
 func New(config Config, geofences []*geofence.Geofence) *Engine {
-	engine := &Engine{config: config, now: time.Now, members: make(map[membership]bool)}
+	engine := &Engine{
+		config:  config,
+		now:     time.Now,
+		members: make(map[membership]bool),
+		repeats: make(map[repeatKey]time.Time),
+		powered: make(map[int64]bool),
+	}
 	engine.SetGeofences(geofences)
 	return engine
 }
@@ -87,7 +113,37 @@ func (e *Engine) Evaluate(position *model.Position) []*model.Alert {
 	alerts = append(alerts, e.overspeed(position)...)
 	alerts = append(alerts, e.powerCut(position)...)
 	alerts = append(alerts, e.geofenceTransitions(position)...)
-	return alerts
+	return e.applyNotRepeat(alerts)
+}
+
+// applyNotRepeat drops a repeat of a repeatable alert type for the same device
+// when the previous one fired within the configured window.
+func (e *Engine) applyNotRepeat(alerts []*model.Alert) []*model.Alert {
+	window := e.config.NotRepeat
+	if window <= 0 || len(alerts) == 0 {
+		return alerts
+	}
+
+	now := e.now()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	kept := alerts[:0]
+	for _, alert := range alerts {
+		if _, ok := repeatable[alert.Type]; !ok {
+			kept = append(kept, alert)
+			continue
+		}
+
+		key := repeatKey{deviceID: alert.DeviceID, alertType: alert.Type}
+		if last, seen := e.repeats[key]; seen && now.Sub(last) < window {
+			continue
+		}
+		e.repeats[key] = now
+		kept = append(kept, alert)
+	}
+	return kept
 }
 
 // idle reports whether no rule can fire, which keeps the per position
@@ -124,13 +180,30 @@ func (e *Engine) powerCut(position *model.Position) []*model.Alert {
 		return nil
 	}
 	power, ok := asFloat(value)
-	if !ok || power >= threshold {
+	if !ok {
 		return nil
 	}
 
-	// The position that reports the cut is still the position to attach the
-	// alert to, even when it carries no GPS fix.
-	alert := e.newAlert(model.AlertPowerCut, position)
+	// The rule is stateful: the position that reports the cut is still the
+	// position to attach the alert to, and the recovery is only reported when
+	// the previous position of that device was below the threshold.
+	e.mu.Lock()
+	low := power < threshold
+	wasLow, seen := e.powered[position.DeviceID]
+	e.powered[position.DeviceID] = low
+	e.mu.Unlock()
+
+	if low {
+		alert := e.newAlert(model.AlertPowerCut, position)
+		alert.Set("power", power)
+		alert.Set("threshold", threshold)
+		return []*model.Alert{alert}
+	}
+	if !seen || !wasLow {
+		return nil
+	}
+
+	alert := e.newAlert(model.AlertPowerRestored, position)
 	alert.Set("power", power)
 	alert.Set("threshold", threshold)
 	return []*model.Alert{alert}

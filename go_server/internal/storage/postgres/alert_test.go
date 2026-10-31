@@ -206,7 +206,7 @@ func TestAlertStoreIntegration(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	uniqueID := "ALERT" + time.Now().Format("150405.000000")
-	deviceID, err := store.Register(uniqueID)
+	deviceID, err := store.Register(uniqueID, "gt06")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}

@@ -147,18 +147,22 @@ const (
 
 // Position is the unified output of every protocol decoder.
 type Position struct {
-	Protocol  string
-	DeviceID  int64
-	Time      time.Time
-	Valid     bool
-	Latitude  float64
-	Longitude float64
-	Altitude  float64
-	Speed     float64
-	Course    float64
-	Accuracy  float64
-	Network   *Network
-	Alarms    []string
+	// ID is the database row id, zero until the position has been stored.
+	ID int64
+	// ServerTime is when the server stored the position, zero until then.
+	ServerTime time.Time
+	Protocol   string
+	DeviceID   int64
+	Time       time.Time
+	Valid      bool
+	Latitude   float64
+	Longitude  float64
+	Altitude   float64
+	Speed      float64
+	Course     float64
+	Accuracy   float64
+	Network    *Network
+	Alarms     []string
 	// Outdated marks a position that carries no GPS fix, only secondary
 	// information such as cell towers or battery level.
 	Outdated bool
@@ -223,6 +227,17 @@ func (p *Position) MarkOutdated(deviceTime time.Time) {
 // IsLocated reports whether the position carries a latitude/longitude fix.
 func (p *Position) IsLocated() bool {
 	return p.Valid || p.Latitude != 0 || p.Longitude != 0
+}
+
+// PositionFilter selects positions for a query. Zero values mean "no
+// restriction"; Limit and Offset are clamped by the storage layer. From and To
+// are compared against the device time, which is what the reports use.
+type PositionFilter struct {
+	DeviceID int64
+	From     time.Time
+	To       time.Time
+	Limit    int
+	Offset   int
 }
 
 // String renders a compact human readable description, used by tests and

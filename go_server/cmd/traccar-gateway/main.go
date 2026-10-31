@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -33,8 +34,12 @@ func main() {
 	batchSize := flag.Int("batch-size", 500, "positions per database insert")
 	batchInterval := flag.Duration("batch-interval", time.Second, "maximum delay before a batch is written")
 	httpAddress := flag.String("http", "0.0.0.0:8082", "REST listen address; empty disables the API")
+	apiKey := flag.String("api-key", os.Getenv("TRACCAR_API_KEY"),
+		"REST API key (defaults to TRACCAR_API_KEY); empty disables authentication")
 	overspeedKnots := flag.Float64("overspeed-knots", 0, "overspeed alert threshold in knots; 0 disables the rule")
 	powerCutVolts := flag.Float64("power-cut-volts", 0, "power cut alert threshold in volts; 0 disables the rule")
+	alertRepeat := flag.Duration("alert-repeat", 0,
+		"suppress repeat overspeed/powerCut alerts per device within this window; 0 disables")
 	geofenceRefresh := flag.Duration("geofence-refresh", 5*time.Minute, "geofence reload interval; 0 loads them once")
 	flag.Parse()
 
@@ -66,6 +71,7 @@ func main() {
 		engine := alert.New(alert.Config{
 			OverspeedKnots: *overspeedKnots,
 			PowerCutVolts:  *powerCutVolts,
+			NotRepeat:      *alertRepeat,
 		}, nil)
 		pipeline = alert.NewPipeline(engine, batcher, store,
 			alert.WithLogger(log.Printf))
@@ -93,27 +99,7 @@ func main() {
 		})
 	}
 
-	var apiServer *http.Server
-	if *httpAddress != "" {
-		if store == nil {
-			log.Print("no -dsn given, REST API disabled")
-		} else {
-			apiServer = &http.Server{
-				Addr:              *httpAddress,
-				Handler:           api.NewServer(store, api.WithLogger(log.Printf)).Handler(),
-				ReadHeaderTimeout: 5 * time.Second,
-				ReadTimeout:       15 * time.Second,
-				WriteTimeout:      30 * time.Second,
-				IdleTimeout:       60 * time.Second,
-			}
-			log.Printf("api: listening on %s", *httpAddress)
-			go func() {
-				if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					log.Printf("api: %v", err)
-				}
-			}()
-		}
-	}
+	router := gateway.NewRouter(registry, directory)
 
 	var servers sync.WaitGroup
 	for _, name := range registry.Names() {
@@ -135,6 +121,10 @@ func main() {
 			log.Fatalf("%s: %v", name, err)
 		}
 
+		// Commands are routed by protocol, so every listener has to be
+		// reachable from the REST layer.
+		router.Register(name, server)
+
 		log.Printf("%s: listening on %s", name, listener.Addr())
 
 		servers.Add(1)
@@ -144,6 +134,38 @@ func main() {
 				log.Printf("%s: %v", name, err)
 			}
 		}(name, server, listener)
+	}
+
+	// The API is created after the listeners so that every protocol server is
+	// already registered in the router when the first request arrives.
+	var apiServer *http.Server
+	if *httpAddress != "" {
+		if store == nil {
+			log.Print("no -dsn given, REST API disabled")
+		} else {
+			if *apiKey == "" {
+				log.Print("api: no -api-key set, REST is unauthenticated")
+			}
+			apiServer = &http.Server{
+				Addr: *httpAddress,
+				Handler: api.NewServer(store,
+					api.WithPositions(store),
+					api.WithCommands(router, store),
+					api.WithAPIKey(*apiKey),
+					api.WithLogger(log.Printf),
+				).Handler(),
+				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       15 * time.Second,
+				WriteTimeout:      30 * time.Second,
+				IdleTimeout:       60 * time.Second,
+			}
+			log.Printf("api: listening on %s", *httpAddress)
+			go func() {
+				if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Printf("api: %v", err)
+				}
+			}()
+		}
 	}
 
 	<-ctx.Done()

@@ -146,6 +146,8 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 - [x] Edit `go_server/internal/protocol/jt808/decoder.go`.
 - [x] Edit `go_server/internal/protocol/gt06/decoder_test.go`.
 - [x] Edit `go_server/internal/protocol/jt808/decoder_test.go`.
+- [x] Create `go_server/internal/gateway/directory_test.go`.
+- [x] Edit `go_server/internal/storage/postgres/store_test.go`.
 
 **Build.**
 

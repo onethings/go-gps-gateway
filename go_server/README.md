@@ -563,7 +563,8 @@ scrape_configs:
   裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
 - 命令只寫進設備連線，不等 ACK、不落地，也沒有 Java 版的 `commands` 表與派送佇列；
   `devices.protocol` 為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
-- 告警只有超速 / 斷電 / 復電 / 圍欄四類，沒有通知管道（email / webhook），也沒有 per-device 門檻。
+- 告警只有超速 / 斷電 / 復電 / 圍欄四類，沒有通知管道（email / webhook）；門檻可用裝置 /
+  圍欄 attributes 覆寫，但只能以 SQL 維護。
 - 圍欄只能以 SQL 維護，且對所有裝置生效；`alerts.position_id` 目前是 NULL（見上節）。
 - `devices.model` 只寫不讀，車型相關的協議分支（GT06 `NT_MODELS`、JT808 門磁/撞擊）尚未啟用。
 - 報表等其餘業務層仍是 Java 版負責。

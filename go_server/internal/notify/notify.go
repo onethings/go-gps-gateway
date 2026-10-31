@@ -2,11 +2,12 @@
 // SMTP email. Formatting, per-device routing and the send queue live here so
 // the alert pipeline stays free of network I/O.
 //
-// Routing has three layers. Users subscribe to a notification preset (a type
-// plus channels) through the notifications and user_notifications tables, per
-// device attributes (see AttrNotify* below) override a channel for one device,
-// and the -notify-* flags provide the server-wide defaults a device or its
-// subscribers fall back to.
+// Routing has three layers: the -notify-* flags define the server-wide channels
+// and their defaults, devices.attributes (see AttrNotify* below) can override a
+// channel for one device, and users subscribe to notification presets (type
+// plus channels) through the notifications / user_notifications tables. A
+// matching subscription set replaces the defaults for that device and alert;
+// an explicit device attribute wins over both.
 package notify
 
 import (
@@ -113,9 +114,11 @@ type Notifier interface {
 // attribute that overrides them.
 type Channel struct {
 	Notifier Notifier
-	// Defaults apply when the device does not set Attribute. An empty slice
-	// means the channel is only used for devices that override it.
+	// Defaults are the server-wide targets. They apply when the device does not
+	// set Attribute and nobody subscribed for the alert. A webhook subscriber
+	// reuses them as the destination because the channel has no per-user URL.
 	Defaults []string
-	// Attribute is the devices.attributes key that overrides Defaults.
+	// Attribute is the devices.attributes key that overrides Defaults and any
+	// subscription.
 	Attribute string
 }

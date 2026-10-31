@@ -627,7 +627,7 @@ go test -race ./internal/gateway ./internal/alert ./internal/api ./internal/noti
 
 ```bash
 TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmode=disable' \
-  go test ./internal/storage/postgres -run 'TestStoreIntegration|TestAlertStoreIntegration|TestTokenStoreIntegration|TestUserAdminStoreIntegration' -v
+  go test ./internal/storage/postgres -run 'TestStoreIntegration|TestAlertStoreIntegration|TestTokenStoreIntegration|TestUserAdminStoreIntegration|TestNotificationStoreIntegration' -v
 ```
 
 ## 監控（開發期）

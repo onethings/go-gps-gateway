@@ -9,15 +9,38 @@ import (
 	"time"
 
 	"traccar-server_go/go_server/internal/auth"
+	"traccar-server_go/go_server/internal/model"
 )
 
 // ErrUnknownUser is returned when a token is issued for an email that has no
 // users row.
 var ErrUnknownUser = errors.New("postgres: unknown user")
 
+const (
+	defaultUserLimit = 100
+	maxUserLimit     = 1000
+
+	// userSelectColumns and userReturningColumns must list the same fields in
+	// the same order, because both feed scanUser. The two subqueries let an
+	// admin list accounts without one request per user.
+	userSelectColumns = `u.id, u.email, u.name, u.admin, u.disabled, u.created_at,
+		(SELECT count(*) FROM user_devices ud WHERE ud.user_id = u.id),
+		(SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id)`
+
+	userReturningColumns = `id, email, name, admin, disabled, created_at,
+		(SELECT count(*) FROM user_devices ud WHERE ud.user_id = users.id),
+		(SELECT count(*) FROM api_tokens t WHERE t.user_id = users.id)`
+
+	// tokenColumns is the SELECT/RETURNING list shared by every token query.
+	// The scopes column is rendered as JSON so the driver never has to deal
+	// with a PostgreSQL array type.
+	tokenColumns = `id, user_id, to_jsonb(scopes)::text, expires_at, created_at`
+)
+
 // LookupToken resolves a hashed bearer token to its principal. A token that
-// does not exist, expired, or belongs to a deleted user yields (nil, nil) so
-// the HTTP layer can answer 401 without distinguishing the cases.
+// does not exist, expired, belongs to a deleted user, or belongs to a disabled
+// user yields (nil, nil) so the HTTP layer can answer 401 without
+// distinguishing the cases.
 func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Principal, error) {
 	var (
 		userID      int64
@@ -33,6 +56,7 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 		 FROM api_tokens t
 		 JOIN users u ON u.id = t.user_id
 		 WHERE t.token_hash = $1
+		   AND NOT u.disabled
 		   AND (t.expires_at IS NULL OR t.expires_at > now())`,
 		tokenHash,
 	).Scan(&userID, &admin, &scopesJSON, &devicesJSON)
@@ -61,6 +85,158 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 	return auth.NewPrincipal(userID, admin, scopes, deviceIDs), nil
 }
 
+// Ping reports whether the database is reachable, for the health probe.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("postgres: ping: %w", err)
+	}
+	return nil
+}
+
+// Users returns every account, oldest first. Limit is clamped to 1..1000 and
+// Offset to a non-negative value.
+func (s *Store) Users(ctx context.Context, filter model.UserFilter) ([]model.User, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = defaultUserLimit
+	}
+	if limit > maxUserLimit {
+		limit = maxUserLimit
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT "+userSelectColumns+" FROM users u ORDER BY u.id LIMIT $1 OFFSET $2",
+		limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []model.User
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, *user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: query users: %w", err)
+	}
+	return users, nil
+}
+
+// User returns one account by id.
+func (s *Store) User(ctx context.Context, userID int64) (*model.User, error) {
+	user, err := scanUser(s.db.QueryRowContext(ctx,
+		"SELECT "+userSelectColumns+" FROM users u WHERE u.id = $1", userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query user %d: %w", userID, err)
+	}
+	return user, nil
+}
+
+// scanUser reads one row in userSelectColumns / userReturningColumns order.
+func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
+	var user model.User
+	if err := row.Scan(
+		&user.ID, &user.Email, &user.Name, &user.Admin, &user.Disabled,
+		&user.CreatedAt, &user.DeviceCount, &user.TokenCount,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// QueryRow hands sql.ErrNoRows straight to Scan; callers map it to
+			// their own "not found" sentinel.
+			return nil, err
+		}
+		return nil, fmt.Errorf("postgres: scan user: %w", err)
+	}
+	return &user, nil
+}
+
+// CreateUser inserts an account. An email that already exists returns
+// model.ErrDuplicateUser instead of touching the row.
+func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model.User, error) {
+	user, err := scanUser(s.db.QueryRowContext(ctx,
+		`INSERT INTO users (email, name, admin) VALUES ($1, $2, $3)
+		 ON CONFLICT (email) DO NOTHING
+		 RETURNING `+userReturningColumns,
+		create.Email, create.Name, create.Admin))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrDuplicateUser
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: create user %q: %w", create.Email, err)
+	}
+	return user, nil
+}
+
+// UpdateUser replaces the non-nil fields of an account.
+func (s *Store) UpdateUser(ctx context.Context, userID int64, update model.UserUpdate) (*model.User, error) {
+	user, err := scanUser(s.db.QueryRowContext(ctx,
+		`UPDATE users
+		 SET name = COALESCE($2, name),
+		     admin = COALESCE($3, admin),
+		     disabled = COALESCE($4, disabled)
+		 WHERE id = $1
+		 RETURNING `+userReturningColumns,
+		userID, update.Name, update.Admin, update.Disabled))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: update user %d: %w", userID, err)
+	}
+	return user, nil
+}
+
+// DeleteUser removes an account. Grants and tokens cascade.
+func (s *Store) DeleteUser(ctx context.Context, userID int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, userID)
+	if err != nil {
+		return fmt.Errorf("postgres: delete user %d: %w", userID, err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("postgres: delete user %d: %w", userID, err)
+	}
+	if affected == 0 {
+		return model.ErrUserNotFound
+	}
+	return nil
+}
+
+// UserDevices returns the device ids granted to a user, in id order.
+func (s *Store) UserDevices(ctx context.Context, userID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT device_id FROM user_devices WHERE user_id = $1 ORDER BY device_id`,
+		userID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query user %d devices: %w", userID, err)
+	}
+	defer rows.Close()
+
+	deviceIDs := make([]int64, 0, 4)
+	for rows.Next() {
+		var deviceID int64
+		if err := rows.Scan(&deviceID); err != nil {
+			return nil, fmt.Errorf("postgres: scan user %d device: %w", userID, err)
+		}
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: query user %d devices: %w", userID, err)
+	}
+	return deviceIDs, nil
+}
+
 // AssignDevice grants a user access to a device. Repeating the call is a no-op.
 func (s *Store) AssignDevice(ctx context.Context, userID, deviceID int64) error {
 	_, err := s.db.ExecContext(ctx,
@@ -72,40 +248,137 @@ func (s *Store) AssignDevice(ctx context.Context, userID, deviceID int64) error 
 	return nil
 }
 
+// UnassignDevice revokes a grant. Removing a grant that does not exist is not
+// an error, so a repeated DELETE stays idempotent.
+func (s *Store) UnassignDevice(ctx context.Context, userID, deviceID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM user_devices WHERE user_id = $1 AND device_id = $2`,
+		userID, deviceID)
+	if err != nil {
+		return fmt.Errorf("postgres: unassign device %d from user %d: %w", deviceID, userID, err)
+	}
+	return nil
+}
+
+// Tokens lists the tokens of a user, newest first. The hash is never returned.
+func (s *Store) Tokens(ctx context.Context, userID int64) ([]model.APIToken, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT "+tokenColumns+" FROM api_tokens WHERE user_id = $1 ORDER BY id DESC",
+		userID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query user %d tokens: %w", userID, err)
+	}
+	defer rows.Close()
+
+	var tokens []model.APIToken
+	for rows.Next() {
+		token, err := scanToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, *token)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: query user %d tokens: %w", userID, err)
+	}
+	return tokens, nil
+}
+
 // IssueToken creates a bearer token for an existing user and returns the
 // plaintext token. Only its hash is stored. A nil expiresAt means the token
 // never expires.
 func (s *Store) IssueToken(ctx context.Context, email string, scopes []auth.Scope, expiresAt *time.Time) (string, error) {
+	names := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		names = append(names, string(scope))
+	}
+
+	_, token, err := s.issueToken(ctx, "u.email = $1", email, names, expiresAt, ErrUnknownUser)
+	return token, err
+}
+
+// IssueTokenForUser creates a bearer token for a user id. The returned record
+// is the stored row; the plaintext token is only available from this call.
+func (s *Store) IssueTokenForUser(ctx context.Context, userID int64, scopes []string, expiresAt *time.Time) (*model.APIToken, string, error) {
+	return s.issueToken(ctx, "u.id = $1", userID, scopes, expiresAt, model.ErrUserNotFound)
+}
+
+// issueToken inserts a token for the user selected by predicate. Selecting the
+// user in the same statement keeps "no such user" distinguishable from a real
+// failure without a second round trip.
+func (s *Store) issueToken(ctx context.Context, predicate string, userArg any, scopes []string, expiresAt *time.Time, notFound error) (*model.APIToken, string, error) {
 	token, err := auth.GenerateToken()
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
 	if scopes == nil {
 		// json.Marshal(nil slice) emits "null", which is not a JSON array and
 		// would make jsonb_array_elements_text fail.
-		scopes = []auth.Scope{}
+		scopes = []string{}
 	}
 	encoded, err := json.Marshal(scopes)
 	if err != nil {
-		return "", fmt.Errorf("postgres: encode token scopes: %w", err)
+		return nil, "", fmt.Errorf("postgres: encode token scopes: %w", err)
 	}
 
-	result, err := s.db.ExecContext(ctx,
+	record, err := scanToken(s.db.QueryRowContext(ctx,
 		`INSERT INTO api_tokens (user_id, token_hash, scopes, expires_at)
-		 SELECT id, $2, ARRAY(SELECT jsonb_array_elements_text($3::jsonb)), $4
-		 FROM users WHERE email = $1`,
-		email, auth.HashToken(token), string(encoded), expiresAt)
+		 SELECT u.id, $2, ARRAY(SELECT jsonb_array_elements_text($3::jsonb)), $4
+		 FROM users u WHERE `+predicate+`
+		 RETURNING `+tokenColumns,
+		userArg, auth.HashToken(token), string(encoded), expiresAt))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", notFound
+	}
 	if err != nil {
-		return "", fmt.Errorf("postgres: issue token for %q: %w", email, err)
+		return nil, "", fmt.Errorf("postgres: issue token: %w", err)
+	}
+	return record, token, nil
+}
+
+// RevokeToken deletes one token of one user. A token that belongs to another
+// user is reported as missing instead of being deleted.
+func (s *Store) RevokeToken(ctx context.Context, userID, tokenID int64) error {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM api_tokens WHERE id = $1 AND user_id = $2`, tokenID, userID)
+	if err != nil {
+		return fmt.Errorf("postgres: revoke token %d: %w", tokenID, err)
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return "", fmt.Errorf("postgres: issue token for %q: %w", email, err)
+		return fmt.Errorf("postgres: revoke token %d: %w", tokenID, err)
 	}
 	if affected == 0 {
-		return "", ErrUnknownUser
+		return model.ErrTokenNotFound
 	}
-	return token, nil
+	return nil
+}
+
+// scanToken reads one row in tokenColumns order.
+func scanToken(row interface{ Scan(dest ...any) error }) (*model.APIToken, error) {
+	var (
+		token      model.APIToken
+		scopesJSON string
+		expiresAt  sql.NullTime
+	)
+	if err := row.Scan(&token.ID, &token.UserID, &scopesJSON, &expiresAt, &token.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("postgres: scan token: %w", err)
+	}
+
+	if err := json.Unmarshal([]byte(scopesJSON), &token.Scopes); err != nil {
+		return nil, fmt.Errorf("postgres: decode token scopes: %w", err)
+	}
+	if token.Scopes == nil {
+		token.Scopes = []string{}
+	}
+	if expiresAt.Valid {
+		expiry := expiresAt.Time
+		token.ExpiresAt = &expiry
+	}
+	return &token, nil
 }

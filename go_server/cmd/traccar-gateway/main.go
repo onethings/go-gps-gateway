@@ -171,8 +171,10 @@ func main() {
 			options := []api.Option{
 				api.WithPositions(store),
 				api.WithDevices(store),
+				api.WithUsers(store),
 				api.WithCommands(router, store),
 				api.WithMetrics(meters),
+				api.WithHealthPinger(store),
 				api.WithLogger(log.Printf),
 			}
 			switch {

@@ -44,6 +44,11 @@ type DeviceProtocols interface {
 	DeviceProtocol(ctx context.Context, deviceID int64) (protocol string, found bool, err error)
 }
 
+// Pinger reports database reachability for the health probe.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
 // PositionQuerier is the storage contract the positions handler needs.
 type PositionQuerier interface {
 	QueryPositions(ctx context.Context, filter model.PositionFilter) ([]model.Position, error)
@@ -69,8 +74,10 @@ type Server struct {
 	alerts       AlertQuerier
 	positions    PositionQuerier
 	devices      DeviceStore
+	users        UserStore
 	router       CommandRouter
 	protocols    DeviceProtocols
+	pinger       Pinger
 	meters       *metrics.Set
 	logf         func(format string, args ...any)
 	queryTimeout time.Duration
@@ -116,6 +123,18 @@ func WithPositions(positions PositionQuerier) Option {
 // WithDevices enables the device routes. Without it they report 501.
 func WithDevices(devices DeviceStore) Option {
 	return func(s *Server) { s.devices = devices }
+}
+
+// WithUsers enables the account administration routes under /api/users.
+// Without it they report 501.
+func WithUsers(users UserStore) Option {
+	return func(s *Server) { s.users = users }
+}
+
+// WithHealthPinger makes GET /api/health check the database and answer 503
+// while it is unreachable.
+func WithHealthPinger(pinger Pinger) Option {
+	return func(s *Server) { s.pinger = pinger }
 }
 
 // WithAPIKey requires every request except /api/health to present a
@@ -165,6 +184,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/positions", s.handlePositions)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("POST /api/commands", s.handleCommand)
+
+	// Account administration. These routes answer 501 when no UserStore is
+	// configured and 403 for callers that are not admins.
+	mux.HandleFunc("GET /api/users", s.handleUsers)
+	mux.HandleFunc("POST /api/users", s.handleCreateUser)
+	mux.HandleFunc("PUT /api/users/{id}", s.handleUpdateUser)
+	mux.HandleFunc("DELETE /api/users/{id}", s.handleDeleteUser)
+	mux.HandleFunc("GET /api/users/{id}/devices", s.handleUserDevices)
+	mux.HandleFunc("PUT /api/users/{id}/devices/{deviceId}", s.handleAssignDevice)
+	mux.HandleFunc("DELETE /api/users/{id}/devices/{deviceId}", s.handleUnassignDevice)
+	mux.HandleFunc("GET /api/users/{id}/tokens", s.handleTokens)
+	mux.HandleFunc("POST /api/users/{id}/tokens", s.handleIssueToken)
+	mux.HandleFunc("DELETE /api/users/{id}/tokens/{tokenId}", s.handleRevokeToken)
 
 	if s.apiKey == "" && s.tokens == nil {
 		return mux
@@ -604,10 +636,9 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 
 // deviceIDFromPath reads the {id} path segment.
 func deviceIDFromPath(r *http.Request) (int64, error) {
-	raw := r.PathValue("id")
-	deviceID, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || deviceID <= 0 {
-		return 0, fmt.Errorf("invalid device id %q", raw)
+	deviceID, err := positiveID(r, "id")
+	if err != nil {
+		return 0, fmt.Errorf("invalid device id %q", r.PathValue("id"))
 	}
 	return deviceID, nil
 }
@@ -627,11 +658,26 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	s.meters.Render(w)
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	response := map[string]any{
 		"status": "ok",
 		"time":   s.now().UTC().Format(time.RFC3339),
-	})
+	}
+	if s.pinger != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+		defer cancel()
+		if err := s.pinger.Ping(ctx); err != nil {
+			// The probe stays unauthenticated, so the driver error only goes
+			// to the log.
+			s.logf("api: health: database: %v", err)
+			response["status"] = "unavailable"
+			response["database"] = "unavailable"
+			writeJSON(w, http.StatusServiceUnavailable, response)
+			return
+		}
+		response["database"] = "ok"
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 const maxCommandBody = 1 << 16

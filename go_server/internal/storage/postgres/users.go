@@ -20,21 +20,22 @@ const (
 	defaultUserLimit = 100
 	maxUserLimit     = 1000
 
-	// userSelectColumns and userReturningColumns must list the same fields in
-	// the same order, because both feed scanUser. The two subqueries let an
-	// admin list accounts without one request per user.
+	// userSelectColumns feeds scanUser for the list and single row queries.
+	// The two subqueries let an admin list accounts without one request per
+	// user.
 	userSelectColumns = `u.id, u.email, u.name, u.admin, u.disabled, u.created_at,
 		(SELECT count(*) FROM user_devices ud WHERE ud.user_id = u.id),
 		(SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id)`
 
-	userReturningColumns = `id, email, name, admin, disabled, created_at,
-		(SELECT count(*) FROM user_devices ud WHERE ud.user_id = users.id),
-		(SELECT count(*) FROM api_tokens t WHERE t.user_id = users.id)`
-
-	// tokenColumns is the SELECT/RETURNING list shared by every token query.
-	// The scopes column is rendered as JSON so the driver never has to deal
-	// with a PostgreSQL array type.
+	// tokenColumns is the SELECT list shared by every token query. The scopes
+	// column is rendered as JSON so the driver never has to deal with a
+	// PostgreSQL array type.
 	tokenColumns = `id, user_id, to_jsonb(scopes)::text, expires_at, created_at`
+
+	// tokenReturningColumns is the same list qualified with the target table
+	// name, because the INSERT below also reads from users.
+	tokenReturningColumns = `api_tokens.id, api_tokens.user_id,
+		to_jsonb(api_tokens.scopes)::text, api_tokens.expires_at, api_tokens.created_at`
 )
 
 // LookupToken resolves a hashed bearer token to its principal. A token that
@@ -143,7 +144,7 @@ func (s *Store) User(ctx context.Context, userID int64) (*model.User, error) {
 	return user, nil
 }
 
-// scanUser reads one row in userSelectColumns / userReturningColumns order.
+// scanUser reads one row in userSelectColumns order.
 func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 	var user model.User
 	if err := row.Scan(
@@ -163,37 +164,41 @@ func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 // CreateUser inserts an account. An email that already exists returns
 // model.ErrDuplicateUser instead of touching the row.
 func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model.User, error) {
-	user, err := scanUser(s.db.QueryRowContext(ctx,
+	var userID int64
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO users (email, name, admin) VALUES ($1, $2, $3)
 		 ON CONFLICT (email) DO NOTHING
-		 RETURNING `+userReturningColumns,
-		create.Email, create.Name, create.Admin))
+		 RETURNING id`,
+		create.Email, create.Name, create.Admin,
+	).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrDuplicateUser
 	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: create user %q: %w", create.Email, err)
 	}
-	return user, nil
+	return s.User(ctx, userID)
 }
 
 // UpdateUser replaces the non-nil fields of an account.
 func (s *Store) UpdateUser(ctx context.Context, userID int64, update model.UserUpdate) (*model.User, error) {
-	user, err := scanUser(s.db.QueryRowContext(ctx,
+	var updatedID int64
+	err := s.db.QueryRowContext(ctx,
 		`UPDATE users
 		 SET name = COALESCE($2, name),
 		     admin = COALESCE($3, admin),
 		     disabled = COALESCE($4, disabled)
 		 WHERE id = $1
-		 RETURNING `+userReturningColumns,
-		userID, update.Name, update.Admin, update.Disabled))
+		 RETURNING id`,
+		userID, update.Name, update.Admin, update.Disabled,
+	).Scan(&updatedID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrUserNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: update user %d: %w", userID, err)
 	}
-	return user, nil
+	return s.User(ctx, updatedID)
 }
 
 // DeleteUser removes an account. Grants and tokens cascade.
@@ -326,7 +331,7 @@ func (s *Store) issueToken(ctx context.Context, predicate string, userArg any, s
 		`INSERT INTO api_tokens (user_id, token_hash, scopes, expires_at)
 		 SELECT u.id, $2, ARRAY(SELECT jsonb_array_elements_text($3::jsonb)), $4
 		 FROM users u WHERE `+predicate+`
-		 RETURNING `+tokenColumns,
+		 RETURNING `+tokenReturningColumns,
 		userArg, auth.HashToken(token), string(encoded), expiresAt))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", notFound

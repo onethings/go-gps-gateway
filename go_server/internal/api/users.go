@@ -157,7 +157,7 @@ func (s *Server) isSelf(r *http.Request, userID int64) bool {
 }
 
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
 		return
 	}
 
@@ -191,7 +191,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
 		return
 	}
 
@@ -229,7 +229,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
 		return
 	}
 
@@ -277,7 +277,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
 		return
 	}
 
@@ -308,7 +308,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserDevices(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.devicesConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) || !s.devicesConfigured(w) {
 		return
 	}
 
@@ -351,7 +351,7 @@ func (s *Server) handleUserDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAssignDevice(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.devicesConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) || !s.devicesConfigured(w) {
 		return
 	}
 
@@ -393,7 +393,7 @@ func (s *Server) handleAssignDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUnassignDevice(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
 		return
 	}
 
@@ -425,7 +425,7 @@ func (s *Server) handleUnassignDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
 		return
 	}
 
@@ -458,7 +458,7 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
 		return
 	}
 
@@ -517,7 +517,7 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
-	if !s.usersConfigured(w) || !s.requireAdmin(w, r) {
+	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
 		return
 	}
 

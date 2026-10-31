@@ -6,7 +6,8 @@
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
 - 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄
-  - REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`、使用者 token / 裝置擁有權）全部可編譯、`go test ./...` 全綠。
+  - REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`、使用者 token / 裝置擁有權、
+    帳號與 token 管理）全部可編譯、`go test ./...` 全綠。
 
 ## 架構
 
@@ -31,7 +32,8 @@ client ──HTTP──▶ api.Server (RequireAuth)
                    ├─ GET /api/alerts    ──▶ alerts 查詢（自動加裝置條件）
                    ├─ GET /api/health
                    ├─ GET /metrics       ──▶ Prometheus 文字格式
-                   └─ POST /api/commands ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
+                   ├─ POST /api/commands ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
+                   └─ /api/users/*       ──▶ 帳號 / token / 裝置授權管理（admin）
 ```
 
 ## 目錄
@@ -50,7 +52,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/gateway`               | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                      |
 | `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                      |
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線                                                            |
-| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands`；認證 / scope / 裝置擁有權 |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands`、`/api/users`（帳號 / token / 裝置授權）；認證 / scope / 裝置擁有權 |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                  |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                               |
 | `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                               |
@@ -127,7 +129,8 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 - `positions(id, device_id, protocol, device_time, server_time, valid, latitude, longitude, altitude, speed, course, accuracy, attributes)`
 - `alerts(id, device_id, position_id, type, alert_time, geofence_id, attributes)`（`0002_alerts.sql`）
 - `geofences(id, name, area, attributes, created_at)`（`0002_alerts.sql`）
-- `users(id, email, name, admin, created_at)`（`0003_users.sql`）
+- `users(id, email, name, admin, disabled, created_at)`（`0003_users.sql`；`disabled` 由
+  `0004_users_disabled.sql` 補上）
 - `user_devices(user_id, device_id)`（`0003_users.sql`，多對多）
 - `api_tokens(id, user_id, token_hash, scopes, expires_at, created_at)`（`0003_users.sql`）
 - `schema_migrations(version, applied_at)`
@@ -246,34 +249,66 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 `users.admin = true` 的使用者不受 scope 與裝置限制；其他使用者只看得到 `user_devices`
 有授權的裝置。所有查詢（devices / positions / alerts）都會自動加上裝置條件，**沒有授權任何裝置
 就回空結果，而不是全部**。修改 / 刪除裝置與下命令也要擁有該裝置，否則 `403`。
+`users.disabled = true` 的帳號會立刻失效（token 查詢直接回 `401`），但 token 與授權都保留，
+之後重新啟用就照舊可用。
 
-目前沒有使用者管理 API，先以 SQL 維護：
+非 admin token 用 `POST /api/devices` 建檔時，會自動寫入 `user_devices`，建立者立刻看得到；
+admin key 建的裝置不會自動綁定，要另外授權（見下節）。
+
+### 帳號管理 API
+
+帳號相關路由全部需要 **admin 憑證**（`-api-key`，或 `users.admin = true` 的使用者 token），
+不看 scope：即使 token 帶 `*` 也不能管理帳號，避免提權。沒有配置 `-dsn` 時這些路由回 `501`；
+`-allow-anonymous` 時也會一併開放，只適合本機。
+
+| 路由                                       | 說明                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------ |
+| `GET /api/users`                           | 列出帳號（`limit` 1–1000、`offset`），含 `deviceCount` / `tokenCount` |
+| `POST /api/users`                          | 建立帳號，body `{"email","name","admin"}`；email 重複回 `409`      |
+| `PUT /api/users/{id}`                      | 局部更新 `name` / `admin` / `disabled`，省略的欄位不動             |
+| `DELETE /api/users/{id}`                   | 刪除帳號（token 與裝置授權 cascade）                               |
+| `GET /api/users/{id}/devices`              | 列出已授權的裝置（格式同 `GET /api/devices`）                      |
+| `PUT /api/users/{id}/devices/{deviceId}`   | 授權裝置（重複呼叫不會出錯）                                       |
+| `DELETE /api/users/{id}/devices/{deviceId}` | 撤銷授權（原本就沒有也回 `204`）                                  |
+| `GET /api/users/{id}/tokens`               | 列出 token 中繼資料，**不含**明文與雜湊                            |
+| `POST /api/users/{id}/tokens`              | 發 token，body `{"scopes":[...],"expiresIn":"720h"}`，明文只回這一次 |
+| `DELETE /api/users/{id}/tokens/{tokenId}`  | 撤銷 token                                                         |
+
+`expiresIn` 是 Go duration（`720h`、`30m`），空字串表示永不過期；scopes 依上表驗證，
+未知 scope 回 `400`。停用自己、撤掉自己的 admin、刪除自己都回 `409`，避免把唯一的
+管理員鎖在門外。
+
+第一次使用（資料庫還沒有任何帳號）先用共用 key 引導：
 
 ```bash
-# 1) 建立使用者
-psql "$DSN" -c "INSERT INTO users (email, name, admin)
-                VALUES ('alice@example.com', 'Alice', false)"
+# 1) 建立管理員
+curl -X POST localhost:8082/api/users -H 'X-Api-Key: please-change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"alice@example.com","name":"Alice","admin":true}'
 
-# 2) 發 token（只印一次，之後無法取回）
+# 2) 替管理員發 token（明文只印一次）
+curl -X POST localhost:8082/api/users/1/tokens -H 'X-Api-Key: please-change-me' \
+  -H 'Content-Type: application/json' -d '{"scopes":["*"]}'
+
+# 3) 業務帳號 + 授權裝置（deviceId 7）
+curl -X POST localhost:8082/api/users -H 'X-Api-Key: please-change-me' \
+  -H 'Content-Type: application/json' -d '{"email":"bob@example.com","name":"Bob"}'
+curl -X PUT localhost:8082/api/users/2/devices/7 -H 'X-Api-Key: please-change-me'
+```
+
+之後就能用 Alice 的 token 取代 `-api-key`。沒有 HTTP 存取的環境仍可從 CLI 發 token：
+
+```bash
 go run ./cmd/traccar-gateway -dsn "$DSN" \
   -issue-token alice@example.com \
   -token-scopes read:positions,read:devices,read:alerts \
   -token-ttl 720h
 # trc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# 3) 授權裝置（多對多）
-psql "$DSN" -c "INSERT INTO user_devices (user_id, device_id)
-                SELECT u.id, d.id FROM users u, devices d
-                WHERE u.email = 'alice@example.com' AND d.unique_id = '864717003283581'
-                ON CONFLICT DO NOTHING"
 ```
 
-`-token-ttl 0`（預設）表示永不過期；scopes 也可以用 SQL 直接改。
-撤銷只要 `DELETE FROM api_tokens WHERE id = ...` 或設 `expires_at`，下一個請求就失效
+`-token-ttl 0`（預設）表示永不過期。撤銷走 `DELETE /api/users/{id}/tokens/{tokenId}`，
+或直接 `DELETE FROM api_tokens WHERE id = ...`，下一個請求就失效
 （每個請求查一次 `api_tokens` + `user_devices`，沒有快取）。
-
-非 admin token 用 `POST /api/devices` 建檔時，會自動寫入 `user_devices`，建立者立刻看得到；
-admin key 建的裝置不會自動綁定，要另外授權。
 
 下面 REST 範例省略了這個 header。
 
@@ -427,7 +462,7 @@ go test -race ./internal/gateway ./internal/alert ./internal/api
 
 ```bash
 TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmode=disable' \
-  go test ./internal/storage/postgres -run 'TestStoreIntegration|TestAlertStoreIntegration|TestTokenStoreIntegration' -v
+  go test ./internal/storage/postgres -run 'TestStoreIntegration|TestAlertStoreIntegration|TestTokenStoreIntegration|TestUserAdminStoreIntegration' -v
 ```
 
 ## 監控（開發期）
@@ -442,6 +477,7 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）                                                                                 |
 | `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: send command <type> to device <id>: <err>` |
 | CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`                                                                  |
+| `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                     |
 | 記憶體模式 sink          | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`）                                                                                                          |
 
 排查順序建議：
@@ -490,10 +526,10 @@ scrape_configs:
 ## 已知限制
 
 - 接了 `-dsn` 之後 REST 預設是**全關**的：沒設 `-api-key` 又沒有有效 token 時，除了
-  `/api/health` 以外的請求都會回 401。第一次使用要先建 `users` 再用 `-issue-token` 發一把
-  （見「認證與權限」），或暫時用 `-api-key`；`-allow-anonymous` 只適合本機。
-  對外仍建議加 TLS / 反代。
-- 使用者與裝置授權只能用 SQL 維護，還沒有使用者管理 API；`api_tokens` 也沒有列表端點。
+  `/api/health` 以外的請求都會回 401。第一次使用先帶 `-api-key` 啟動，用 `POST /api/users`
+  建立管理員並發 token（見「帳號管理 API」），或直接用 `-issue-token`；`-allow-anonymous`
+  只適合本機。對外仍建議加 TLS / 反代。
+- 帳號 API 只有分頁，沒有搜尋／排序；沒有密碼登入（只有 token），email 建立後不可修改。
   每個請求都會查一次 token 與裝置清單，撤銷立即生效但也多一次 DB round trip。
 - 裝置的 `attributes` 只能以 SQL 維護；`PUT` 只改 `name` / `model`，`protocol` 建立後不可改。
   裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
@@ -507,8 +543,7 @@ scrape_configs:
 
 ## 下一步
 
-1. 使用者管理 API（建立 / 停用使用者、列出與撤銷 token），目前只能以 SQL 維護。
-2. 每裝置 / 每圍欄門檻（`geofences.attributes` 已有 `floor` / `ceiling` 雛形）。
-3. 通知管道（email / webhook）。
-4. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
-5. 更完整的健康檢查（含 DB ping）。
+1. 每裝置 / 每圍欄門檻（`geofences.attributes` 已有 `floor` / `ceiling` 雛形）。
+2. 通知管道（email / webhook）。
+3. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
+4. 非 admin 的 token 自我管理（列出 / 撤銷自己的 token）與密碼登入。

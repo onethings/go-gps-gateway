@@ -1,0 +1,253 @@
+package gateway
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"time"
+
+	"traccar-server_go/go_server/internal/codec"
+	"traccar-server_go/go_server/internal/model"
+)
+
+// defaultMaxFrameSize caps the per connection reassembly buffer.
+const defaultMaxFrameSize = 1 << 20
+
+// Server accepts connections for a single protocol.
+type Server struct {
+	protocolName string
+	base         codec.Base
+	factory      Factory
+	directory    DeviceDirectory
+	sink         Sink
+	locations    *LocationCache
+	logf         func(format string, args ...any)
+	maxFrameSize int
+	readTimeout  time.Duration
+	autoRegister bool
+}
+
+// Option customises a Server.
+type Option func(*Server)
+
+// WithLogger overrides the log sink.
+func WithLogger(logf func(format string, args ...any)) Option {
+	return func(s *Server) {
+		if logf != nil {
+			s.logf = logf
+		}
+	}
+}
+
+// WithMaxFrameSize overrides the reassembly limit in bytes.
+func WithMaxFrameSize(size int) Option {
+	return func(s *Server) {
+		if size > 0 {
+			s.maxFrameSize = size
+		}
+	}
+}
+
+// WithReadTimeout closes idle connections after the given duration.
+func WithReadTimeout(timeout time.Duration) Option {
+	return func(s *Server) { s.readTimeout = timeout }
+}
+
+// WithAutoRegister creates devices for unknown identifiers (needs a directory
+// implementing DeviceRegistrar).
+func WithAutoRegister() Option {
+	return func(s *Server) { s.autoRegister = true }
+}
+
+// NewServer wires a protocol from the registry. directory and sink may be nil;
+// without a directory no session is bound to a connection.
+func NewServer(
+	registry *Registry, protocolName string, directory DeviceDirectory, sink Sink,
+	options ...Option,
+) (*Server, error) {
+
+	factory, err := registry.Get(protocolName)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &Server{
+		protocolName: protocolName,
+		factory:      factory,
+		directory:    directory,
+		sink:         sink,
+		locations:    NewLocationCache(),
+		logf:         log.Printf,
+		maxFrameSize: defaultMaxFrameSize,
+	}
+	for _, option := range options {
+		option(s)
+	}
+
+	s.base = codec.Base{
+		Resolver:     directory,
+		LastLocation: s.locations,
+		UniqueIDs:    directory,
+	}
+	return s, nil
+}
+
+// Serve accepts connections until the listener fails or ctx is cancelled.
+func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
+	stop := make(chan struct{})
+	defer close(stop)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+		case <-stop:
+		}
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("%s: accept: %w", s.protocolName, err)
+		}
+		go s.ServeConn(ctx, conn)
+	}
+}
+
+// ServeConn handles one already accepted connection until it closes.
+func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
+	defer conn.Close()
+
+	protocol := s.factory(s.base)
+	frameDecoder := protocol.NewFrameDecoder()
+	decoder := protocol.NewDecoder()
+
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
+
+	var (
+		session *codec.DeviceSession
+		buffer  = make([]byte, 0, 4096)
+		readBuf = make([]byte, 4096)
+	)
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if s.readTimeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(s.readTimeout))
+		}
+
+		n, readErr := conn.Read(readBuf)
+		if n > 0 {
+			buffer = append(buffer, readBuf[:n]...)
+			if len(buffer) > s.maxFrameSize {
+				s.logf("%s: frame buffer exceeded %d bytes", s.protocolName, s.maxFrameSize)
+				return
+			}
+
+			for {
+				frame, consumed := frameDecoder.DecodeFrame(buffer)
+				if consumed > 0 {
+					buffer = buffer[consumed:]
+				}
+				if frame == nil {
+					break
+				}
+				if err := s.handleFrame(conn, decoder, frame, &session); err != nil {
+					s.logf("%s: %v", s.protocolName, err)
+					return
+				}
+				if len(buffer) == 0 {
+					break
+				}
+			}
+		}
+
+		if readErr != nil {
+			var netErr net.Error
+			if !errors.Is(readErr, net.ErrClosed) && ctx.Err() == nil &&
+				(!errors.As(readErr, &netErr) || !netErr.Timeout()) {
+				s.logf("%s: read: %v", s.protocolName, readErr)
+			}
+			return
+		}
+	}
+}
+
+func (s *Server) handleFrame(
+	conn net.Conn, decoder codec.Decoder, frame []byte, session **codec.DeviceSession,
+) error {
+
+	result, err := decodeFrame(decoder, frame, *session)
+	if err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	if result == nil {
+		return nil
+	}
+
+	if result.UniqueID != "" && *session == nil {
+		*session = s.bindSession(result.UniqueID)
+	}
+
+	for _, position := range result.Positions {
+		if position.DeviceID == 0 && *session != nil {
+			position.DeviceID = (*session).DeviceID
+		}
+		s.locations.Store(position)
+		if s.sink != nil {
+			if err := s.sink.Handle(position); err != nil {
+				s.logf("%s: sink: %v", s.protocolName, err)
+			}
+		}
+	}
+
+	for _, response := range result.Responses {
+		if _, err := conn.Write(response); err != nil {
+			return fmt.Errorf("write response: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func decodeFrame(decoder codec.Decoder, frame []byte, session *codec.DeviceSession) (*codec.Result, error) {
+	if sessionDecoder, ok := decoder.(codec.SessionDecoder); ok {
+		return sessionDecoder.DecodeWithSession(frame, session)
+	}
+	return decoder.Decode(frame)
+}
+
+func (s *Server) bindSession(uniqueID string) *codec.DeviceSession {
+	if s.directory == nil {
+		return nil
+	}
+
+	if resolved, err := s.directory.Resolve(uniqueID); err == nil && resolved != nil {
+		return resolved
+	}
+
+	if registrar, ok := s.directory.(DeviceRegistrar); ok && s.autoRegister {
+		deviceID, err := registrar.Register(uniqueID)
+		if err != nil {
+			s.logf("%s: register %q: %v", s.protocolName, uniqueID, err)
+			return nil
+		}
+		return &codec.DeviceSession{DeviceID: deviceID, UniqueID: uniqueID}
+	}
+
+	return nil
+}
+
+// LastLocation exposes the position cache, e.g. for REST handlers.
+func (s *Server) LastLocation(deviceID int64) *model.Position {
+	return s.locations.LastLocation(deviceID)
+}

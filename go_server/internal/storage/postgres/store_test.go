@@ -1,0 +1,201 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"traccar-server_go/go_server/internal/model"
+)
+
+func samplePosition() *model.Position {
+	position := model.NewPosition("gt06")
+	position.DeviceID = 7
+	position.Time = time.Date(2026, 10, 31, 13, 2, 10, 0, time.UTC)
+	position.Valid = true
+	position.Latitude = 54.94535
+	position.Longitude = 24.01762
+	position.Altitude = 100
+	position.Speed = 27
+	position.Course = 180
+	position.Accuracy = 5
+	position.Attributes["sat"] = 9
+	position.Attributes["ignition"] = true
+	return position
+}
+
+func TestPositionArgs(t *testing.T) {
+	args, err := positionArgs(samplePosition())
+	if err != nil {
+		t.Fatalf("positionArgs: %v", err)
+	}
+	if len(args) != positionColumns {
+		t.Fatalf("args = %d, want %d", len(args), positionColumns)
+	}
+	if args[0] != int64(7) || args[1] != "gt06" || args[3] != true {
+		t.Errorf("unexpected leading args: %#v", args[:4])
+	}
+	if _, ok := args[2].(time.Time); !ok {
+		t.Errorf("device time is %T, want time.Time", args[2])
+	}
+
+	var attributes map[string]any
+	if err := json.Unmarshal([]byte(args[10].(string)), &attributes); err != nil {
+		t.Fatalf("attributes are not valid JSON: %v", err)
+	}
+	if attributes["sat"] != float64(9) || attributes["ignition"] != true {
+		t.Errorf("attributes = %#v", attributes)
+	}
+}
+
+func TestPositionArgsRequiresDevice(t *testing.T) {
+	position := samplePosition()
+	position.DeviceID = 0
+	if _, err := positionArgs(position); err != ErrMissingDevice {
+		t.Fatalf("err = %v, want %v", err, ErrMissingDevice)
+	}
+}
+
+func TestMigrationVersion(t *testing.T) {
+	version, err := migrationVersion("0001_init.sql")
+	if err != nil || version != 1 {
+		t.Fatalf("version = %d, err = %v", version, err)
+	}
+	if _, err := migrationVersion("init.sql"); err == nil {
+		t.Fatal("expected an error for a file without a version prefix")
+	}
+}
+
+func TestSplitStatements(t *testing.T) {
+	statements := splitStatements("CREATE TABLE a (id INT);\n\nCREATE INDEX b ON a (id);\n")
+	if len(statements) != 2 {
+		t.Fatalf("statements = %d, want 2", len(statements))
+	}
+	if statements[1] != "CREATE INDEX b ON a (id)" {
+		t.Errorf("second statement = %q", statements[1])
+	}
+}
+
+// TestBatchSink uses a recording writer, so batching is verified without a
+// database.
+func TestBatchSink(t *testing.T) {
+	writer := &recordingWriter{}
+	sink := NewBatchSink(writer, 3, 20*time.Millisecond)
+
+	for i := 0; i < 7; i++ {
+		position := samplePosition()
+		position.DeviceID = int64(i + 1)
+		if err := sink.Handle(position); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := sink.Flush(ctx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if err := sink.Close(ctx); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	batches, total := writer.snapshot()
+	if total != 7 {
+		t.Fatalf("written = %d, want 7", total)
+	}
+	for i, batch := range batches {
+		if len(batch) > 3 {
+			t.Errorf("batch %d has %d positions, want <= 3", i, len(batch))
+		}
+	}
+	if sink.Dropped() != 0 {
+		t.Errorf("dropped = %d, want 0", sink.Dropped())
+	}
+}
+
+type recordingWriter struct {
+	mu      sync.Mutex
+	batches [][]*model.Position
+}
+
+func (w *recordingWriter) InsertPositions(_ context.Context, positions []*model.Position) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.batches = append(w.batches, append([]*model.Position(nil), positions...))
+	return nil
+}
+
+func (w *recordingWriter) snapshot() ([][]*model.Position, int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	total := 0
+	for _, batch := range w.batches {
+		total += len(batch)
+	}
+	return w.batches, total
+}
+
+// TestStoreIntegration runs only when TRACCAR_POSTGRES_DSN is set, e.g.
+//
+//	docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=traccar postgres:16
+//	TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmode=disable' \
+//	  go test ./internal/storage/postgres -run TestStoreIntegration -v
+func TestStoreIntegration(t *testing.T) {
+	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+	}
+
+	ctx := context.Background()
+	store, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	uniqueID := "TEST" + time.Now().Format("150405.000000")
+	deviceID, err := store.Register(uniqueID)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	session, err := store.Resolve(uniqueID)
+	if err != nil || session == nil || session.DeviceID != deviceID {
+		t.Fatalf("resolve = %+v, err = %v", session, err)
+	}
+	if resolvedID, err := store.UniqueID(deviceID); err != nil || resolvedID != uniqueID {
+		t.Fatalf("unique id = %q, err = %v", resolvedID, err)
+	}
+
+	position := samplePosition()
+	position.DeviceID = deviceID
+	if err := store.Handle(position); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	var (
+		latitude   float64
+		attributes []byte
+	)
+	if err := store.DB().QueryRowContext(ctx,
+		`SELECT latitude, attributes FROM positions WHERE device_id = $1 ORDER BY id DESC LIMIT 1`,
+		deviceID,
+	).Scan(&latitude, &attributes); err != nil {
+		t.Fatalf("query position: %v", err)
+	}
+	if latitude != position.Latitude {
+		t.Errorf("latitude = %.5f, want %.5f", latitude, position.Latitude)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(attributes, &decoded); err != nil || decoded["sat"] != float64(9) {
+		t.Errorf("attributes = %s, err = %v", attributes, err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM devices WHERE id = $1`, deviceID); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+}

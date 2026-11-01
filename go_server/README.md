@@ -43,39 +43,71 @@ client ──HTTP──▶ api.Server (RequireAuth)
 
 ## 目錄
 
-| 路徑                             | 說明                                                                                                                                       |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `internal/model`                 | 統一資料模型：`Position` / `Network` / `CellTower` / `Command` / `User` / `Notification`                                                    |
-| `internal/auth`                  | 權限模型：scope、`Principal`、token 產生 / SHA-256 雜湊、密碼 bcrypt 雜湊                                                                   |
-| `internal/codec`                 | 協議介面：`FrameDecoder`、`Decoder`、`SessionDecoder`、`Encoder`、`Base`                                                                   |
-| `internal/helper`                | Java helper 的移植：`Buffer`(Netty ByteBuf)、`PatternBuilder`、`Parser`、BCD、DateBuilder、CRC16/X25、CRC16/IBM、XOR、Luhn                 |
-| `internal/protocol/h02`          | H02 / TK102 系                                                                                                                             |
-| `internal/protocol/gt06`         | GT06 / Concox / Jimi 系                                                                                                                    |
-| `internal/protocol/jt808`        | JT/T 808（中國交通部標準）                                                                                                                 |
-| `internal/protocol/teltonika`    | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13）                                                                                            |
-| `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植）                                                                                                      |
-| `internal/gateway`               | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                      |
-| `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                      |
-| `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線                                                            |
-| `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                            |
+| 路徑                             | 說明                                                                                                                                                                                                                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `internal/model`                 | 統一資料模型：`Position` / `Network` / `CellTower` / `Command` / `User` / `Notification`                                                                                                                                                                               |
+| `internal/auth`                  | 權限模型：scope、`Principal`、token 產生 / SHA-256 雜湊、密碼 bcrypt 雜湊                                                                                                                                                                                              |
+| `internal/codec`                 | 協議介面：`FrameDecoder`、`Decoder`、`SessionDecoder`、`Encoder`、`Base`                                                                                                                                                                                               |
+| `internal/helper`                | Java helper 的移植：`Buffer`(Netty ByteBuf)、`PatternBuilder`、`Parser`、BCD、DateBuilder、CRC16/X25、CRC16/IBM、XOR、Luhn                                                                                                                                             |
+| `internal/protocol/h02`          | H02 / TK102 系                                                                                                                                                                                                                                                         |
+| `internal/protocol/gt06`         | GT06 / Concox / Jimi 系                                                                                                                                                                                                                                                |
+| `internal/protocol/jt808`        | JT/T 808（中國交通部標準）                                                                                                                                                                                                                                             |
+| `internal/protocol/teltonika`    | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13）                                                                                                                                                                                                                        |
+| `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植）                                                                                                                                                                                                                                  |
+| `internal/gateway`               | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                                                                                                                                                  |
+| `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                                                                                                                                                  |
+| `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線                                                                                                                                                                                        |
+| `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
 | `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`；認證 / scope / 裝置擁有權 |
-| `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                  |
-| `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                               |
-| `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                               |
+| `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                                                                                                                                              |
+| `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                                                                                                                                                           |
+| `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                                                                                                                                                           |
 
 ## 快速開始
+
+需求：Go 1.22 以上（`make build` 只用標準工具鏈，沒有 cgo）。PostgreSQL 只有要跑 REST /
+告警 / 命令歷史時才需要。
 
 ```bash
 cd go_server
 
+# 0) 先確認這一版在你機器上能跑：編譯、測試、四協議實跑
+make build        # 產出 bin/traccar-gateway 與 bin/device-sim
+make test         # go test ./...
+make smoke        # 起一個沒有資料庫的網關，重播四個協議的場景，看 position 有沒有進 sink
+
 # 1) 只跑網關，position 以 JSON 印到 log（不需要資料庫）
-go run ./cmd/traccar-gateway
+make run          # 等於 ./bin/traccar-gateway（記憶體模式，REST 關閉）
 
 # 2) 接 PostgreSQL（自動建表 / 套用 migration）
-docker run --rm -d --name traccar-pg -p 5432:5432 -e POSTGRES_PASSWORD=traccar postgres:16
-go run ./cmd/traccar-gateway \
-  -dsn 'postgres://postgres:traccar@localhost:5432/postgres?sslmode=disable'
+make db-up        # docker run postgres:16，監聽 55432
+TRACCAR_DSN='postgres://postgres:traccar@localhost:55432/traccar?sslmode=disable' make run-db
 ```
+
+`make` 不帶參數會列出所有 target。要裝進 PATH：
+
+```bash
+make install                    # 裝到 ~/.local/bin
+make install PREFIX=/usr/local  # 或系統目錄（需要寫入權限）
+make uninstall
+```
+
+只想用 Go 原生的方式裝：
+
+```bash
+go install ./cmd/...            # 裝到 GOBIN（預設 $(go env GOPATH)/bin）
+```
+
+Docker 一把拉起網關 + PostgreSQL：
+
+```bash
+docker compose up --build -d
+curl -H 'X-Api-Key: dev-key' http://127.0.0.1:8082/api/health
+docker compose down -v
+```
+
+`-dsn` 的預設值讀 `TRACCAR_DSN`，容器裡只給環境變數就夠；`-api-key` 同理讀
+`TRACCAR_API_KEY`，SMTP 密碼讀 `TRACCAR_SMTP_PASSWORD`。
 
 REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 curl 可加 `-allow-anonymous`
 （見「認證與權限」）。
@@ -90,7 +122,8 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 | Teltonika   | `-teltonika` | `0.0.0.0:5027`                           |
 | REST        | `-http`      | `0.0.0.0:8082`（需要 `-dsn`；空 = 關閉） |
 
-其他 flag：`-batch-size`（預設 500）、`-batch-interval`（預設 1s）、`-dsn`（空 = 記憶體模式）、
+其他 flag：`-batch-size`（預設 500）、`-batch-interval`（預設 1s）、
+`-dsn`（預設讀 `TRACCAR_DSN`；空 = 記憶體模式）、
 `-overspeed-knots`（預設 0 = 關閉規則）、`-power-cut-volts`（預設 0 = 關閉規則）、
 `-overspeed-prefer-lowest`（多個圍欄重疊時取最低限速；預設取最高）、
 `-alert-repeat`（預設 0 = 不抑制重複告警）、`-geofence-refresh`（預設 5m，0 = 只在啟動時載入一次）、
@@ -176,7 +209,7 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 | --------------- | --------------------------------------------------------------------------- | -------------------------------- |
 | 超速            | `Speed`（**節**，decoder 已從 km/h 換算）高於解析後的門檻（見下）           | `deviceOverspeed`                |
 | 斷電            | `attributes.power`（**伏特**，GT06 `0x94` 是 12.5）低於解析後的門檻（見下） | `powerCut`                       |
-| 復電            | 同一裝置上一個 `power` 低於門檻、這一筆回到門檻以上                        | `powerRestored`                  |
+| 復電            | 同一裝置上一個 `power` 低於門檻、這一筆回到門檻以上                         | `powerRestored`                  |
 | 進入 / 離開圍欄 | `geofences` 表的幾何內含判定變化（每個裝置各自記狀態）                      | `geofenceEnter` / `geofenceExit` |
 
 門檻可以全域設定，也可以依裝置 / 圍欄覆寫。超速的解析順序（後者覆蓋前者）：
@@ -265,7 +298,7 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
 告警除了寫進 `alerts` 表，還可以推到 webhook 與 email。兩個管道共用同一份格式化內容：
 `alert.Pipeline` 每產生一筆告警就丟進 `notify.Dispatcher` 的佇列，傳送在背景 goroutine 進行，
 device 連線與資料庫寫入都不等網路。沒有設定任何 `-notify-*` 時整條路徑不會啟動；
-通知需要 `-dsn`（告警規則本身就要資料庫），記憶體模式只會印出「ignoring -notify-* flags」。
+通知需要 `-dsn`（告警規則本身就要資料庫），記憶體模式只會印出「ignoring -notify-\* flags」。
 
 路由分三層，依序決定：
 
@@ -277,26 +310,26 @@ device 連線與資料庫寫入都不等網路。沒有設定任何 `-notify-*` 
 
 伺服器層級設定：
 
-| Flag                                                | 說明                                                                                                       |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `-notify-webhook`                                   | webhook URL；空 = 關閉 webhook                                                                             |
-| `-notify-webhook-authorization`                     | 每個請求帶的完整 `Authorization` 值；空 = 不帶                                                             |
-| `-notify-email-smtp`                                | SMTP `host:port`；空 = 關閉 email                                                                          |
-| `-notify-email-from`                                | 寄件者；`-notify-email-smtp` 有值時必填                                                                    |
-| `-notify-email-to`                                  | 預設收件者（逗號分隔）；空 = 只用裝置的 `notifyEmail`                                                      |
-| `-notify-email-username` / `-notify-email-password` | SMTP AUTH；密碼預設讀 `TRACCAR_SMTP_PASSWORD`，使用者名稱空 = 不做 AUTH                                    |
-| `-notify-email-tls`                                 | `auto`（預設：465 用 implicit TLS，其餘伺服器有 STARTTLS 就升級）、`starttls`、`implicit`、`none`           |
-| `-notify-types`                                     | 只送這些告警類型（逗號分隔）；空 = 全部；`none` = 全關                                                     |
-| `-notify-timeout`                                   | 單次裝置查詢 / 傳送的上限，預設 10s                                                                        |
-| `-notify-queue`                                     | 等待傳送的告警上限，預設 256；滿了就丟棄並計數                                                             |
+| Flag                                                | 說明                                                                                              |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `-notify-webhook`                                   | webhook URL；空 = 關閉 webhook                                                                    |
+| `-notify-webhook-authorization`                     | 每個請求帶的完整 `Authorization` 值；空 = 不帶                                                    |
+| `-notify-email-smtp`                                | SMTP `host:port`；空 = 關閉 email                                                                 |
+| `-notify-email-from`                                | 寄件者；`-notify-email-smtp` 有值時必填                                                           |
+| `-notify-email-to`                                  | 預設收件者（逗號分隔）；空 = 只用裝置的 `notifyEmail`                                             |
+| `-notify-email-username` / `-notify-email-password` | SMTP AUTH；密碼預設讀 `TRACCAR_SMTP_PASSWORD`，使用者名稱空 = 不做 AUTH                           |
+| `-notify-email-tls`                                 | `auto`（預設：465 用 implicit TLS，其餘伺服器有 STARTTLS 就升級）、`starttls`、`implicit`、`none` |
+| `-notify-types`                                     | 只送這些告警類型（逗號分隔）；空 = 全部；`none` = 全關                                            |
+| `-notify-timeout`                                   | 單次裝置查詢 / 傳送的上限，預設 10s                                                               |
+| `-notify-queue`                                     | 等待傳送的告警上限，預設 256；滿了就丟棄並計數                                                    |
 
 每個裝置可以用 `devices.attributes` 覆寫（與門檻共用 `-device-refresh` 的更新週期）：
 
-| Attribute       | 說明                                                                             |
-| --------------- | -------------------------------------------------------------------------------- |
-| `notifyTypes`   | 這個裝置要送的類型（逗號分隔或 JSON 陣列）；`none` = 全關，`all` / `*` = 全部     |
-| `notifyWebhook` | 覆寫 webhook URL（可多個）；`false` 或空字串 = 這個裝置不送 webhook               |
-| `notifyEmail`   | 覆寫收件者（可多個）；`false` 或空字串 = 這個裝置不寄 email                       |
+| Attribute       | 說明                                                                          |
+| --------------- | ----------------------------------------------------------------------------- |
+| `notifyTypes`   | 這個裝置要送的類型（逗號分隔或 JSON 陣列）；`none` = 全關，`all` / `*` = 全部 |
+| `notifyWebhook` | 覆寫 webhook URL（可多個）；`false` 或空字串 = 這個裝置不送 webhook           |
+| `notifyEmail`   | 覆寫收件者（可多個）；`false` 或空字串 = 這個裝置不寄 email                   |
 
 `-notify-types` 先過濾，裝置的 `notifyTypes` 再收窄，所以裝置沒辦法打開全域關掉的類型。
 `notifyTypes` 寫成空字串與 `none` 同義。
@@ -325,15 +358,15 @@ UPDATE devices SET attributes = attributes || '{
 告警要不要打伺服器 webhook」。兩個管道仍要先用 `-notify-email-smtp` / `-notify-webhook`
 啟用，否則沒有 notifier 可以送。
 
-| 路由                                                        | 說明                                                                 |
-| ----------------------------------------------------------- | -------------------------------------------------------------------- |
-| `GET /api/notifications`                                    | 列出所有範本（任何已驗證帳號）                                       |
-| `POST /api/notifications`                                   | 建立範本（admin），body `{"type","notificators","description"}`      |
-| `PUT /api/notifications/{id}`                               | 局部更新範本（admin），省略的欄位不動                                |
-| `DELETE /api/notifications/{id}`                            | 刪除範本（admin），`user_notifications` 由 FK cascade                |
-| `GET /api/users/{id}/notifications`                         | 列出帳號的訂閱（本人或 admin）                                       |
-| `PUT /api/users/{id}/notifications/{notificationId}`        | 訂閱（本人或 admin；重複呼叫不會出錯）                               |
-| `DELETE /api/users/{id}/notifications/{notificationId}`     | 取消訂閱（本人或 admin；原本沒訂閱也回 `204`）                       |
+| 路由                                                    | 說明                                                            |
+| ------------------------------------------------------- | --------------------------------------------------------------- |
+| `GET /api/notifications`                                | 列出所有範本（任何已驗證帳號）                                  |
+| `POST /api/notifications`                               | 建立範本（admin），body `{"type","notificators","description"}` |
+| `PUT /api/notifications/{id}`                           | 局部更新範本（admin），省略的欄位不動                           |
+| `DELETE /api/notifications/{id}`                        | 刪除範本（admin），`user_notifications` 由 FK cascade           |
+| `GET /api/users/{id}/notifications`                     | 列出帳號的訂閱（本人或 admin）                                  |
+| `PUT /api/users/{id}/notifications/{notificationId}`    | 訂閱（本人或 admin；重複呼叫不會出錯）                          |
+| `DELETE /api/users/{id}/notifications/{notificationId}` | 取消訂閱（本人或 admin；原本沒訂閱也回 `204`）                  |
 
 ```bash
 # admin 建立「超速寄 email」範本
@@ -417,16 +450,16 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 
 ### Scope
 
-| scope             | 端點                             |
-| ----------------- | -------------------------------- |
-| `read:positions`  | `GET /api/positions`             |
-| `read:devices`    | `GET /api/devices`               |
-| `read:alerts`     | `GET /api/alerts`                |
-| `read:metrics`    | `GET /metrics`                   |
-| `read:commands`   | `GET /api/commands`              |
-| `write:devices`   | `POST/PUT/DELETE /api/devices`   |
-| `write:commands`  | `POST /api/commands`             |
-| `*`               | 全部（給機器用，等同舊 API key），另外是列出 / 撤銷自己 token 的必要條件 |
+| scope            | 端點                                                                     |
+| ---------------- | ------------------------------------------------------------------------ |
+| `read:positions` | `GET /api/positions`                                                     |
+| `read:devices`   | `GET /api/devices`                                                       |
+| `read:alerts`    | `GET /api/alerts`                                                        |
+| `read:metrics`   | `GET /metrics`                                                           |
+| `read:commands`  | `GET /api/commands`                                                      |
+| `write:devices`  | `POST/PUT/DELETE /api/devices`                                           |
+| `write:commands` | `POST /api/commands`                                                     |
+| `*`              | 全部（給機器用，等同舊 API key），另外是列出 / 撤銷自己 token 的必要條件 |
 
 `*` 不等於 admin：帳號管理（建 / 改 / 刪帳號、發 token）仍然只認 `users.admin = true`，
 所以帶 `*` 的 token 不會提權，只能管自己的 token。
@@ -452,24 +485,24 @@ token 的列出與撤銷對帳號本人開放，但本人手上那組 token 必�
 通知訂閱的 `/api/users/{id}/notifications/...` 對帳號本人開放，不看 scope（見「使用者訂閱」）；
 `PUT /api/users/me/password` 由帳號本人改自己的密碼（見「密碼登入」）。
 
-| 路由                                       | 說明                                                               |
-| ------------------------------------------ | ------------------------------------------------------------------ |
-| `GET /api/users`                           | 列出帳號（`limit` 1–1000、`offset`），含 `deviceCount` / `tokenCount` |
-| `POST /api/users`                          | 建立帳號，body `{"email","name","admin"}`；email 重複回 `409`      |
-| `PUT /api/users/{id}`                      | 局部更新 `name` / `admin` / `disabled` / `password`，省略的欄位不動    |
-| `DELETE /api/users/{id}`                   | 刪除帳號（token 與裝置授權 cascade）                               |
-| `GET /api/users/{id}/devices`              | 列出已授權的裝置（格式同 `GET /api/devices`）                      |
-| `PUT /api/users/{id}/devices/{deviceId}`   | 授權裝置（重複呼叫不會出錯）                                       |
-| `DELETE /api/users/{id}/devices/{deviceId}` | 撤銷授權（原本就沒有也回 `204`）                                  |
-| `GET /api/users/{id}/tokens`               | 列出 token 中繼資料，**不含**明文與雜湊（admin，或本人帶 `*` 的 token） |
-| `POST /api/users/{id}/tokens`              | 發 token，body `{"scopes":[...],"expiresIn":"720h"}`，明文只回這一次（僅 admin） |
-| `DELETE /api/users/{id}/tokens/{tokenId}`  | 撤銷 token（admin，或本人帶 `*` 的 token）                          |
-| `PUT /api/users/me/password`               | 本人改密碼，body `{"currentPassword","newPassword"}`（需要使用者 token，共用 key 不行） |
-| `POST /api/password/forgot`                | 寄出重設碼，body `{"email"}`；不論帳號是否存在都回 `202`（免憑證）  |
-| `POST /api/password/reset`                 | 用重設碼換新密碼，body `{"token","password"}`；用過即失效（免憑證） |
-| `GET /api/users/{id}/notifications`        | 列出通知訂閱（本人或 admin）                                       |
-| `PUT /api/users/{id}/notifications/{notificationId}` | 訂閱通知範本（本人或 admin）                              |
-| `DELETE /api/users/{id}/notifications/{notificationId}` | 取消訂閱（本人或 admin）                               |
+| 路由                                                    | 說明                                                                                    |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `GET /api/users`                                        | 列出帳號（`limit` 1–1000、`offset`），含 `deviceCount` / `tokenCount`                   |
+| `POST /api/users`                                       | 建立帳號，body `{"email","name","admin"}`；email 重複回 `409`                           |
+| `PUT /api/users/{id}`                                   | 局部更新 `name` / `admin` / `disabled` / `password`，省略的欄位不動                     |
+| `DELETE /api/users/{id}`                                | 刪除帳號（token 與裝置授權 cascade）                                                    |
+| `GET /api/users/{id}/devices`                           | 列出已授權的裝置（格式同 `GET /api/devices`）                                           |
+| `PUT /api/users/{id}/devices/{deviceId}`                | 授權裝置（重複呼叫不會出錯）                                                            |
+| `DELETE /api/users/{id}/devices/{deviceId}`             | 撤銷授權（原本就沒有也回 `204`）                                                        |
+| `GET /api/users/{id}/tokens`                            | 列出 token 中繼資料，**不含**明文與雜湊（admin，或本人帶 `*` 的 token）                 |
+| `POST /api/users/{id}/tokens`                           | 發 token，body `{"scopes":[...],"expiresIn":"720h"}`，明文只回這一次（僅 admin）        |
+| `DELETE /api/users/{id}/tokens/{tokenId}`               | 撤銷 token（admin，或本人帶 `*` 的 token）                                              |
+| `PUT /api/users/me/password`                            | 本人改密碼，body `{"currentPassword","newPassword"}`（需要使用者 token，共用 key 不行） |
+| `POST /api/password/forgot`                             | 寄出重設碼，body `{"email"}`；不論帳號是否存在都回 `202`（免憑證）                      |
+| `POST /api/password/reset`                              | 用重設碼換新密碼，body `{"token","password"}`；用過即失效（免憑證）                     |
+| `GET /api/users/{id}/notifications`                     | 列出通知訂閱（本人或 admin）                                                            |
+| `PUT /api/users/{id}/notifications/{notificationId}`    | 訂閱通知範本（本人或 admin）                                                            |
+| `DELETE /api/users/{id}/notifications/{notificationId}` | 取消訂閱（本人或 admin）                                                                |
 
 `expiresIn` 是 Go duration（`720h`、`30m`），空字串表示永不過期；scopes 依上表驗證，
 未知 scope 回 `400`。停用自己、撤掉自己的 admin、刪除自己都回 `409`，避免把唯一的
@@ -691,15 +724,15 @@ curl -i -X POST localhost:8082/api/commands \
 `queued` 是這筆命令當下有沒有等到裝置：`false` 表示位元組已寫進連線，`true` 表示還在佇列裡，
 裝置重連後會送出。
 
-| 狀態  | 意義                                                                 |
-| ----- | -------------------------------------------------------------------- |
+| 狀態  | 意義                                                                    |
+| ----- | ----------------------------------------------------------------------- |
 | `202` | 已記錄，且已寫入連線（`queued:false`）或已排入派送佇列（`queued:true`） |
-| `400` | body 不合法，或該協議不支援這個命令（都不會留下 `commands` 列）      |
-| `403` | 缺少 `write:commands`，或該裝置不在 `user_devices` 內                 |
-| `404` | 裝置不存在                                                           |
-| `409` | `devices.protocol` 還是 NULL（讓設備重連一次），或沒有可用的協議伺服器 |
-| `429` | 該裝置的派送佇列已滿（`-command-queue`），這筆直接記成 `failed`      |
-| `501` | 沒有配置命令路由                                                     |
+| `400` | body 不合法，或該協議不支援這個命令（都不會留下 `commands` 列）         |
+| `403` | 缺少 `write:commands`，或該裝置不在 `user_devices` 內                   |
+| `404` | 裝置不存在                                                              |
+| `409` | `devices.protocol` 還是 NULL（讓設備重連一次），或沒有可用的協議伺服器  |
+| `429` | 該裝置的派送佇列已滿（`-command-queue`），這筆直接記成 `failed`         |
+| `501` | 沒有配置命令路由                                                        |
 
 各協議支援的命令以 encoder 為準：H02 `alarmArm` / `alarmDisarm` / `engineStop` / `engineResume` /
 `positionPeriodic`；GT06 `engineStop` / `engineResume` / `custom`；JT808 `positionSingle` /
@@ -718,12 +751,12 @@ H02 沒有握手，第一筆能解析出裝置的訊息就會綁定。因此對�
 
 每一筆命令在 `commands` 表裡走四種狀態之一：
 
-| status    | 何時                                                        | `result_code` |
-| --------- | ----------------------------------------------------------- | ------------- |
-| `pending` | 已記錄，還沒寫進連線（在派送佇列裡等裝置）                  | NULL          |
-| `sent`    | 已寫進連線，等裝置回應                                      | NULL          |
-| `done`    | 裝置回應且結果是 0（GT06 只要有回應就算）                   | 0             |
-| `failed`  | 佇列已滿、排隊逾時、重送次數用完，或裝置回報非 0            | 沒送到是 NULL；裝置拒絕時是它回的值 |
+| status    | 何時                                             | `result_code`                       |
+| --------- | ------------------------------------------------ | ----------------------------------- |
+| `pending` | 已記錄，還沒寫進連線（在派送佇列裡等裝置）       | NULL                                |
+| `sent`    | 已寫進連線，等裝置回應                           | NULL                                |
+| `done`    | 裝置回應且結果是 0（GT06 只要有回應就算）        | 0                                   |
+| `failed`  | 佇列已滿、排隊逾時、重送次數用完，或裝置回報非 0 | 沒送到是 NULL；裝置拒絕時是它回的值 |
 
 `attempts` 這欄是**位元組實際寫進連線的次數**：1 表示只送過一次，大於 1 表示重送過。
 
@@ -853,18 +886,18 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 
 目前可觀察的輸出：
 
-| 來源                     | 內容                                                                                                                                                                 |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`、`<protocol>: acknowledge command: <err>`（裝置回應已到但 `commands` 寫不回去，連線不受影響） |
-| `gateway.Dispatcher` log    | `dispatch: give up on command <id> of device <id> after <n> attempts`、`dispatch: load pending commands of device <id>: <err>`、`dispatch: re-encode command <id> of device <id>: <err>`、`dispatch: mark command <id> sent/failed: <err>` |
-| `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                       |
-| `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                              |
-| `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...` |
-| `notify.Dispatcher` log  | `notify: webhook, mail enabled`、`notify: <channel>: <err>`、`notify: lookup device <id>: <err>`、`notify: lookup subscriptions for device <id>: <err>`、`notify: queue full, dropped <type> for device <id>` |
+| 來源                     | 內容                                                                                                                                                                                                                                                                                |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`、`<protocol>: acknowledge command: <err>`（裝置回應已到但 `commands` 寫不回去，連線不受影響）                                                    |
+| `gateway.Dispatcher` log | `dispatch: give up on command <id> of device <id> after <n> attempts`、`dispatch: load pending commands of device <id>: <err>`、`dispatch: re-encode command <id> of device <id>: <err>`、`dispatch: mark command <id> sent/failed: <err>`                                          |
+| `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                                                                                                                                      |
+| `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                                                                                                                                             |
+| `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...`                                                                                                                |
+| `notify.Dispatcher` log  | `notify: webhook, mail enabled`、`notify: <channel>: <err>`、`notify: lookup device <id>: <err>`、`notify: lookup subscriptions for device <id>: <err>`、`notify: queue full, dropped <type> for device <id>`                                                                       |
 | `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: query commands: <err>`、`api: record command <type> for device <id>: <err>`、`api: send command <type> to device <id>: <err>` |
-| CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`、`dropped <n> notifications because the queue was full`          |
-| `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                     |
-| 記憶體模式 sink          | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`）                                                                                                          |
+| CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`、`dropped <n> notifications because the queue was full`                                                                                                                         |
+| `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                                                                                                                                    |
+| 記憶體模式 sink          | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`）                                                                                                                                                                                                                         |
 
 排查順序建議：
 
@@ -955,9 +988,184 @@ scrape_configs:
 - 報表等其餘業務層仍是 Java 版負責。
 - 記憶體目錄僅適合開發；正式環境請用 `-dsn`。
 
-## 下一步
+# 下一步
 
-1. GT06 / H02 / Teltonika 的命令回應沒有識別碼，配對仍是「該裝置最新一列 `sent`」。要精確配對得先
-   在 encoder 端找出各協議回應裡的等價欄位，那是另一支 PR（見「回應配對」）。
-2. GT06 的 `0xA3` variant 判定、WiFi 掃描與 `0x94` 子類型；Java 用幀長度推 variant，Go 目前只覆蓋
-   `NT_MODELS` 與 alarm 分支（見「協議支援矩陣」）。
+1. **命令回應精確配對延伸**：JT808 已透過流水號完成精確配對與重試機制，後續可評估 H02 / GT06 / Teltonika 是否需要或支援在回應中加入對應的識別欄位。
+2. **GT06 剩餘功能補齊**：已完成 `NT_MODELS` 基礎與狀態分支，接下來可繼續補齊 `0xA3` variant 判定、WiFi 掃描（`0x17/0x2C/0x33/0xA2`）以及 `0x94` 的完整子類型（ADC/告警字串）。
+3. **使用者與裝置權限設計**：引入 `users` 與 `user_devices` 關聯表，將目前「全有全無」的全域 API Key 升級為支援多租戶的細粒度權限控制。
+4. **每裝置獨立門檻與通知管道**：將全域的超速／斷電門檻下放到 `devices.attributes`，並加入 Webhook 或 Email 等告警外部通知管道。
+
+上面四條到此為止，不再往下追。三條已經被後來的程式追上，一條是母本自己也做不到的：
+
+- 第 1 條：JT808 已用流水號精確配對；H02 / GT06 / Teltonika 的回應裡沒有可用的識別欄位
+  （GT06 的 `0x80` 指令索引固定寫 0、H02 的 `R12` 帶的是應答序號、Teltonika 的 `0x00 N` 是筆數），
+  母本同樣只認「該裝置最新一筆 `sent`」。這條關閉。
+- 第 2 條：`NT_MODELS` 已完成，剩下的 `0xA3` / WiFi 掃描 / `0x94` 子類型是 GT06 長尾，
+  併入 M6 跟其他協議一起排。
+- 第 3 條：`users` / `user_devices` / `api_tokens`（scope）已完成；剩下的群組與其他資源權限併入 M2。
+- 第 4 條：裝置 / 圍欄 attributes 門檻與 webhook / email 已完成；剩下的新管道併入 M4。
+
+真正擋住「用 Go 重寫整個 Traccar」的是下面幾層，不是那四條。以下以 `../traccar-master` 為母本逐層比對。
+
+## 架構比對
+
+| 層       | traccar-master（Java）                                                                              | go_server 現況                                               | 差距                                                                                                                   |
+| -------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| 協議     | `protocol/` 272 個 `*ProtocolDecoder`，共用 HTTP / MQTT / poller 基底                               | 4 個（H02 / GT06 / JT808 / Teltonika），純函式               | 268 個；三種非 TCP 基底都沒有                                                                                          |
+| 傳輸     | `ServerManager` + `TrackerServer`：TCP / UDP、TLS、每協議一個埠、`TrackerConnector` 主動連線        | `gateway.Server` 每協議一個 TCP listener                     | 無 UDP、無 TLS、無 client 模式                                                                                         |
+| 連線狀態 | `session/ConnectionManager`、`session/state`（motion / overspeed 狀態機）、`session/cache` 圖狀快取 | `gateway.DeviceDirectory` + `LocationCache`                  | 無 online / offline / timeout 與事件、無狀態機、無快取圖                                                               |
+| 處理管線 | `ProcessingHandler`：19 段 position handler + 12 段 event handler + `PostProcessHandler`            | 固定兩段：`alert.Pipeline`（4 條規則）→ `postgres.BatchSink` | position 只對應到 `GeofenceHandler` 的一部分，event 只對應到 Overspeed / Alarm / Geofence 的一部分，且管線寫死不可插拔 |
+| 資料模型 | `model/` 40 個類別                                                                                  | `internal/model` 7 檔 8 個型別                               | 缺 Group / Geofence / Calendar / Driver / Maintenance / Order / Statistics / Attribute                                 |
+| 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL，11 張表                                            | 缺 39 張表，且沒有通用查詢與權限儲存                                                                                   |
+| 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + `user_devices`                                       | 只有裝置一種資源，無群組、無共享                                                                                       |
+| REST     | 25 個 resource、81 個端點                                                                           | 31 條路由                                                    | 見 M3                                                                                                                  |
+| 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 5 種，寫在 `alerts`，路由是 `/api/alerts`                    | 18 種；表名與路由都與母本不同                                                                                          |
+| 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email                                              | 7 個管道、模板語法                                                                                                     |
+| 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | 無                                                           | 全部                                                                                                                   |
+| 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | 無                                                           | 全部                                                                                                                   |
+| 排程     | `schedule/` 8 個 task                                                                               | 無                                                           | 全部                                                                                                                   |
+| 地理加值 | 28 個 geocoder 檔、`speedlimit/`、`mapmatcher/`、`geolocation/`                                     | 無                                                           | 全部                                                                                                                   |
+| 設定     | `Config` + 267 個 `Keys`，支援 `protocol.<name>.<key>`                                              | 38 個 command line flag                                      | 無設定檔、無 per-protocol、無動態重載                                                                                  |
+| 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | 無                                                           | 全部                                                                                                                   |
+| 安全     | token、OIDC、LDAP、`api/signature`                                                                  | token、密碼登入                                              | OIDC / LDAP / 簽章                                                                                                     |
+| 媒體     | `media/`、`MediaEventHandler`、`VideoStreamResource`                                                | 無                                                           | 全部                                                                                                                   |
+| 歷史統計 | `tc_statistics` + `StatisticsManager`                                                               | 只有 `/metrics`（即時）                                      | 全部                                                                                                                   |
+
+Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純函式（`[]byte` → `*model.Position`，可用 Java 測試向量直接斷言）、
+`BatchSink` 非阻塞批次寫入、`/metrics` 零依賴、`cmd/device-sim` 能重播場景。任何一個里程碑都不准把它們換掉。
+
+## 還需要做
+
+規模用 S / M / L 標示（一個工作天為 S，一週內 M，超過一週 L）。每個里程碑的完成定義都一樣：
+`go vet ./...`、`go build ./...`、`go test ./...` 全綠，加上對應的 live lane（`scripts/live-lanes.sh`），
+以及 `decisions.tsv` 一列。
+
+### M1 地基：設定、處理鏈、連線狀態、事件表（L）
+
+後面每一段都要掛在這四件事上，所以先做。
+
+- [ ] **M1-1 `internal/config`**
+  - 母本：`config/Config.java`、`config/Keys.java`（267 個 key）、`config/ProtocolConfig.java`。
+  - 做什麼：`traccar.xml` → 環境變數 → flag 三層覆寫，key 名照 `Keys`，支援 `protocol.<name>.<key>` 的 per-protocol 值；先移植真的會用到的 40 個 key，其餘用到再加。
+  - 驗收：現有 38 個 flag 全部改由 config 提供且行為不變；`go test ./internal/config`。
+- [ ] **M1-2 `internal/handler` 處理鏈**
+  - 母本：`ProcessingHandler`、`handler/BasePositionHandler`、`handler/PostProcessHandler`。
+  - 做什麼：`PositionHandler` 介面 + 有序鏈，順序照 `ProcessingHandler` 的宣告；`alert.Pipeline` 降級成 `BusinessHandler` 一段，鏈在 `internal/handler` 組裝，`cmd` 只負責接線。
+  - 驗收：`TestHandlerOrder` 斷言順序與母本一致；`alert` 不再是 `gateway` 與 `PostgreSQL` 之間唯一的一段。
+- [ ] **M1-3 `internal/session`**
+  - 母本：`session/ConnectionManager`、`DeviceSession`、`session/state/{Motion,Overspeed}Processor`。
+  - 做什麼：連線登錄表（deviceId ⇄ conn、online / offline / timeout）、`devices` 補 `status` / `last_update` 以外的狀態欄位、motion 與 overspeed 狀態機（母本用位置間距與時間判定 `deviceMoving` / `deviceStopped`）。
+  - 驗收：裝置斷線後 `status` 轉 `offline`；心跳超時產生 `deviceOffline`；`device-sim` 的斷線 / 重連腳本能重現整段。
+- [ ] **M1-4 `events` 表取代 `alerts`**
+  - 母本：`model/Event`、`handler/events/*`、`tc_events`。
+  - 做什麼：`events(id, device_id, position_id, geofence_id, type, event_time, attributes)`，寫入時用 `INSERT ... RETURNING id` 回填 `positions` 與 `events` 的雙向關聯；`/api/alerts` 保留為 `/api/events` 的別名一段時間。
+  - 驗收：新舊路由回同一批資料；`alerts.position_id` 恒為 NULL 的已知限制消失（`TestEventLinksPosition`）。
+
+### M2 資料模型與權限（L）
+
+- [ ] **M2-1 補模型**：Group / Geofence（完整欄位）/ Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute；`ExtendedModel` 的 attributes 存取子（`getString` / `getDouble` / `getBoolean` / `getInteger`）照母本語義，含型別錯誤時回預設值。
+  - 驗收：每個型別都有 table 與 CRUD 測試；attributes 的型別轉換測試對齊 `ExtendedModelTest`。
+- [ ] **M2-2 權限**：`tc_user_*` / `tc_device_*` 的通用多對多表、`Permission`、`PermissionsService`（`MAX_GROUP_DEPTH = 3`）、`/api/permissions`、`/api/share/{device,group}`。
+  - 驗收：group 三層展開的查詢測試；越權一律 403；現有 `permissions_test.go` 擴充到 group 與共享屬性。
+- [ ] **M2-3 資源 CRUD**：`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenances`、`/api/orders`、`/api/reports`、`/api/attributes/computed`。
+  - 參數照母本 `SimpleObjectResource` / `ExtendedObjectResource`：`all`、`userId`、`groupId`、`deviceId`、`excludeAttributes`、`limit`、`offset`、`keyword`。
+  - 驗收：圍欄不用再以 SQL 維護；`alerts` 的圍欄失效條件（`floor` / `ceiling`）改由 API 寫入並經 `TestGeofenceCRUD`。
+
+### M3 REST 對齊與即時推播（M）
+
+- [ ] **M3-1 `/api/events`**：`GET`（`deviceId` / `type` / `from` / `to` / `groupId`）、`GET /{id}`。
+- [ ] **M3-2 既有端點補參數**：`/api/devices` 加 `uniqueId` / `id` / `all` / `keyword` / `excludeAttributes`，`PUT` 可寫 `attributes`（現在只能 SQL），`GET /{id}` 單筆；`/api/positions` 加 `geofenceId`、`KMZ` / `CSV` / `GPX` 匯出。
+- [ ] **M3-3 WebSocket**：`/api/socket`，推送 position / event / device 變更（母本 `api/AsyncSocket`）。
+- [ ] **M3-4 其餘資源**：`/api/protocols`、`/api/server`、`/api/session`、`/api/statistics`、`/api/audit`、`/api/commands/send|bulk`、`/api/notificators`。
+- [ ] 驗收：`traccar-web` 的請求逐條打過（母本 81 個端點的清單當對照表），缺的列在 `docs/`。
+
+### M4 事件與通知補齊（M）
+
+- [ ] **M4-1 event handlers**：Alarm / Ignition / Motion / Geofence（含 `geofenceCrossed`）/ Fuel / Driver / Maintenance / Media / Behavior / Proximity / CommandResult，逐支掛到 M1-2 的鏈上。
+  - 驗收：每支都有以母本事件語義寫的測試；`commandResult` 事件與 `commands` 表的收尾是同一次寫入。
+- [ ] **M4-2 notificator**：telegram / pushover / sms（HTTP + SNS）/ firebase / traccar（轉命令）/ whatsapp，加上 `TextTemplateFormatter`（Velocity 子集）。
+  - 驗收：`notify.Channel` 介面不變，逐管道測試用 `httptest`；模板缺欄位的行為與母本一致。
+- [ ] **M4-3 比對規則**：`NotificationManager` 的 `notificators`、`always`、`notifyTypes`，以及裝置 / 使用者兩層 override。
+  - 驗收：訂閱測試擴充到「同一事件命中多個範本時只送一次」。
+
+### M5 報表與外送（M）
+
+- [ ] **M5-1 報表**：route / trips / stops / summary / events / geofence / devices / combined，加 CSV / GPX / KML 匯出與 `xlsx|mail` 變體。
+  - 驗收：同一份 positions 的報表輸出與母本 `reports/` 的測試向量一致（時間、距離、油耗欄位）。
+- [ ] **M5-2 forwarder**：position 與 event 兩條，先 json / url / mqtt，再 amqp / kafka / redis / wialon。
+  - 驗收：斷線重連與佇列滿的行為有測試（母本沒有，這裡要贏）。
+
+### M6 傳輸層與協議廣度（L）
+
+- [ ] **M6-1 傳輸**：UDP（`TrackerServer` datagram）、TLS、HTTP 型協議基底（`BaseHttpProtocolDecoder`）、poller（`BaseProtocolPoller`）、MQTT 基底（`BaseMqttProtocolDecoder`）。
+  - 驗收：每個基底各有一個示範協議走通（HTTP 用 OsmAnd、poller 用 Arnavi、MQTT 用一個現成協議）。
+- [ ] **M6-2 協議批次**：先 8 個高頻家族（Meitrack、Wondex、TK103、Gps103、Watch、Ruptela、Suntech、Eelink），每個都要 Java 測試向量 + 場景檔 + 埠設定；GT06 長尾（`0xA3` / WiFi / `0x94`）與 JT808 批次定位一併收在這裡。
+  - 驗收：每個協議一支 `*_test.go` 跑母本向量，`device-sim` 有對應場景。
+- [ ] **M6-3 地理加值**：geocoder（先 2 個）、speedlimit（Overpass）、mapmatcher、geolocation（cell tower）。外部服務要有 key 缺省與離線快取，不能讓它擋住 ingest。
+
+### M7 運維與規模（M）
+
+- [ ] **M7-1 schedule**：device inactivity、expirations、session timeout、reports、health check、delete temporary。
+- [ ] **M7-2 `tc_statistics`**：每 device / protocol 的訊息量寫 DB，補上 `/api/statistics` 的歷史查詢（`/metrics` 只管即時）。
+- [ ] **M7-3 媒體**：`media/`、`MediaEventHandler`、`VideoStreamResource`。優先度最低，等 M1–M5 都穩定再談。
+
+## 可以做
+
+不是 parity，但對這個專案有回報，隨時可以插隊：
+
+- **命令佇列外部化**：現在佇列在記憶體，gateway 重啟要等裝置重連才補送（見「已知限制」）。搬到 Redis / NATS 後重啟不掉命令，也順帶解決多節點共用。
+- **token 與裝置清單快取**：現在每個請求查兩次 DB（見「已知限制」）。加一層帶版本號的快取，撤銷時 bump 版本，仍然立即生效。
+- **`positions` 分區 / TimescaleDB**：`positions` 會是最大的表，改成按月分區加保留策略，報表才有機會跑得動。
+- **decoder fuzz**：四個 decoder 已經能用 Java 向量測，再補 `go test -fuzz`，長尾協議移植時可以直接量測。
+- **協議分 build tag**：`internal/protocol/<name>` 用 `init()` 註冊，長尾協議用 build tag 排除，主 binary 不會被 272 個協議撐大。
+- **`device-sim` chaos**：現有場景是「正常送」，再加半包、亂序、重送、斷線重連，M1-3 與 M5-2 都要靠它驗。
+- **OpenAPI + 契約測試**：母本沒有；把 31 條路由的 request / response 固化成 spec，M3 補端點時不會改壞舊的。
+- **`/api/alerts` → `/api/events` 相容層**：前端（同機的 `traccar_web_ts`）不用跟著改一次。
+
+## 先不做
+
+- 272 個協議全移植：按客群推進，M6-2 一批一批來。
+- OIDC / LDAP / `api/signature`：企業才有需求，`api/security` 那層等有案子再開。
+- 母本那批 geocoder 全移植：先 2 個，其餘等真的有人用。
+- `web/McpServer`、`ConsoleServlet`：開發工具，Go 這邊有 `/metrics` 與 log 就夠。
+- 影片串流（`JT1078`、`media/VideoStream`）：頻寬與儲存是另一個量級，除非客戶指定。
+
+## 建議順序
+
+M1 →（M2 ∥ M4）→ M3 → M5 → M6 → M7。
+
+M1 決定後面每一段掛在哪；M2 的權限是所有 REST 的前置；M4 的事件型別要先齊，M3 的 `/api/events` 才有東西可查；
+M3 依賴 M1-4 的表與 M2 的資源。M5 可以跟 M6 平行，但 M6 的 per-protocol 設定要等 M1-1。
+M2 與 M6-2 都是「一直往裡加」的長工，適合跟其他里程碑交錯做。
+
+## Gemni 建議與補充說明
+
+### 1. 協議聚焦與調整 (H02 / GT06 / JT808 / OsmAnd)
+
+- **OsmAnd 協定實作**：OsmAnd 採用 HTTP GET/POST 傳輸（例如 `/5055?id=123456&lat=25.03&lon=121.56&speed=15`），應在 `internal/protocol/osmand` 實作純解碼器，並於 HTTP REST 服務中開啟 `/osmand` 或獨立 HTTP 埠接收請求。
+- **GT06 / JT808 長尾維護**：GT06 需注意特定車型（如 `NT_MODELS`）的欄位版面差異；JT808 應確保轉義字元（`0x7E` ↔ `0x7D02`/`0x7D01`）與多包拼包處理之穩定度。
+
+### 2. 測試與運維驗證 (Testing & Verification)
+
+- **OsmAnd 測試**：提供 `curl` 標準測試範例，並於 `cmd/device-sim` 補充 HTTP OsmAnd 模擬腳本。
+- **指令配對與重試**：JT808 透過流水號 (Serial Number) 已實現精確 ACK 配對；GT06 / H02 因協議本身無流水號欄位，建議維持「最新一筆 Sent 命令收尾」機制，避免過度設計。
+
+### 3. 可擴充性建議 (Scalability & Architecture)
+
+- **即時推播 (WebSocket)**：建議於 M4 階段新增 `/api/socket`，實時推播 Position 與 Alert 給前端頁面。
+- **Redis / MQ 訊息佇列**：當前命令與告警佇列存於記憶體，重啟會遺失排隊中指令。未來在生產環境可評估將指令佇列移至 Redis / NATS。
+
+### 核對結果（2026-11-01）
+
+逐條對過程式與母本（`traccar-master`）：
+
+| 建議 | 判定 | 依據 |
+| ---- | ---- | ---- |
+| OsmAnd 走 HTTP GET/POST，例 `/5055?id=…&lat=…&lon=…&speed=…` | ✅ 正確 | 母本 `ProtocolConfig` 給 OsmAnd 的預設埠就是 5055；`OsmAndProtocolDecoder` 除了 query string 也吃 `application/json` body，欄位還有 `timestamp`、`location`、`cell`、`wifi`、`valid`。Go 這邊還沒有這個解碼器，屬於 M6-1 的 HTTP 基底。 |
+| GT06 要注意 `NT_MODELS` 的欄位版面差異 | ✅ 正確 | `0x22` / `0x25` 的 NT 版面已實作，見上面 GT06 段與「已知限制」。 |
+| JT808 的 `0x7E` ↔ `0x7D02` / `0x7D01` 轉義要穩 | ✅ 正確 | `internal/protocol/jt808/frame.go` 已處理，另含 `0xE7` 分隔符與 `0xE6` / `0x3E` 轉義表。 |
+| JT808 多包拼包要穩 | ❌ 目前沒有 | 標頭只取 `bodyLength = attribute & 0x03ff`，沒看分包旗標 `0x2000`；帶分包旗標的 `0x0200` 會被當成完整訊息解析。這是真缺口，不是「穩定度」問題。 |
+| JT808 用流水號（Serial Number）精確 ACK 配對 | ✅ 正確 | `codec.SerialSource` 給每筆命令號碼並存 `commands.serial`，`0x0001` 回應的流水號對回那一列；重送沿用同一個號碼。 |
+| GT06 / H02 沒有可配對的欄位，維持「最新一筆 sent」收尾 | ✅ 結論對，理由要修 | 協議本身不是沒有欄位：GT06 的 `0x80` 回應帶命令索引、H02 的 `R12` 帶應答序號。是母本的 encoder 把 GT06 索引固定寫 0，兩邊的回應都不足以區分多筆在等回應的命令，所以只能收最新那列。 |
+| 加 `/api/socket` 推播 position / alert | ✅ 正確且是缺口 | 母本是 `api/AsyncSocketServlet`；本 repo 的 roadmap M3-3 已列同一件事。 |
+| 佇列在記憶體，重啟會遺失排隊中指令 | ⚠️ 只對一半 | 接 `-dsn` 時命令先寫進 `commands` 表，重啟後裝置重連會把 `pending` 列重新編碼補送（`Dispatcher.PendingCommands`）；真的會丟的只有記憶體模式。搬到 Redis / NATS 的正當理由是**多節點共用**與縮短復原時間，不是「重啟遺失」。 |

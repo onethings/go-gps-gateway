@@ -1,2 +1,5 @@
 # macOS Finder metadata
 .DS_Store
+
+# build output
+go_server/bin/

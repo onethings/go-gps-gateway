@@ -36,7 +36,8 @@ func main() {
 		"jt808":     flag.String("jt808", "0.0.0.0:8610", "JT808 listen address"),
 		"teltonika": flag.String("teltonika", "0.0.0.0:5027", "Teltonika listen address"),
 	}
-	dsn := flag.String("dsn", "", "PostgreSQL DSN; empty uses an in-memory directory and a log sink")
+	dsn := flag.String("dsn", os.Getenv("TRACCAR_DSN"),
+		"PostgreSQL DSN (defaults to TRACCAR_DSN); empty uses an in-memory directory and a log sink")
 	batchSize := flag.Int("batch-size", 500, "positions per database insert")
 	batchInterval := flag.Duration("batch-interval", time.Second, "maximum delay before a batch is written")
 	httpAddress := flag.String("http", "0.0.0.0:8082", "REST listen address; empty disables the API")

@@ -1,0 +1,41 @@
+# gateway + PostgreSQL, the "I want to poke at the real thing" stack.
+#
+#   docker compose up --build -d
+#   curl -H 'X-Api-Key: dev-key' http://127.0.0.1:8082/api/health
+#
+# The gateway creates its own schema on first start.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: traccar
+      POSTGRES_PASSWORD: traccar
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d traccar"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  gateway:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TRACCAR_DSN: postgres://postgres:traccar@db:5432/traccar?sslmode=disable
+      TRACCAR_API_KEY: dev-key
+      TZ: Asia/Taipei
+    ports:
+      - "5013:5013"
+      - "5023:5023"
+      - "5027:5027"
+      - "8610:8610"
+      - "8082:8082"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

@@ -64,6 +64,8 @@ func NewEvent(eventType string, deviceID int64, at time.Time) *Event {
 // EventFilter selects events for a query. Zero values mean "no restriction";
 // Limit and Offset are clamped by the storage layer.
 type EventFilter struct {
+	// ID selects one event by primary key, which backs GET /api/events/{id}.
+	ID       int64
 	DeviceID int64
 	// DeviceIDs restricts the result to a set of devices. Nil means "no
 	// restriction"; a non-nil empty slice matches nothing, which is how a

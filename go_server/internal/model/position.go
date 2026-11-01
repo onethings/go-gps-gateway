@@ -239,6 +239,10 @@ type PositionFilter struct {
 	DeviceIDs []int64
 	From      time.Time
 	To        time.Time
+	// Ascending flips the order from newest first to oldest first, which the
+	// KML / GPX / CSV exports need to draw a track in the direction it was
+	// driven.
+	Ascending bool
 	Limit     int
 	Offset    int
 }

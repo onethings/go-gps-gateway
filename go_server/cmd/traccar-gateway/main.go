@@ -296,6 +296,7 @@ func main() {
 		} else {
 			options := []api.Option{
 				api.WithPositions(store),
+				api.WithGeofenceLookup(store),
 				api.WithDevices(store),
 				api.WithUsers(store),
 				api.WithNotifications(store),

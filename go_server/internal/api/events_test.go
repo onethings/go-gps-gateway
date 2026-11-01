@@ -2,10 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/model"
 )
 
@@ -89,5 +92,89 @@ func TestEventsRouteNeedsTheAlertsScope(t *testing.T) {
 	}
 	if body := recorder.Body.String(); strings.Contains(body, "events") && strings.Contains(body, "[") {
 		t.Errorf("unauthenticated body leaked events: %s", body)
+	}
+}
+
+// TestEventSingle covers GET /api/events/{id}: one row, 404 for an unknown id
+// and 403 when the event belongs to a device the caller cannot reach.
+func TestEventSingle(t *testing.T) {
+	eventTime := time.Date(2026, 11, 1, 12, 30, 0, 0, time.UTC)
+	querier := &fakeQuerier{alerts: []model.Event{{
+		ID:         5,
+		DeviceID:   7,
+		PositionID: 42,
+		Type:       model.EventGeofenceEnter,
+		Time:       eventTime,
+		GeofenceID: 3,
+		Attributes: map[string]any{"geofence": "depot"},
+	}}}
+	handler := NewServer(querier).Handler()
+
+	recorder := get(t, handler, "/api/events/5")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	event := decodeBodyValue[eventResponse](t, recorder)
+	if event.ID != 5 || event.DeviceID != 7 || event.GeofenceID != 3 {
+		t.Errorf("event = %+v", event)
+	}
+	if !event.EventTime.Equal(eventTime) {
+		t.Errorf("eventTime = %v, want %v", event.EventTime, eventTime)
+	}
+
+	// The store returns nothing, so the id does not exist.
+	empty := NewServer(&fakeQuerier{}).Handler()
+	if recorder := get(t, empty, "/api/events/5"); recorder.Code != http.StatusNotFound {
+		t.Errorf("missing status = %d, want 404", recorder.Code)
+	}
+
+	if recorder := get(t, handler, "/api/events/abc"); recorder.Code != http.StatusBadRequest {
+		t.Errorf("bad id status = %d, want 400", recorder.Code)
+	}
+
+	principal := auth.NewPrincipal(2, false, []auth.Scope{auth.ScopeReadAlerts}, []int64{8})
+	scoped := NewServer(querier, withTestToken(principal)).Handler()
+	if recorder := withToken(t, scoped, http.MethodGet, "/api/events/5", ""); recorder.Code != http.StatusForbidden {
+		t.Errorf("unreachable device status = %d, want 403 (body %s)", recorder.Code, recorder.Body)
+	}
+}
+
+// TestEventsGroupFilterExpandsToChildGroups checks the groupId parameter: the
+// devices of the group and of its descendants, which is what the Java report
+// collects before it reads the events.
+func TestEventsGroupFilterExpandsToChildGroups(t *testing.T) {
+	querier := &fakeQuerier{}
+	store := newFakePermissions()
+	handler := NewServer(querier, WithPermissions(store)).Handler()
+
+	recorder := get(t, handler, "/api/events?groupId=1")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	// fakePermissions puts device 7 in group 2, below the requested group 1.
+	if filter := querier.lastFilter(t); !reflect.DeepEqual(filter.DeviceIDs, []int64{7}) {
+		t.Errorf("device ids = %v, want the devices of the group tree", filter.DeviceIDs)
+	}
+
+	if recorder := get(t, handler, "/api/events?groupId=abc"); recorder.Code != http.StatusBadRequest {
+		t.Errorf("bad group status = %d, want 400", recorder.Code)
+	}
+
+	// A group without devices would otherwise read as "no restriction": an
+	// empty non-nil slice has to reach the store instead of a nil one.
+	recorder = get(t, handler, "/api/events?groupId=3")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	if filter := querier.lastFilter(t); filter.DeviceIDs == nil || len(filter.DeviceIDs) != 0 {
+		t.Errorf("device ids = %v, want an empty restriction", filter.DeviceIDs)
+	}
+
+	// A caller without a grant on the group is refused before the query runs.
+	principal := auth.NewPrincipal(2, false, []auth.Scope{auth.ScopeReadAlerts}, nil)
+	scoped := NewServer(&fakeQuerier{}, WithPermissions(store), withTestToken(principal)).Handler()
+	recorder = withToken(t, scoped, http.MethodGet, "/api/events?groupId=4", "")
+	if recorder.Code != http.StatusForbidden {
+		t.Errorf("unreachable group status = %d, want 403 (body %s)", recorder.Code, recorder.Body)
 	}
 }

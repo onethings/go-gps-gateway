@@ -79,3 +79,39 @@ func TestDeviceTimeOf(t *testing.T) {
 		t.Fatalf("device time = %s, want UTC", got)
 	}
 }
+
+func TestDeviceQueryLookups(t *testing.T) {
+	query, args := deviceQuery(model.DeviceFilter{
+		UniqueIDs: []string{"A", "B"},
+		IDs:       []int64{7},
+	})
+
+	if !strings.Contains(query, "(unique_id IN ($1, $2) OR id IN ($3))") {
+		t.Errorf("query = %s", query)
+	}
+	if !strings.Contains(query, "LIMIT $4 OFFSET $5") {
+		t.Errorf("query = %s", query)
+	}
+	if len(args) != 5 || args[0] != "A" || args[1] != "B" || args[2] != int64(7) {
+		t.Fatalf("args = %v", args)
+	}
+
+	// The Java lookup branch ignores the keyword, so the clause is skipped.
+	withKeyword, _ := deviceQuery(model.DeviceFilter{UniqueIDs: []string{"A"}, Keyword: "van"})
+	if strings.Contains(withKeyword, "ILIKE") {
+		t.Errorf("query = %s, want no keyword clause next to a uniqueId lookup", withKeyword)
+	}
+}
+
+func TestDeviceQueryKeyword(t *testing.T) {
+	query, args := deviceQuery(model.DeviceFilter{Keyword: "van"})
+
+	if !strings.Contains(query, "name ILIKE $1") ||
+		!strings.Contains(query, "unique_id ILIKE $1") ||
+		!strings.Contains(query, "COALESCE(model, '') ILIKE $1") {
+		t.Errorf("query = %s", query)
+	}
+	if len(args) != 3 || args[0] != "%van%" {
+		t.Fatalf("args = %v", args)
+	}
+}

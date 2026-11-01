@@ -114,7 +114,11 @@ func positionQuery(filter model.PositionFilter) (string, []any) {
 	}
 
 	args = append(args, limit, offset)
-	fmt.Fprintf(&builder, " ORDER BY device_time DESC, id DESC LIMIT $%d OFFSET $%d",
-		len(args)-1, len(args))
+	order := "device_time DESC, id DESC"
+	if filter.Ascending {
+		order = "device_time ASC, id ASC"
+	}
+	fmt.Fprintf(&builder, " ORDER BY %s LIMIT $%d OFFSET $%d",
+		order, len(args)-1, len(args))
 	return builder.String(), args
 }

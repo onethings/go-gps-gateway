@@ -28,7 +28,18 @@ func (f *fakePositions) QueryPositions(_ context.Context, filter model.PositionF
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.results, nil
+
+	results := f.results
+	if filter.Offset > 0 {
+		if filter.Offset >= len(results) {
+			return nil, nil
+		}
+		results = results[filter.Offset:]
+	}
+	if filter.Limit > 0 && filter.Limit < len(results) {
+		results = results[:filter.Limit]
+	}
+	return results, nil
 }
 
 func (f *fakePositions) lastFilter(t *testing.T) model.PositionFilter {

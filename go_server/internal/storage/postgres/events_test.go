@@ -309,3 +309,13 @@ func TestEventStoreIntegration(t *testing.T) {
 		t.Error("the valid geofence is missing")
 	}
 }
+
+func TestEventQueryByID(t *testing.T) {
+	query, args := eventQuery(model.EventFilter{ID: 5})
+	if !strings.Contains(query, "WHERE id = $1") {
+		t.Errorf("query = %s", query)
+	}
+	if len(args) != 2 || args[0] != int64(5) || args[1] != defaultEventLimit {
+		t.Fatalf("args = %v", args)
+	}
+}

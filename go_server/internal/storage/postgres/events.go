@@ -384,6 +384,9 @@ func eventQuery(filter model.EventFilter) (string, []any) {
 			COALESCE(geofence_id, 0), attributes
 		FROM events`)
 
+	if filter.ID != 0 {
+		conditions = append(conditions, "id = "+placeholder(filter.ID))
+	}
 	if filter.DeviceID != 0 {
 		conditions = append(conditions, "device_id = "+placeholder(filter.DeviceID))
 	}

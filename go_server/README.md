@@ -66,7 +66,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/handler`               | 位置處理鏈：母本 `ProcessingHandler` 的 14 個階段順序、`PositionHandler` 介面、`BusinessHandler`（一次跑一個 `Processor`）與 terminal store                                                                                                                                  |
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
-| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/events`（`/api/alerts` 為別名）、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）；認證 / scope / 裝置擁有權 |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）；認證 / scope / 裝置擁有權 |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                                                                                                                                              |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                                                                                                                                                           |
 | `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                                                                                                                                                           |
@@ -341,8 +341,10 @@ curl 'localhost:8082/api/events?deviceId=7&type=deviceOverspeed,powerCut&limit=2
 `{"events": [...], "count": n}`（欄位 `eventTime`），`/api/alerts` 是舊名字的別名，回
 `{"alerts": [...], "count": n}`（欄位 `alertTime`），兩邊的列完全相同。
 
-參數：`deviceId`、`type`（可重複或逗號分隔）、`from` / `to`（RFC3339 或 epoch 毫秒）、
-`limit`（1–1000，預設 100）、`offset`。預設依 `event_time DESC, id DESC` 排序。
+參數：`deviceId`、`groupId`（該群組與子群組的裝置）、`type`（可重複或逗號分隔）、
+`from` / `to`（RFC3339 或 epoch 毫秒）、`limit`（1–1000，預設 100）、`offset`。
+預設依 `event_time DESC, id DESC` 排序。`GET /api/events/{id}` 回單筆：不存在回 404，
+事件所屬裝置碰不到回 403（和 `/api/devices/{id}` 一樣不洩漏 id 是否存在）。
 
 已知取捨：
 
@@ -782,7 +784,14 @@ curl 'localhost:8082/api/devices?protocol=gt06&limit=20'
 }
 ```
 
-參數：`protocol`（精確比對）、`limit`（1–1000，預設 100）、`offset`。
+參數：`protocol`（精確比對）、`uniqueId`（可重複，精確比對）、`id`（可重複，精確比對；
+與 `uniqueId` 一起出現時是 OR）、`keyword`（對 `name` / `unique_id` / `model` 做 `ILIKE`）、
+`excludeAttributes`（不回 `attributes` 欄位）、`limit`（1–1000，預設 100）、`offset`。
+`uniqueId` / `id` 同時給了就忽略 `keyword`，和母本 `DeviceResource` 的分支一致。
+
+`GET /api/devices/{id}` 回單筆；不存在回 404，token 碰不到該裝置回 403。
+`all` / `userId` 也接受：`userId` 讓 admin 列出另一個帳號**直接**授權的裝置（不展開群組），
+非 admin 只能填自己。舊的共用 API key 與未認證模式沒有帳號，這兩個參數不改變結果。
 `lastUpdate` 只在裝置至少上報過一筆位置時出現（不會是 `0001-01-01`），`model` 為空時同樣省略；
 `lastUpdate` 取的是**裝置時間**的最大值。
 
@@ -809,7 +818,19 @@ curl -i -X DELETE localhost:8082/api/devices/7
 `POST /api/devices` 建檔後會自動把新裝置綁給該 token 的使用者。
 
 `uniqueId`、`name`、`model`、`protocol` 兩端都會 trim；空白的 `uniqueId` 回 400。
-id 不是正整數回 400。`attributes` 目前只能以 SQL 維護。
+id 不是正整數回 400。`PUT` 現在可以寫 `attributes`（超速 / 斷電門檻、`polylineDistance` 等）：
+
+```bash
+# 只改名，attributes 保持原樣
+curl -i -X PUT localhost:8082/api/devices/7 -d '{"name":"van-7","model":"GT06N"}'
+# 連 attributes 一起整欄取代
+curl -i -X PUT localhost:8082/api/devices/7 \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"van-7","model":"GT06N","attributes":{"speedLimit":45,"floor":0}}'
+```
+
+`name` / `model` 是整欄取代，省略等於清空；`attributes` 省略表示**保留原值**，給了就整欄取代
+（給 `{}` 就是清空），所以只改名的請求不會把門檻洗掉。`protocol` 建立後仍不可改。
 
 ## 資源管理 API
 
@@ -901,8 +922,30 @@ curl 'localhost:8082/api/positions?deviceId=7&limit=2'
 }
 ```
 
-參數與告警查詢一致：`deviceId`、`from` / `to`（RFC3339 或 epoch 毫秒）、`limit`（1–1000，預設 100，
-超過會回 400）、`offset`。`attributes` 永遠是物件（沒有額外欄位時是 `{}`，不是 `null`）。
+參數：`deviceId`、`geofenceId`（只回圍欄內的定位，`floor` / `ceiling` 一併生效）、
+`from` / `to`（RFC3339 或 epoch 毫秒）、`limit`（1–1000，預設 100，超過會回 400）、`offset`。
+`attributes` 永遠是物件（沒有額外欄位時是 `{}`，不是 `null`）。`geofenceId` 指到不存在的圍欄回
+404，沒有配置圍欄儲存層回 501（母本會默默忽略不存在的圍欄，這裡選擇明講）。
+
+匯出（都需要 `read:positions`，只能匯出自己碰得到的裝置；`deviceId` 必填）：
+
+| 端點                     | Content-Type                           | 內容                             |
+| ------------------------ | -------------------------------------- | -------------------------------- |
+| `GET /api/positions/kml` | `application/vnd.google-earth.kml+xml` | 一條 `LineString` 軌跡           |
+| `GET /api/positions/kmz` | `application/vnd.google-earth.kmz`     | 同上的 KML 壓成 `doc.kml`        |
+| `GET /api/positions/csv` | `text/csv`                             | 固定欄位 + 每個 attribute 一欄   |
+| `GET /api/positions/gpx` | `application/gpx+xml`                  | `trkpt` 軌跡                     |
+
+```bash
+curl -OJ 'localhost:8082/api/positions/csv?deviceId=7&from=2026-11-01T00:00:00Z&to=2026-11-01T23:59:59Z'
+curl -o track.kmz 'localhost:8082/api/positions/kmz?deviceId=7&geofenceId=3&from=2026-11-01T00:00:00Z'
+```
+
+軌跡依 `device_time` **由舊到新**，最多 50000 筆（母本 `report.maxPositions` 的預設值）；
+storage 單次查詢上限 1000 筆，所以匯出用 offset 分頁讀完整個區間。
+CSV 欄位順序是 `id,deviceId,protocol,serverTime,deviceTime,valid,latitude,longitude,altitude,
+speed,course,accuracy`，後面接區間內出現過的 attribute（依名稱排序）；開頭是 `= + - @` 的文字
+會留空，避免試算表當成公式執行（母本 `CsvExportProvider` 的做法）。時間一律 UTC。
 
 ## 命令下發
 
@@ -1188,7 +1231,8 @@ scrape_configs:
   拒絕服務面。忘記密碼端點沒有 IP 速率限制，只有每帳號一分鐘的節流；重設信能不能寄出取決於
   SMTP，寄失敗只留在 log。bcrypt cost 12 讓一次登入約 0.6 秒（見「密碼登入」）。
   每個請求都會查一次 token 與裝置清單，撤銷立即生效但也多一次 DB round trip。
-- 裝置的 `attributes` 只能以 SQL 維護；`PUT` 只改 `name` / `model`，`protocol` 建立後不可改。
+- `PUT /api/devices/{id}` 只改 `name` / `model` / `attributes`；`protocol` 建立後不可改，
+  母本其餘欄位（phone / contact / category / disabled / expirationTime）還沒建模。
   裝置仍會由 `-auto-register` 在第一個認得的幀建立（GT06 登入、Teltonika IMEI、JT808
   `0x0100`，以及沒有握手幀的 H02 第一筆位置），與 `POST /api/devices` 併用；關掉之後
   未知裝置的幀直接丟掉（H02 就只能先在資料庫建好列）。
@@ -1254,7 +1298,7 @@ scrape_configs:
 | 資料模型 | `model/` 40 個類別                                                                                  | `internal/model` 18 檔 33 個型別（含 Group / Geofence / Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute） | 缺 media / geocoder / forward 等週邊型別                                                                               |
 | 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL + `resourceSpec` 共用 CRUD，19 張表                 | 缺的 31 張以 M4–M6 的週邊為主，且沒有通用查詢建構器                                                                     |
 | 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + 通用 `permissions` 表（user / group / device → 任何資源），group 最多三層 | 缺 `managedUser`（管理員代管下屬）與分享帳號到期自動清理                                                               |
-| REST     | 25 個 resource、81 個端點                                                                           | 80 條路由（含資源 CRUD 與 `/api/maintenance` 別名）          | 見 M3（events 參數、WebSocket、protocol / server / session / statistics / audit、commands/send）                       |
+| REST     | 25 個 resource、81 個端點                                                                           | 86 條路由（含資源 CRUD、單筆裝置 / 事件、四種位置匯出與 `/api/maintenance` 別名） | 見 M3-3 / M3-4（WebSocket、protocol / server / session / statistics / audit、commands/send）                          |
 | 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 9 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名）  | 14 種；表名與母本相同，事件型別待 M4-1 補齊                                                                            |
 | 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email                                              | 7 個管道、模板語法                                                                                                     |
 | 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | 無                                                           | 全部                                                                                                                   |
@@ -1392,8 +1436,35 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
 
 ### M3 REST 對齊與即時推播（M）
 
-- [ ] **M3-1 `/api/events`**：`GET`（`deviceId` / `type` / `from` / `to` / `groupId`）、`GET /{id}`。
-- [ ] **M3-2 既有端點補參數**：`/api/devices` 加 `uniqueId` / `id` / `all` / `keyword` / `excludeAttributes`，`PUT` 可寫 `attributes`（現在只能 SQL），`GET /{id}` 單筆；`/api/positions` 加 `geofenceId`、`KMZ` / `CSV` / `GPX` 匯出。
+- [x] **M3-1 `/api/events`**：`GET`（`deviceId` / `type` / `from` / `to` / `groupId`）、`GET /{id}`。
+  - 落地：`groupId` 先用 `permissions.Service.GroupDeviceIDs` 展開成「該群組 + 子群組的裝置」，
+    再和 token 的裝置範圍取交集；群組碰不到回 403，群組底下沒有裝置時送的是**空集合**而不是
+    nil（nil 在 storage 代表「不限」，這個坑有測試釘住）。`GET /api/events/{id}` 用
+    `EventFilter.ID` 查單筆，不存在回 404、裝置碰不到回 403。
+  - 測試：`TestEventSingle`、`TestEventsGroupFilterExpandsToChildGroups`、`TestEventQueryByID`、
+    `TestServiceGroupDeviceIDs`。
+- [x] **M3-2 既有端點補參數**：`/api/devices` 加 `uniqueId` / `id` / `all` / `keyword` / `excludeAttributes`，`PUT` 可寫 `attributes`（現在只能 SQL），`GET /{id}` 單筆；`/api/positions` 加 `geofenceId`、`KMZ` / `CSV` / `GPX` 匯出。
+  - 落地：`DeviceFilter` 多了 `UniqueIDs` / `IDs` / `Keyword`；`uniqueId` 與 `id` 是精確比對、
+    兩組之間 OR，同時出現時忽略 `keyword`（照母本 `DeviceResource` 的分支）。`excludeAttributes`
+    用 `*model.Attributes` + `omitempty` 拿掉欄位。`PUT /api/devices/{id}` 的 `attributes` 用
+    指標區分「沒給」與「給空物件」，SQL 端 `COALESCE($4::jsonb, attributes)` 保留原值；只改名的
+    請求不會洗掉門檻。`GET /api/devices/{id}` 走 `Store.Device`。`userId` 讓 admin 列出另一個
+    帳號的**直接**授權（母本 `.excludeGroups()`），非 admin 只能填自己；舊 API key 與未認證
+    模式沒有帳號，忽略這個參數。`all` 收下但不改變結果，因為這裡的 admin 本來就看得到全部。
+  - 匯出：`/api/positions/{kml,kmz,csv,gpx}` 用母本的四條路徑與參數；軌跡改成
+    `device_time ASC`（`PositionFilter.Ascending`），storage 單次查詢上限 1000 筆，所以用 offset
+    分頁讀到 50000 筆（母本 `report.maxPositions` 預設）。KML / GPX 用 `encoding/xml`，KMZ 是
+    內含 `doc.kml` 的 zip，CSV 依母本欄位順序並套用 `= + - @` 的公式防護。
+  - 測試：`TestDevicesLookupAndKeywordParameters`、`TestDevicesExcludeAttributes`、
+    `TestDeviceSingle`、`TestUpdateDeviceAttributes`、`TestDevicesUserIdFilter`、
+    `TestDevicesUserIdIgnoredWithoutAccounts`、`TestPositionsGeofenceFilter`、
+    `TestPositionsCSVExport`、`TestPositionsGPXExport`、`TestPositionsKMLExport`、
+    `TestPositionsKMZExport`、`TestPositionsExportValidation`、`TestExportPositionsPagesTheTrack`，
+    加上 storage 的 `TestDeviceQueryLookups` / `TestDeviceQueryKeyword` /
+    `TestPositionQueryAscending` 與 permissions 的 `TestServiceDirectIDsSkipsGroupExpansion`。
+  - 偏差：母本 `PositionResource` 的 `id`（多筆位置）、`DELETE /api/positions/{id}` 與整段刪除
+    沒做；`geofenceId` 指到不存在的圍欄回 404（母本默默忽略）。CSV 沒有 address / fixTime 欄位，
+    因為這裡的 model 只有一個 `deviceTime`；時間固定 UTC，沒有使用者時區。
 - [ ] **M3-3 WebSocket**：`/api/socket`，推送 position / event / device 變更（母本 `api/AsyncSocket`）。
 - [ ] **M3-4 其餘資源**：`/api/protocols`、`/api/server`、`/api/session`、`/api/statistics`、`/api/audit`、`/api/commands/send|bulk`、`/api/notificators`。
 - [ ] 驗收：`traccar-web` 的請求逐條打過（母本 81 個端點的清單當對照表），缺的列在 `docs/`。

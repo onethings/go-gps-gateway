@@ -425,7 +425,7 @@ func (s *Server) handleUserDevices(w http.ResponseWriter, r *http.Request) {
 		Count:   len(devices),
 	}
 	for _, device := range devices {
-		response.Devices = append(response.Devices, newDeviceResponse(device))
+		response.Devices = append(response.Devices, newDeviceResponse(device, true))
 	}
 	writeJSON(w, http.StatusOK, response)
 }

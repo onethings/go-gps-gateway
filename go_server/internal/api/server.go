@@ -18,6 +18,7 @@ import (
 
 	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/gateway"
+	"traccar-server_go/go_server/internal/geofence"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/permissions"
@@ -73,9 +74,17 @@ type PositionQuerier interface {
 	QueryPositions(ctx context.Context, filter model.PositionFilter) ([]model.Position, error)
 }
 
+// GeofenceLookup resolves one geofence for the geofenceId filter and the
+// exports. It is separate from ResourceStore so a deployment can serve
+// positions without exposing the geofence CRUD.
+type GeofenceLookup interface {
+	QueryGeofences(ctx context.Context, filter model.ResourceFilter) ([]*geofence.Geofence, error)
+}
+
 // DeviceStore is the storage contract the devices handlers need.
 type DeviceStore interface {
 	Devices(ctx context.Context, filter model.DeviceFilter) ([]model.Device, error)
+	Device(ctx context.Context, deviceID int64) (*model.Device, error)
 	CreateDevice(ctx context.Context, create model.DeviceCreate) (*model.Device, error)
 	UpdateDevice(ctx context.Context, deviceID int64, update model.DeviceUpdate) (*model.Device, error)
 	DeleteDevice(ctx context.Context, deviceID int64) error
@@ -93,6 +102,7 @@ type Server struct {
 	alerts        EventQuerier
 	positions     PositionQuerier
 	devices       DeviceStore
+	geofences     GeofenceLookup
 	users         UserStore
 	notifications NotificationStore
 	router        CommandRouter
@@ -171,6 +181,12 @@ func WithPositions(positions PositionQuerier) Option {
 	return func(s *Server) { s.positions = positions }
 }
 
+// WithGeofenceLookup enables the geofenceId filter of /api/positions and the
+// KML / GPX exports. Without it those requests report 501.
+func WithGeofenceLookup(lookup GeofenceLookup) Option {
+	return func(s *Server) { s.geofences = lookup }
+}
+
 // WithDevices enables the device routes. Without it they report 501.
 func WithDevices(devices DeviceStore) Option {
 	return func(s *Server) { s.devices = devices }
@@ -236,8 +252,10 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	// /api/alerts is the previous name of /api/events and stays as an alias.
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("GET /api/events/{id}", s.handleEvent)
 	mux.HandleFunc("GET /api/alerts", s.handleAlerts)
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
+	mux.HandleFunc("GET /api/devices/{id}", s.handleDevice)
 	mux.HandleFunc("POST /api/devices", s.handleCreateDevice)
 	mux.HandleFunc("PUT /api/devices/{id}", s.handleUpdateDevice)
 	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
@@ -246,6 +264,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/password/forgot", s.handleForgotPassword)
 	mux.HandleFunc("POST /api/password/reset", s.handleResetPassword)
 	mux.HandleFunc("GET /api/positions", s.handlePositions)
+	mux.HandleFunc("GET /api/positions/kml", s.handlePositionExport(exportKML))
+	mux.HandleFunc("GET /api/positions/kmz", s.handlePositionExport(exportKMZ))
+	mux.HandleFunc("GET /api/positions/csv", s.handlePositionExport(exportCSV))
+	mux.HandleFunc("GET /api/positions/gpx", s.handlePositionExport(exportGPX))
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/commands", s.handleCommands)
 	mux.HandleFunc("POST /api/commands", s.handleCommand)
@@ -425,17 +447,60 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	response := eventsResponse{Events: make([]eventResponse, 0, len(events)), Count: len(events)}
 	for _, event := range events {
-		response.Events = append(response.Events, eventResponse{
-			ID:         event.ID,
-			DeviceID:   event.DeviceID,
-			PositionID: event.PositionID,
-			Type:       event.Type,
-			EventTime:  event.Time.UTC(),
-			GeofenceID: event.GeofenceID,
-			Attributes: event.Attributes,
-		})
+		response.Events = append(response.Events, newEventResponse(event))
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// newEventResponse renders one event, the shape both the list and the single
+// row use.
+func newEventResponse(event model.Event) eventResponse {
+	return eventResponse{
+		ID:         event.ID,
+		DeviceID:   event.DeviceID,
+		PositionID: event.PositionID,
+		Type:       event.Type,
+		EventTime:  event.Time.UTC(),
+		GeofenceID: event.GeofenceID,
+		Attributes: event.Attributes,
+	}
+}
+
+// handleEvent serves GET /api/events/{id}. A row the caller cannot reach is a
+// 403 for the same reason the device routes answer 403: the id must not tell
+// an outsider whether an event exists.
+func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
+	if s.alerts == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("events are not configured"))
+		return
+	}
+	if !s.authorize(w, r, auth.ScopeReadAlerts) {
+		return
+	}
+	eventID, err := positiveID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	events, err := s.alerts.QueryEvents(ctx, model.EventFilter{ID: eventID, Limit: 1})
+	if err != nil {
+		s.logf("api: get event %d: %v", eventID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, fmt.Errorf("unknown event %d", eventID))
+		return
+	}
+	if !s.canAccessDevice(r, events[0].DeviceID) {
+		writeForbiddenDevice(w, events[0].DeviceID)
+		return
+	}
+	writeJSON(w, http.StatusOK, newEventResponse(events[0]))
 }
 
 // queryEvents authorises and runs the shared event query. It reports false when
@@ -444,15 +509,33 @@ func (s *Server) queryEvents(w http.ResponseWriter, r *http.Request) ([]model.Ev
 	if !s.authorize(w, r, auth.ScopeReadAlerts) {
 		return nil, false
 	}
+	if s.alerts == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("events are not configured"))
+		return nil, false
+	}
 	filter, err := alertFilter(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return nil, false
 	}
-	filter.DeviceIDs = s.deviceScope(r)
+	groupId, err := idQuery(r.URL.Query(), "groupId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return nil, false
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
+
+	filter.DeviceIDs = s.deviceScope(r)
+	if groupId > 0 {
+		devices, err := s.groupDeviceIDs(ctx, r, groupId)
+		if err != nil {
+			s.writeResourceError(w, err)
+			return nil, false
+		}
+		filter.DeviceIDs = intersectDeviceIDs(filter.DeviceIDs, devices)
+	}
 
 	events, err := s.alerts.QueryEvents(ctx, filter)
 	if err != nil {
@@ -463,6 +546,41 @@ func (s *Server) queryEvents(w http.ResponseWriter, r *http.Request) ([]model.Ev
 		return nil, false
 	}
 	return events, true
+}
+
+// groupDeviceIDs resolves the groupId filter: the devices sitting in the group
+// or one of its descendants, which is what the Java report expands before it
+// queries the events.
+func (s *Server) groupDeviceIDs(ctx context.Context, r *http.Request, groupID int64) ([]int64, error) {
+	if err := s.checkObjectAccess(ctx, r, permissions.ObjectGroup, groupID); err != nil {
+		return nil, err
+	}
+	if s.permissions == nil {
+		return nil, errors.New("permissions are not configured")
+	}
+	return s.permissions.GroupDeviceIDs(ctx, groupID)
+}
+
+// intersectDeviceIDs narrows two device sets. A nil set means "no restriction";
+// the result is nil only when both inputs are unrestricted.
+func intersectDeviceIDs(current, extra []int64) []int64 {
+	if current == nil {
+		return append([]int64{}, extra...)
+	}
+	if extra == nil {
+		return current
+	}
+	wanted := make(map[int64]struct{}, len(extra))
+	for _, deviceID := range extra {
+		wanted[deviceID] = struct{}{}
+	}
+	kept := make([]int64, 0, len(current))
+	for _, deviceID := range current {
+		if _, ok := wanted[deviceID]; ok {
+			kept = append(kept, deviceID)
+		}
+	}
+	return kept
 }
 
 type positionResponse struct {
@@ -500,10 +618,30 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	geofenceID, err := idQuery(r.URL.Query(), "geofenceId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if geofenceID > 0 && s.geofences == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("geofences are not configured"))
+		return
+	}
 	filter.DeviceIDs = s.deviceScope(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
+
+	fence, err := s.geofenceFilter(ctx, geofenceID)
+	if errors.Is(err, model.ErrResourceNotFound) {
+		writeError(w, http.StatusNotFound, fmt.Errorf("unknown geofence %d", geofenceID))
+		return
+	}
+	if err != nil {
+		s.logf("api: load geofence %d: %v", geofenceID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
 
 	positions, err := s.positions.QueryPositions(ctx, filter)
 	if err != nil {
@@ -511,6 +649,7 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	positions = insideGeofence(positions, fence)
 
 	response := positionsResponse{
 		Positions: make([]positionResponse, 0, len(positions)),
@@ -540,13 +679,45 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// geofenceFilter loads the geofence named by geofenceId. A zero id means "no
+// filter" and returns a nil fence.
+func (s *Server) geofenceFilter(ctx context.Context, geofenceID int64) (*geofence.Geofence, error) {
+	if geofenceID <= 0 || s.geofences == nil {
+		return nil, nil
+	}
+	values, err := s.geofences.QueryGeofences(ctx,
+		model.ResourceFilter{IDs: []int64{geofenceID}, Limit: 1})
+	if err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return nil, model.ErrResourceNotFound
+	}
+	return values[0], nil
+}
+
+// insideGeofence keeps the positions the fence contains. A nil fence keeps
+// every position, so the caller does not need a branch.
+func insideGeofence(positions []model.Position, fence *geofence.Geofence) []model.Position {
+	if fence == nil {
+		return positions
+	}
+	kept := make([]model.Position, 0, len(positions))
+	for index := range positions {
+		if fence.Contains(&positions[index]) {
+			kept = append(kept, positions[index])
+		}
+	}
+	return kept
+}
+
 type deviceResponse struct {
-	ID         int64          `json:"id"`
-	UniqueID   string         `json:"uniqueId"`
-	Name       string         `json:"name"`
-	Model      string         `json:"model,omitempty"`
-	Protocol   string         `json:"protocol"`
-	Attributes map[string]any `json:"attributes"`
+	ID         int64             `json:"id"`
+	UniqueID   string            `json:"uniqueId"`
+	Name       string            `json:"name"`
+	Model      string            `json:"model,omitempty"`
+	Protocol   string            `json:"protocol"`
+	Attributes *model.Attributes `json:"attributes,omitempty"`
 	// LastUpdate stays absent until the device has reported a position.
 	LastUpdate *time.Time `json:"lastUpdate,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
@@ -555,6 +726,34 @@ type deviceResponse struct {
 type devicesResponse struct {
 	Devices []deviceResponse `json:"devices"`
 	Count   int              `json:"count"`
+}
+
+// deviceQueryOptions holds the parameters that decide which devices a caller
+// may see, as opposed to the ones that filter the rows.
+type deviceQueryOptions struct {
+	// All is accepted for compatibility with the Java resource. It only widens
+	// the answer for an admin there, and an admin already sees every device
+	// here, so the value changes nothing.
+	All               bool
+	UserID            int64
+	ExcludeAttributes bool
+}
+
+func parseDeviceQueryOptions(r *http.Request) (deviceQueryOptions, error) {
+	values := r.URL.Query()
+	all, err := boolQuery(values, "all")
+	if err != nil {
+		return deviceQueryOptions{}, err
+	}
+	excludeAttributes, err := boolQuery(values, "excludeAttributes")
+	if err != nil {
+		return deviceQueryOptions{}, err
+	}
+	userID, err := idQuery(values, "userId")
+	if err != nil {
+		return deviceQueryOptions{}, err
+	}
+	return deviceQueryOptions{All: all, UserID: userID, ExcludeAttributes: excludeAttributes}, nil
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
@@ -571,10 +770,26 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	options, err := parseDeviceQueryOptions(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	filter.DeviceIDs = s.deviceScope(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
+
+	if options.UserID > 0 {
+		direct, applicable, err := s.userDeviceGrants(ctx, r, options.UserID)
+		if err != nil {
+			s.writeResourceError(w, err)
+			return
+		}
+		if applicable {
+			filter.DeviceIDs = intersectDeviceIDs(filter.DeviceIDs, direct)
+		}
+	}
 
 	devices, err := s.devices.Devices(ctx, filter)
 	if err != nil {
@@ -583,30 +798,87 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	includeAttributes := !options.ExcludeAttributes
 	response := devicesResponse{
 		Devices: make([]deviceResponse, 0, len(devices)),
 		Count:   len(devices),
 	}
 	for _, device := range devices {
-		response.Devices = append(response.Devices, newDeviceResponse(device))
+		response.Devices = append(response.Devices, newDeviceResponse(device, includeAttributes))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
 
-// newDeviceResponse renders one device. lastUpdate and model stay absent while
-// empty so clients do not have to special case zero values.
-func newDeviceResponse(device model.Device) deviceResponse {
-	attributes := device.Attributes
-	if attributes == nil {
-		attributes = map[string]any{}
+// userDeviceGrants returns the devices granted to an account directly. Only an
+// admin may ask about somebody else, and a non-admin gets its own direct grants,
+// which is what the Java resource's excludeGroups condition answers. The second
+// result is false when the caller is not an account at all (the shared API key
+// or an unauthenticated request): the parameter then cannot narrow anything and
+// is ignored.
+func (s *Server) userDeviceGrants(ctx context.Context, r *http.Request, userID int64) ([]int64, bool, error) {
+	if !s.authEnabled() {
+		return nil, false, nil
 	}
+	principal := auth.FromContext(r.Context())
+	if principal == nil || (principal.Admin && principal.UserID == 0) {
+		return nil, false, nil
+	}
+	if !principal.Admin && principal.UserID != userID {
+		return nil, false, fmt.Errorf("%w: user %d", permissions.ErrAccessDenied, userID)
+	}
+	if s.permissions == nil {
+		return nil, false, errors.New("permissions are not configured")
+	}
+	ids, err := s.permissions.DirectIDs(ctx, userID, permissions.ObjectDevice)
+	return ids, true, err
+}
+
+// handleDevice serves GET /api/devices/{id}.
+func (s *Server) handleDevice(w http.ResponseWriter, r *http.Request) {
+	if s.devices == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("devices are not configured"))
+		return
+	}
+	if !s.authorize(w, r, auth.ScopeReadDevices) {
+		return
+	}
+	deviceID, err := deviceIDFromPath(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !s.canAccessDevice(r, deviceID) {
+		writeForbiddenDevice(w, deviceID)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	device, err := s.devices.Device(ctx, deviceID)
+	if errors.Is(err, model.ErrDeviceNotFound) {
+		writeError(w, http.StatusNotFound, fmt.Errorf("unknown device %d", deviceID))
+		return
+	}
+	if err != nil {
+		s.logf("api: get device %d: %v", deviceID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+	writeJSON(w, http.StatusOK, newDeviceResponse(*device, true))
+}
+
+// newDeviceResponse renders one device. lastUpdate and model stay absent while
+// empty so clients do not have to special case zero values; attributes are
+// absent only when the caller asked for excludeAttributes.
+func newDeviceResponse(device model.Device, includeAttributes bool) deviceResponse {
 	response := deviceResponse{
 		ID:         device.ID,
 		UniqueID:   device.UniqueID,
 		Name:       device.Name,
 		Model:      device.Model,
 		Protocol:   device.Protocol,
-		Attributes: attributes,
+		Attributes: optionalAttributes(device.Attributes, includeAttributes),
 		CreatedAt:  device.CreatedAt.UTC(),
 	}
 	if !device.LastUpdate.IsZero() {
@@ -625,9 +897,14 @@ type deviceCreateRequest struct {
 	Protocol string `json:"protocol"`
 }
 
+// deviceUpdateRequest is a replace of the mutable columns. Name and model fall
+// back to empty when omitted, like before; attributes are only replaced when
+// the field is present so a rename does not wipe the thresholds the alert
+// engine reads from the device.
 type deviceUpdateRequest struct {
-	Name  string `json:"name"`
-	Model string `json:"model"`
+	Name       string            `json:"name"`
+	Model      string            `json:"model"`
+	Attributes *model.Attributes `json:"attributes"`
 }
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
@@ -692,7 +969,7 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusCreated, newDeviceResponse(*device))
+	writeJSON(w, http.StatusCreated, newDeviceResponse(*device, true))
 }
 
 func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
@@ -724,8 +1001,9 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	device, err := s.devices.UpdateDevice(ctx, deviceID, model.DeviceUpdate{
-		Name:  strings.TrimSpace(request.Name),
-		Model: strings.TrimSpace(request.Model),
+		Name:       strings.TrimSpace(request.Name),
+		Model:      strings.TrimSpace(request.Model),
+		Attributes: request.Attributes,
 	})
 	if errors.Is(err, model.ErrDeviceNotFound) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("unknown device %d", deviceID))
@@ -737,7 +1015,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newDeviceResponse(*device))
+	writeJSON(w, http.StatusOK, newDeviceResponse(*device, true))
 }
 
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
@@ -1138,12 +1416,29 @@ func positionFilter(r *http.Request) (model.PositionFilter, error) {
 
 // deviceFilter parses and validates the query string:
 //
-//	protocol=gt06&limit=50&offset=0
+//	protocol=gt06&keyword=van&uniqueId=A&uniqueId=B&id=7&limit=50&offset=0
 func deviceFilter(r *http.Request) (model.DeviceFilter, error) {
 	query := r.URL.Query()
 	var filter model.DeviceFilter
 
 	filter.Protocol = strings.TrimSpace(query.Get("protocol"))
+	filter.Keyword = strings.TrimSpace(query.Get("keyword"))
+
+	for _, raw := range query["uniqueId"] {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			filter.UniqueIDs = append(filter.UniqueIDs, trimmed)
+		}
+	}
+	for _, raw := range query["id"] {
+		if raw == "" {
+			continue
+		}
+		deviceID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || deviceID <= 0 {
+			return filter, fmt.Errorf("invalid id %q", raw)
+		}
+		filter.IDs = append(filter.IDs, deviceID)
+	}
 
 	var err error
 	if filter.Limit, err = parseLimit(query, maxDeviceLimit); err != nil {

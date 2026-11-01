@@ -39,6 +39,13 @@ type Device struct {
 // Limit and Offset are clamped by the storage layer.
 type DeviceFilter struct {
 	Protocol string
+	// UniqueIDs and IDs are the uniqueId and id query parameters. Both are
+	// exact matches and narrow the result when present; the two lists are
+	// combined with OR, the same way the Java resource unions them.
+	UniqueIDs []string
+	IDs       []int64
+	// Keyword is matched case insensitively against name, uniqueId and model.
+	Keyword string
 	// DeviceIDs restricts the result to a set of devices. Nil means "no
 	// restriction"; a non-nil empty slice matches nothing.
 	DeviceIDs []int64
@@ -56,9 +63,12 @@ type DeviceCreate struct {
 	Protocol string
 }
 
-// DeviceUpdate holds the mutable fields of a device. Both are replaced
-// wholesale, an empty string clears the column.
+// DeviceUpdate holds the mutable fields of a device. Name and model are
+// replaced wholesale, an empty string clears the column. Attributes replaces
+// the whole map when it is non-nil; a nil pointer leaves the stored attributes
+// untouched, so a client that only renames a device does not wipe them.
 type DeviceUpdate struct {
-	Name  string
-	Model string
+	Name       string
+	Model      string
+	Attributes *Attributes
 }

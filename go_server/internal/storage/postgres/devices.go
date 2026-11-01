@@ -48,13 +48,36 @@ func (s *Store) Devices(ctx context.Context, filter model.DeviceFilter) ([]model
 
 // deviceQuery builds the statement and its arguments.
 func deviceQuery(filter model.DeviceFilter) (string, []any) {
-	args := make([]any, 0, 3)
-	clauses := make([]string, 0, 1)
+	args := make([]any, 0, 4)
+	clauses := make([]string, 0, 2)
+
+	placeholder := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
 
 	if filter.Protocol != "" {
-		args = append(args, filter.Protocol)
-		clauses = append(clauses, fmt.Sprintf("protocol = $%d", len(args)))
+		clauses = append(clauses, "protocol = "+placeholder(filter.Protocol))
 	}
+
+	// uniqueId and id are exact lookups that the Java resource answers without
+	// the keyword and paging parameters. The two lists are ORed together.
+	lookups := make([]string, 0, 2)
+	if len(filter.UniqueIDs) > 0 {
+		lookups = append(lookups, textIDsClause(&args, "unique_id", filter.UniqueIDs))
+	}
+	if len(filter.IDs) > 0 {
+		lookups = append(lookups, deviceIDsClause(&args, "id", filter.IDs))
+	}
+	if len(lookups) > 0 {
+		clauses = append(clauses, "("+strings.Join(lookups, " OR ")+")")
+	} else if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		pattern := placeholder("%" + keyword + "%")
+		clauses = append(clauses, fmt.Sprintf(
+			"(name ILIKE %s OR unique_id ILIKE %s OR COALESCE(model, '') ILIKE %s)",
+			pattern, pattern, pattern))
+	}
+
 	if filter.DeviceIDs != nil {
 		clauses = append(clauses, deviceIDsClause(&args, "id", filter.DeviceIDs))
 	}
@@ -184,12 +207,25 @@ func (s *Store) CreateDevice(ctx context.Context, create model.DeviceCreate) (*m
 	return device, nil
 }
 
-// UpdateDevice replaces the mutable fields of a device.
+// UpdateDevice replaces the mutable fields of a device. A nil Attributes
+// pointer keeps the stored map, so a rename does not wipe the thresholds the
+// alert engine reads.
 func (s *Store) UpdateDevice(ctx context.Context, deviceID int64, update model.DeviceUpdate) (*model.Device, error) {
+	var encodedAttributes *string
+	if update.Attributes != nil {
+		encoded, err := encodeAttributes(*update.Attributes)
+		if err != nil {
+			return nil, err
+		}
+		encodedAttributes = &encoded
+	}
+
 	device, err := scanDevice(s.db.QueryRowContext(ctx,
-		`UPDATE devices SET name = $2, model = NULLIF($3, '') WHERE id = $1
+		`UPDATE devices SET name = $2, model = NULLIF($3, ''),
+			attributes = COALESCE($4::jsonb, attributes)
+		 WHERE id = $1
 		 RETURNING `+deviceColumns,
-		deviceID, update.Name, update.Model))
+		deviceID, update.Name, update.Model, encodedAttributes))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrDeviceNotFound
 	}

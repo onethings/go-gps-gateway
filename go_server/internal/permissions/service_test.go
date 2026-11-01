@@ -386,3 +386,63 @@ func TestServiceCheckGroupInheritsFromGrantedParent(t *testing.T) {
 		t.Errorf("group 4 is a sibling root: err = %v, want ErrAccessDenied", err)
 	}
 }
+
+func TestServiceDirectIDsSkipsGroupExpansion(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(store)
+	ctx := context.Background()
+
+	// A direct grant on device 10 and a grant on the root group, which covers
+	// devices 10 and 11 through the tree.
+	for _, pair := range []Permission{
+		mustPair(t, ObjectUser, 5, ObjectDevice, 10),
+		mustPair(t, ObjectUser, 5, ObjectGroup, 1),
+	} {
+		if err := service.Grant(ctx, pair); err != nil {
+			t.Fatalf("grant: %v", err)
+		}
+	}
+
+	direct, err := service.DirectIDs(ctx, 5, ObjectDevice)
+	if err != nil {
+		t.Fatalf("direct ids: %v", err)
+	}
+	if want := []int64{10}; !reflect.DeepEqual(direct, want) {
+		t.Errorf("direct ids = %v, want %v", direct, want)
+	}
+
+	reached, err := service.ObjectIDs(ctx, 5, ObjectDevice)
+	if err != nil {
+		t.Fatalf("object ids: %v", err)
+	}
+	if want := []int64{10, 11}; !reflect.DeepEqual(reached, want) {
+		t.Errorf("object ids = %v, want %v", reached, want)
+	}
+}
+
+func TestServiceGroupDeviceIDs(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(store)
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		groupID int64
+		want    []int64
+	}{
+		{"root covers the tree", 1, []int64{10, 11}},
+		{"child covers its subtree", 2, []int64{10, 11}},
+		{"leaf covers its own device", 3, []int64{11}},
+		{"empty root", 4, []int64{}},
+		{"zero id", 0, []int64{}},
+	}
+	for _, testCase := range cases {
+		got, err := service.GroupDeviceIDs(ctx, testCase.groupID)
+		if err != nil {
+			t.Fatalf("%s: %v", testCase.name, err)
+		}
+		if !reflect.DeepEqual(got, testCase.want) {
+			t.Errorf("%s: ids = %v, want %v", testCase.name, got, testCase.want)
+		}
+	}
+}

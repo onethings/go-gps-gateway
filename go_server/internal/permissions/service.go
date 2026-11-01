@@ -105,16 +105,11 @@ func (s *Service) ObjectIDs(ctx context.Context, userID int64, object Object) ([
 		return s.DeviceIDs(ctx, userID)
 	}
 
-	pairs, err := s.store.Permissions(ctx, ObjectUser, userID, object, 0)
+	ids, err := s.DirectIDs(ctx, userID, object)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, 0, len(pairs))
-	for _, pair := range pairs {
-		ids = append(ids, pair.PropertyID)
-	}
 	if object != ObjectGroup || len(ids) == 0 {
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 		return ids, nil
 	}
 
@@ -123,6 +118,54 @@ func (s *Service) ObjectIDs(ctx context.Context, userID int64, object Object) ([
 		return nil, err
 	}
 	return Reach(ids, parents), nil
+}
+
+// DirectIDs returns the ids of the objects of one type granted to a user
+// directly, without following the group tree. It backs the userId parameter of
+// the device list, which the Java server restricts with
+// Condition.Permission(...).excludeGroups().
+func (s *Service) DirectIDs(ctx context.Context, userID int64, object Object) ([]int64, error) {
+	if !object.Valid() {
+		return nil, fmt.Errorf("%w: unknown object %q", ErrInvalidPermission, object)
+	}
+	if userID <= 0 {
+		return []int64{}, nil
+	}
+
+	pairs, err := s.store.Permissions(ctx, ObjectUser, userID, object, 0)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(pairs))
+	for _, pair := range pairs {
+		ids = append(ids, pair.PropertyID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids, nil
+}
+
+// GroupDeviceIDs returns the devices sitting in groupID or in one of its
+// descendants inside MaxGroupDepth. It is the groupId filter of the event list,
+// which the Java report expands the same way before it queries the events.
+func (s *Service) GroupDeviceIDs(ctx context.Context, groupID int64) ([]int64, error) {
+	if groupID <= 0 {
+		return []int64{}, nil
+	}
+	parents, err := s.store.GroupParents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	devices, err := s.store.DevicesInGroups(ctx, Reach([]int64{groupID}, parents))
+	if err != nil {
+		return nil, err
+	}
+	if devices == nil {
+		// An empty group still means "restrict to nothing"; a nil slice would
+		// read as "no restriction" to the caller.
+		devices = []int64{}
+	}
+	sort.Slice(devices, func(i, j int) bool { return devices[i] < devices[j] })
+	return devices, nil
 }
 
 // CanAccess reports whether a user may read or change one object. An admin

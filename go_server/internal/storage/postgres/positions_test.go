@@ -89,3 +89,15 @@ func TestPositionQueryClamps(t *testing.T) {
 		})
 	}
 }
+
+func TestPositionQueryAscending(t *testing.T) {
+	query, _ := positionQuery(model.PositionFilter{Ascending: true})
+	if !strings.Contains(query, "ORDER BY device_time ASC, id ASC") {
+		t.Errorf("query = %s, want the ascending track order", query)
+	}
+
+	descending, _ := positionQuery(model.PositionFilter{})
+	if !strings.Contains(descending, "ORDER BY device_time DESC, id DESC") {
+		t.Errorf("query = %s", descending)
+	}
+}

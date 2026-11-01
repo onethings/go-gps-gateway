@@ -22,3 +22,18 @@ func deviceIDsClause(args *[]any, column string, ids []int64) string {
 	}
 	return fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ", "))
 }
+
+// textIDsClause is the text counterpart of deviceIDsClause: an exact match
+// against a list of strings, used by the uniqueId lookup.
+func textIDsClause(args *[]any, column string, values []string) string {
+	if len(values) == 0 {
+		return "false"
+	}
+
+	placeholders := make([]string, 0, len(values))
+	for _, value := range values {
+		*args = append(*args, value)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(*args)))
+	}
+	return fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ", "))
+}

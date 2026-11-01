@@ -217,3 +217,28 @@ func TestAlertUsesCurrentTimeWhenPositionHasNone(t *testing.T) {
 		t.Fatalf("alerts = %v", alerts)
 	}
 }
+
+// TestGeofenceSegmentCrossing pins the M4-1 rule: a device that is outside a
+// geofence on both sides of a long reporting gap still raises geofenceCrossed
+// when the straight line between the positions cuts the fence.
+func TestGeofenceSegmentCrossing(t *testing.T) {
+	engine := New(Config{GeofenceSegmentCrossing: true}, []*geofence.Geofence{depotFence(t)})
+
+	// Seed outside the square, south of it.
+	engine.Evaluate(locatedPosition(1, 0.5, -2))
+
+	alerts := engine.Evaluate(locatedPosition(1, 0.5, 2))
+	if len(alerts) != 1 || alerts[0].Type != model.EventGeofenceCrossed {
+		t.Fatalf("alerts = %+v", alerts)
+	}
+	if alerts[0].GeofenceID != 5 || alerts[0].Attributes["geofence"] != "depot" {
+		t.Errorf("alert = %+v", alerts[0])
+	}
+
+	// With the switch off the same movement raises nothing.
+	disabled := New(Config{}, []*geofence.Geofence{depotFence(t)})
+	disabled.Evaluate(locatedPosition(1, 0.5, -2))
+	if alerts := disabled.Evaluate(locatedPosition(1, 0.5, 2)); len(alerts) != 0 {
+		t.Fatalf("disabled alerts = %+v", alerts)
+	}
+}

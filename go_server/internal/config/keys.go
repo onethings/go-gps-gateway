@@ -35,6 +35,18 @@ const (
 	AlertGeofenceRefresh = "alert.geofenceRefresh" // Go only
 	AlertDeviceRefresh   = "alert.deviceRefresh"   // Go only
 
+	// M4-1 event rules. The threshold names match the Java Keys, because a
+	// device attribute with the same name overrides them per device.
+	EventFuelDropThreshold       = "fuelDropThreshold"
+	EventFuelIncreaseThreshold   = "fuelIncreaseThreshold"
+	EventProximityEnter          = "proximityEnterDistance"
+	EventProximityExit           = "proximityExitDistance"
+	EventUnaccompanied           = "unaccompaniedDistance"
+	EventGeofenceSegmentCrossing = "event.geofence.segmentCrossing"
+	EventBehaviorAcceleration    = "event.behavior.accelerationThreshold"
+	EventBehaviorBraking         = "event.behavior.brakingThreshold"
+	EventIgnoreDuplicateAlerts   = "event.ignoreDuplicateAlerts"
+
 	// Command dispatch.
 	CommandRetry     = "command.retry"        // Go only
 	CommandAttempts  = "command.attempts"     // Go only
@@ -89,6 +101,16 @@ var KnownKeys = []string{
 	AlertRepeat,
 	AlertGeofenceRefresh,
 	AlertDeviceRefresh,
+
+	EventFuelDropThreshold,
+	EventFuelIncreaseThreshold,
+	EventProximityEnter,
+	EventProximityExit,
+	EventUnaccompanied,
+	EventGeofenceSegmentCrossing,
+	EventBehaviorAcceleration,
+	EventBehaviorBraking,
+	EventIgnoreDuplicateAlerts,
 
 	CommandRetry,
 	CommandAttempts,
@@ -155,6 +177,8 @@ var defaults = map[string]string{
 
 	AlertGeofenceRefresh: "5m",
 	AlertDeviceRefresh:   "5m",
+
+	EventIgnoreDuplicateAlerts: "true",
 
 	CommandRetry:     "30s",
 	CommandAttempts:  "3",

@@ -107,9 +107,52 @@ func (s *Store) MarkCommandFailed(ctx context.Context, commandID int64) error {
 // is waiting, the call is a no-op.
 func (s *Store) AcknowledgeCommand(ctx context.Context, deviceID int64, ack codec.CommandAck) error {
 	query, args := acknowledgeQuery(deviceID, ack)
-	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return fmt.Errorf("postgres: acknowledge command: %w", err)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var (
+		commandID int64
+		result    sql.NullInt64
+		doneAt    time.Time
+	)
+	err = tx.QueryRowContext(ctx, query+" RETURNING id, result_code, done_at", args...).
+		Scan(&commandID, &result, &doneAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Nothing was waiting for an answer; an unsolicited ack is not an error.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("postgres: acknowledge command: %w", err)
+	}
+
+	// The command result event is written in the same transaction as the
+	// acknowledgement, so a command can never end without its event and an
+	// event can never point at a command that is still waiting.
+	var code any
+	if result.Valid {
+		code = result.Int64
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO events (device_id, event_time, type, attributes)
+		 VALUES ($1, $2, $3, jsonb_build_object('result', $4::bigint, 'commandId', $5::bigint))`,
+		deviceID, doneAt, model.EventCommandResult, code, commandID,
+	); err != nil {
+		return fmt.Errorf("postgres: record command result event: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("postgres: acknowledge command: %w", err)
+	}
+	committed = true
 	return nil
 }
 

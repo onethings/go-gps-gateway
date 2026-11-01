@@ -1336,8 +1336,8 @@ scrape_configs:
 | 資料模型 | `model/` 40 個類別                                                                                  | `internal/model` 18 檔 33 個型別（含 Group / Geofence / Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute） | 缺 media / geocoder / forward 等週邊型別                                                                               |
 | 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL + `resourceSpec` 共用 CRUD，19 張表                 | 缺的 31 張以 M4–M6 的週邊為主，且沒有通用查詢建構器                                                                     |
 | 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + 通用 `permissions` 表（user / group / device → 任何資源），group 最多三層 | 缺 `managedUser`（管理員代管下屬）與分享帳號到期自動清理                                                               |
-| REST     | 25 個 resource、81 個端點                                                                           | 86 條路由（含資源 CRUD、單筆裝置 / 事件、四種位置匯出與 `/api/maintenance` 別名） | 見 M3-3 / M3-4（WebSocket、protocol / server / session / statistics / audit、commands/send）                          |
-| 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 9 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名）  | 14 種；表名與母本相同，事件型別待 M4-1 補齊                                                                            |
+| REST     | 25 個 resource、81 個端點                                                                           | 110+ 條路由（資源 CRUD、單筆裝置 / 事件、四種位置匯出、WebSocket、protocol / server / session / statistics / audit、commands 下發） | 報表、媒體與 stream 端點見 M5 / M7-3                                                                                  |
+| 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 25 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名） | 日曆限制與 media 檔案欄位待 M7-3                                                                                       |
 | 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email                                              | 7 個管道、模板語法                                                                                                     |
 | 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | 無                                                           | 全部                                                                                                                   |
 | 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | 無                                                           | 全部                                                                                                                   |
@@ -1558,7 +1558,30 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
 
 ### M4 事件與通知補齊（M）
 
-- [ ] **M4-1 event handlers**：Alarm / Ignition / Motion / Geofence（含 `geofenceCrossed`）/ Fuel / Driver / Maintenance / Media / Behavior / Proximity / CommandResult，逐支掛到 M1-2 的鏈上。
+- [x] **M4-1 event handlers**：Alarm / Ignition / Motion / Geofence（含 `geofenceCrossed`）/ Fuel / Driver / Maintenance / Media / Behavior / Proximity / CommandResult，逐支掛到 M1-2 的鏈上。
+  - 落地：`model.Event` 補到 25 種型別（母本 23 種加既有的 `powerCut` / `powerRestored`），
+    `EventTypes()` / `IsEventType()` 一起更新。
+  - 事件的搬運方式改成母本 `Callback` 的等價物：`internal/eventctx` 把「這一筆位置產生的事件」
+    放在 `context` 裡，`handler.Chain` 每筆位置開一個緩衝，規則在各自的階段 append，鏈的終端
+    一次寫入。`alert.Pipeline.HandleContext` 讓引擎事件也進同一個緩衝，`EnqueueReport` 把
+    「位置 + 全部事件」排進原本的 report 佇列，並在這裡才觸發 socket / 通知 hook。這順帶修掉
+    M1-4 遺留的重複寫入：有事件的定位以前會同時被 `InsertReports` 與 `BatchSink` 各寫一次。
+  - 規則（`internal/handler/rules.go`）：Alarm（`event.ignoreDuplicateAlerts` 預設 true）、
+    Ignition、Behavior（`event.behavior.accelerationThreshold` / `brakingThreshold`，m/s²）、
+    Fuel（`fuelDropThreshold` / `fuelIncreaseThreshold`）、Driver、Maintenance、Media、
+    CommandResult、Proximity（`proximityEnterDistance` / `proximityExitDistance` /
+    `unaccompaniedDistance`）。每個門檻都可被同名裝置屬性覆寫，跟母本 `AttributeUtil.lookup` 一樣。
+  - `geofenceCrossed`：`geofence.Geofence.CrossesSegment` 對 polygon 做線段與邊的相交、對 circle
+    做「兩端都在外但線段碰到圓」，由 `event.geofence.segmentCrossing`（預設 false）開啟；
+    engine 現在保存每個裝置的上一筆位置。
+  - 裝置資料來源：`eventState` 在背景刷新 `permissions` 的 device→maintenance 與 device→device
+    連結（`Store.DeviceMaintenances` / `Store.DeviceLinks`），並用 position hook 即時更新每台車的
+    最新位置，proximity 不必查 DB。命令結果事件在 `AcknowledgeCommand` 的同一個交易裡寫
+    `commandResult`；裝置在位置裡回報 `result` 時另外由 `CommandResultRule` 產生一列。
+  - 測試：`internal/handler/rules_test.go`（9 個規則、裝置門檻覆寫、緩衝到終端）、
+    `internal/alert` 的 `TestGeofenceSegmentCrossing`。
+  - 偏差：日曆限制（geofence / maintenance 的 calendarId）還沒套用；`Motion` 仍走 M1-3 的
+    簡化狀態機，沒有母本 `NewMotionProcessor` 的距離 / 停留門檻。
   - 驗收：每支都有以母本事件語義寫的測試；`commandResult` 事件與 `commands` 表的收尾是同一次寫入。
 - [ ] **M4-2 notificator**：telegram / pushover / sms（HTTP + SNS）/ firebase / traccar（轉命令）/ whatsapp，加上 `TextTemplateFormatter`（Velocity 子集）。
   - 驗收：`notify.Channel` 介面不變，逐管道測試用 `httptest`；模板缺欄位的行為與母本一致。

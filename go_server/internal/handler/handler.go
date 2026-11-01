@@ -12,6 +12,9 @@ type Config struct {
 	Alerts Processor
 	// Store receives the position after the last stage. Nil ends the chain.
 	Store Processor
+	// Terminal replaces Store when set. It is how a deployment writes a
+	// position together with the events the stages raised for it.
+	Terminal Next
 	// Stages replaces the placeholder of a stage by name. It is how a later
 	// milestone fills in motion, geofence or an event handler without touching
 	// the order.
@@ -39,7 +42,11 @@ func New(config Config) (*Chain, error) {
 		stages = append(stages, Placeholder{Stage: name})
 	}
 
-	return NewChain(StoreOf(config.Store), stages...), nil
+	terminal := config.Terminal
+	if terminal == nil {
+		terminal = StoreOf(config.Store)
+	}
+	return NewChain(terminal, stages...), nil
 }
 
 // declared reports whether name is one of the stage names in Order.

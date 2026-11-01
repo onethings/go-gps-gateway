@@ -68,6 +68,18 @@ type Settings struct {
 	GeofenceRefresh time.Duration
 	DeviceRefresh   time.Duration
 
+	// M4-1 event rule thresholds. Zero disables the rule, matching the Java
+	// defaults.
+	FuelDropThreshold       float64
+	FuelIncreaseThreshold   float64
+	ProximityEnter          float64
+	ProximityExit           float64
+	Unaccompanied           float64
+	BehaviorAcceleration    float64
+	BehaviorBraking         float64
+	IgnoreDuplicateAlerts   bool
+	GeofenceSegmentCrossing bool
+
 	// AutoRegister is the flag value; AutoRegisterSet reports whether the flag
 	// was passed, which decides whether it overrides a protocol section.
 	AutoRegister    bool
@@ -130,6 +142,16 @@ type rawFlags struct {
 	alertRepeat     string
 	geofenceRefresh string
 	deviceRefresh   string
+
+	fuelDropThreshold     string
+	fuelIncreaseThreshold string
+	proximityEnter        string
+	proximityExit         string
+	unaccompanied         string
+	behaviorAcceleration  string
+	behaviorBraking       string
+	ignoreDuplicateAlerts string
+	segmentCrossing       string
 
 	autoRegister string
 
@@ -221,6 +243,29 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 		"geofence reload interval; 0 loads them once")
 	binder.text(&binder.raw.deviceRefresh, "device-refresh", cfg.String(AlertDeviceRefresh),
 		"device attribute reload interval for per-device thresholds; 0 loads them once")
+
+	binder.text(&binder.raw.fuelDropThreshold, "fuel-drop-threshold", cfg.String(EventFuelDropThreshold),
+		"fuel level drop that raises deviceFuelDrop; 0 disables the rule")
+	binder.text(&binder.raw.fuelIncreaseThreshold, "fuel-increase-threshold", cfg.String(EventFuelIncreaseThreshold),
+		"fuel level increase that raises deviceFuelIncrease; 0 disables the rule")
+	binder.text(&binder.raw.proximityEnter, "proximity-enter-distance", cfg.String(EventProximityEnter),
+		"distance in metres that raises proximityEnter; 0 disables the rule")
+	binder.text(&binder.raw.proximityExit, "proximity-exit-distance", cfg.String(EventProximityExit),
+		"distance in metres that raises proximityExit; 0 disables the rule")
+	binder.text(&binder.raw.unaccompanied, "unaccompanied-distance", cfg.String(EventUnaccompanied),
+		"distance in metres under which a linked device counts as company; 0 disables the rule")
+	binder.text(&binder.raw.behaviorAcceleration, "behavior-acceleration-threshold",
+		cfg.String(EventBehaviorAcceleration),
+		"hard acceleration threshold in m/s²; 0 disables the rule")
+	binder.text(&binder.raw.behaviorBraking, "behavior-braking-threshold",
+		cfg.String(EventBehaviorBraking),
+		"hard braking threshold in m/s²; 0 disables the rule")
+	binder.text(&binder.raw.ignoreDuplicateAlerts, "event-ignore-duplicates",
+		cfg.String(EventIgnoreDuplicateAlerts),
+		"raise an alarm event only for an alarm the previous position did not carry")
+	binder.text(&binder.raw.segmentCrossing, "event-geofence-segment-crossing",
+		cfg.String(EventGeofenceSegmentCrossing),
+		"raise geofenceCrossed when the segment between two positions cuts a geofence")
 
 	binder.text(&binder.raw.autoRegister, "auto-register", cfg.String(DatabaseRegisterUnknown),
 		"create a device row the first time an unknown identifier appears; false drops that frame")
@@ -351,6 +396,16 @@ func (b *Binder) Settings() (Settings, error) {
 	settings.AlertRepeat = toDuration("alert-repeat", raw.alertRepeat)
 	settings.GeofenceRefresh = toDuration("geofence-refresh", raw.geofenceRefresh)
 	settings.DeviceRefresh = toDuration("device-refresh", raw.deviceRefresh)
+
+	settings.FuelDropThreshold = toFloat("fuel-drop-threshold", raw.fuelDropThreshold)
+	settings.FuelIncreaseThreshold = toFloat("fuel-increase-threshold", raw.fuelIncreaseThreshold)
+	settings.ProximityEnter = toFloat("proximity-enter-distance", raw.proximityEnter)
+	settings.ProximityExit = toFloat("proximity-exit-distance", raw.proximityExit)
+	settings.Unaccompanied = toFloat("unaccompanied-distance", raw.unaccompanied)
+	settings.BehaviorAcceleration = toFloat("behavior-acceleration-threshold", raw.behaviorAcceleration)
+	settings.BehaviorBraking = toFloat("behavior-braking-threshold", raw.behaviorBraking)
+	settings.IgnoreDuplicateAlerts = toBool("event-ignore-duplicates", raw.ignoreDuplicateAlerts)
+	settings.GeofenceSegmentCrossing = toBool("event-geofence-segment-crossing", raw.segmentCrossing)
 
 	settings.AutoRegister = toBool("auto-register", raw.autoRegister)
 	settings.AutoRegisterSet = b.wasSet("auto-register")

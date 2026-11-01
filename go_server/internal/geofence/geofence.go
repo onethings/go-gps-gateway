@@ -347,3 +347,126 @@ func parseCoordinate(text string) (Coordinate, error) {
 func formatCoordinate(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
 }
+
+// SegmentCrosser reports whether the straight line between two coordinates
+// crosses the area. The Java server uses GeofencePolygon.containsPoint on the
+// segment endpoints plus a segment/edge intersection test; only the polygon and
+// the circle implement it, because a shape without an interior has nothing to
+// cross.
+type SegmentCrosser interface {
+	CrossesSegment(fromLatitude, fromLongitude, toLatitude, toLongitude float64) bool
+}
+
+// CrossesSegment reports whether moving from one position to the other crosses
+// the geofence boundary. It is nil-safe, so a device without a previous
+// position simply never raises geofenceCrossed.
+func (g *Geofence) CrossesSegment(from, to *model.Position) bool {
+	if g == nil || g.Area == nil || from == nil || to == nil {
+		return false
+	}
+	crosser, ok := g.Area.(SegmentCrosser)
+	if !ok {
+		return false
+	}
+	return crosser.CrossesSegment(
+		from.Latitude, from.Longitude, to.Latitude, to.Longitude)
+}
+
+// CrossesSegment implements SegmentCrosser. The segment must intersect one of
+// the ring edges; a segment that only touches a vertex counts as crossing,
+// which is the conservative choice for an alert.
+func (p *Polygon) CrossesSegment(fromLatitude, fromLongitude, toLatitude, toLongitude float64) bool {
+	if !p.intersectsBoundary(
+		math.Min(fromLatitude, toLatitude), math.Max(fromLatitude, toLatitude),
+		math.Min(fromLongitude, toLongitude), math.Max(fromLongitude, toLongitude)) {
+		return false
+	}
+
+	corners := len(p.coordinates)
+	for i, j := 0, corners-1; i < corners; j, i = i, i+1 {
+		if segmentsIntersect(
+			fromLatitude, fromLongitude, toLatitude, toLongitude,
+			p.coordinates[j].Latitude, p.coordinates[j].Longitude,
+			p.coordinates[i].Latitude, p.coordinates[i].Longitude,
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+// CrossesSegment implements SegmentCrosser. A circle is crossed when the
+// segment comes within the radius while both endpoints are outside it.
+func (c *Circle) CrossesSegment(fromLatitude, fromLongitude, toLatitude, toLongitude float64) bool {
+	if !boxIntersects(
+		c.minLatitude, c.minLongitude, c.maxLatitude, c.maxLongitude,
+		math.Min(fromLatitude, toLatitude), math.Max(fromLatitude, toLatitude),
+		math.Min(fromLongitude, toLongitude), math.Max(fromLongitude, toLongitude)) {
+		return false
+	}
+	closest := closestPointOnSegment(
+		fromLatitude, fromLongitude, toLatitude, toLongitude,
+		c.CenterLatitude, c.CenterLongitude,
+	)
+	if distance(c.CenterLatitude, c.CenterLongitude, closest[0], closest[1]) > c.Radius {
+		return false
+	}
+	// Both endpoints outside and the segment touching the disc is a crossing;
+	// an endpoint inside is an enter or exit, which the membership state
+	// already reports.
+	return !c.Contains(fromLatitude, fromLongitude) && !c.Contains(toLatitude, toLongitude)
+}
+
+// segmentsIntersect is the standard orientation test on the plane.
+func segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy float64) bool {
+	d1 := orientation(cx, cy, dx, dy, ax, ay)
+	d2 := orientation(cx, cy, dx, dy, bx, by)
+	d3 := orientation(ax, ay, bx, by, cx, cy)
+	d4 := orientation(ax, ay, bx, by, dx, dy)
+
+	if ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+		((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)) {
+		return true
+	}
+	if d1 == 0 && onSegment(cx, cy, dx, dy, ax, ay) {
+		return true
+	}
+	if d2 == 0 && onSegment(cx, cy, dx, dy, bx, by) {
+		return true
+	}
+	if d3 == 0 && onSegment(ax, ay, bx, by, cx, cy) {
+		return true
+	}
+	if d4 == 0 && onSegment(ax, ay, bx, by, dx, dy) {
+		return true
+	}
+	return false
+}
+
+func orientation(ax, ay, bx, by, cx, cy float64) float64 {
+	return (bx-ax)*(cy-ay) - (by-ay)*(cx-ax)
+}
+
+// onSegment reports whether c, known to be collinear with a and b, lies within
+// the axis aligned box of the segment.
+func onSegment(ax, ay, bx, by, cx, cy float64) bool {
+	return cx >= math.Min(ax, bx) && cx <= math.Max(ax, bx) &&
+		cy >= math.Min(ay, by) && cy <= math.Max(ay, by)
+}
+
+// closestPointOnSegment projects a point onto a segment in the flat
+// latitude/longitude plane, which is accurate enough for the short distances a
+// proximity check deals with.
+func closestPointOnSegment(ax, ay, bx, by, px, py float64) [2]float64 {
+	dx, dy := bx-ax, by-ay
+	if dx == 0 && dy == 0 {
+		return [2]float64{ax, ay}
+	}
+	t := ((px-ax)*dx + (py-ay)*dy) / (dx*dx + dy*dy)
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	return [2]float64{ax + t*dx, ay + t*dy}
+}

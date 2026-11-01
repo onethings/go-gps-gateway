@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"traccar-server_go/go_server/internal/eventctx"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 )
@@ -165,7 +166,7 @@ func (p *Pipeline) Handle(position *model.Position) error {
 		p.positionHook(position)
 	}
 	if events := p.evaluate(position); len(events) > 0 {
-		p.enqueue(&model.PositionReport{Position: position, Events: events})
+		p.EnqueueReport(position, events)
 		return nil
 	}
 	if p.next == nil {
@@ -174,15 +175,40 @@ func (p *Pipeline) Handle(position *model.Position) error {
 	return p.next.Handle(position)
 }
 
-// evaluate runs the rules and reports every event to the hook, including the
-// ones the queue may drop: a notification is worth sending even when the history
-// row is lost.
+// HandleContext is the chain flavour of Handle: it evaluates the rules and adds
+// the events to the processing buffer instead of writing them, so the events of
+// later stages can travel with the same position.
+func (p *Pipeline) HandleContext(ctx context.Context, position *model.Position) error {
+	if p.positionHook != nil {
+		p.positionHook(position)
+	}
+	eventctx.Append(ctx, p.evaluate(position)...)
+	return nil
+}
+
+// EnqueueReport queues a position together with every event the stages raised
+// for it, and reports those events to the hook. A notification is worth sending
+// even when the history row is lost.
+func (p *Pipeline) EnqueueReport(position *model.Position, events []*model.Event) {
+	if position == nil || len(events) == 0 {
+		return
+	}
+	p.notify(events)
+	p.enqueue(&model.PositionReport{Position: position, Events: events})
+}
+
+// evaluate runs the rules. It never touches the hook: Handle and EnqueueReport
+// report the events, which keeps the engine events and the stage events on one
+// path.
 func (p *Pipeline) evaluate(position *model.Position) []*model.Event {
 	if p.engine == nil {
 		return nil
 	}
+	return p.engine.Evaluate(position)
+}
 
-	events := p.engine.Evaluate(position)
+// notify publishes the events to the metric counters and the alert hook.
+func (p *Pipeline) notify(events []*model.Event) {
 	for _, event := range events {
 		if p.meters != nil {
 			p.meters.Alerts.With(event.Type).Inc()
@@ -191,7 +217,6 @@ func (p *Pipeline) evaluate(position *model.Position) []*model.Event {
 			p.hook(event)
 		}
 	}
-	return events
 }
 
 func (p *Pipeline) enqueue(report *model.PositionReport) {

@@ -8,24 +8,44 @@ import (
 // Event type values. They match the Java server's Event.TYPE_* strings, so
 // reports and clients written for it keep working.
 const (
-	EventDeviceOnline    = "deviceOnline"
-	EventDeviceOffline   = "deviceOffline"
-	EventDeviceMoving    = "deviceMoving"
-	EventDeviceStopped   = "deviceStopped"
-	EventDeviceOverspeed = "deviceOverspeed"
-	EventGeofenceEnter   = "geofenceEnter"
-	EventGeofenceExit    = "geofenceExit"
-	EventPowerCut        = "powerCut"
-	EventPowerRestored   = "powerRestored"
+	EventCommandResult       = "commandResult"
+	EventDeviceOnline        = "deviceOnline"
+	EventDeviceUnknown       = "deviceUnknown"
+	EventDeviceOffline       = "deviceOffline"
+	EventDeviceInactive      = "deviceInactive"
+	EventQueuedCommandSent   = "queuedCommandSent"
+	EventDeviceMoving        = "deviceMoving"
+	EventDeviceStopped       = "deviceStopped"
+	EventDeviceOverspeed     = "deviceOverspeed"
+	EventDeviceFuelDrop      = "deviceFuelDrop"
+	EventDeviceFuelIncrease  = "deviceFuelIncrease"
+	EventGeofenceEnter       = "geofenceEnter"
+	EventGeofenceExit        = "geofenceExit"
+	EventGeofenceCrossed     = "geofenceCrossed"
+	EventProximityEnter      = "proximityEnter"
+	EventProximityExit       = "proximityExit"
+	EventUnaccompaniedMotion = "unaccompaniedMotion"
+	EventAlarm               = "alarm"
+	EventIgnitionOn          = "ignitionOn"
+	EventIgnitionOff         = "ignitionOff"
+	EventMaintenance         = "maintenance"
+	EventDriverChanged       = "driverChanged"
+	EventMedia               = "media"
+	EventPowerCut            = "powerCut"
+	EventPowerRestored       = "powerRestored"
 )
 
 // EventTypes returns every event type the gateway itself can raise, sorted. It
 // backs /api/notifications/types and the subscription validation.
 func EventTypes() []string {
 	types := []string{
-		EventDeviceOnline, EventDeviceOffline, EventDeviceMoving, EventDeviceStopped,
-		EventDeviceOverspeed, EventGeofenceEnter, EventGeofenceExit,
-		EventPowerCut, EventPowerRestored,
+		EventCommandResult, EventDeviceOnline, EventDeviceUnknown, EventDeviceOffline,
+		EventDeviceInactive, EventQueuedCommandSent, EventDeviceMoving, EventDeviceStopped,
+		EventDeviceOverspeed, EventDeviceFuelDrop, EventDeviceFuelIncrease,
+		EventGeofenceEnter, EventGeofenceExit, EventGeofenceCrossed,
+		EventProximityEnter, EventProximityExit, EventUnaccompaniedMotion,
+		EventAlarm, EventIgnitionOn, EventIgnitionOff, EventMaintenance,
+		EventDriverChanged, EventMedia, EventPowerCut, EventPowerRestored,
 	}
 	sort.Strings(types)
 	return types
@@ -36,9 +56,13 @@ func EventTypes() []string {
 // not listed here is not necessarily wrong.
 func IsEventType(value string) bool {
 	switch value {
-	case EventDeviceOnline, EventDeviceOffline, EventDeviceMoving, EventDeviceStopped,
-		EventDeviceOverspeed, EventGeofenceEnter, EventGeofenceExit,
-		EventPowerCut, EventPowerRestored:
+	case EventCommandResult, EventDeviceOnline, EventDeviceUnknown, EventDeviceOffline,
+		EventDeviceInactive, EventQueuedCommandSent, EventDeviceMoving, EventDeviceStopped,
+		EventDeviceOverspeed, EventDeviceFuelDrop, EventDeviceFuelIncrease,
+		EventGeofenceEnter, EventGeofenceExit, EventGeofenceCrossed,
+		EventProximityEnter, EventProximityExit, EventUnaccompaniedMotion,
+		EventAlarm, EventIgnitionOn, EventIgnitionOff, EventMaintenance,
+		EventDriverChanged, EventMedia, EventPowerCut, EventPowerRestored:
 		return true
 	default:
 		return false

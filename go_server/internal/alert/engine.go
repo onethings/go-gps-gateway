@@ -44,6 +44,10 @@ type Config struct {
 	// geofences contain a position. The Java default (false) picks the
 	// highest, matching event.overspeed.preferLowest.
 	PreferLowest bool
+	// GeofenceSegmentCrossing raises geofenceCrossed when the segment between
+	// two positions cuts a geofence the endpoints are both outside of. It is
+	// the Java event.geofenceSegmentCrossing switch.
+	GeofenceSegmentCrossing bool
 }
 
 // Engine evaluates positions one at a time and remembers the geofence
@@ -61,6 +65,9 @@ type Engine struct {
 	members        map[membership]bool
 	repeats        map[repeatKey]time.Time
 	powered        map[int64]bool
+	// last keeps the previous position per device, which the segment crossing
+	// rule needs and nothing else does.
+	last map[int64]*model.Position
 }
 
 type membership struct {
@@ -91,6 +98,7 @@ func New(config Config, geofences []*geofence.Geofence) *Engine {
 		members: make(map[membership]bool),
 		repeats: make(map[repeatKey]time.Time),
 		powered: make(map[int64]bool),
+		last:    make(map[int64]*model.Position),
 	}
 	engine.SetGeofences(geofences)
 	return engine
@@ -165,6 +173,9 @@ func (e *Engine) Evaluate(position *model.Position) []*model.Event {
 	alerts = append(alerts, e.overspeed(position)...)
 	alerts = append(alerts, e.powerCut(position)...)
 	alerts = append(alerts, e.geofenceTransitions(position)...)
+	if position.IsLocated() {
+		e.remember(position)
+	}
 	return e.applyNotRepeat(alerts)
 }
 
@@ -348,6 +359,7 @@ func (e *Engine) geofenceTransitions(position *model.Position) []*model.Event {
 	}
 
 	var alerts []*model.Event
+	last := e.last[position.DeviceID]
 	for _, fence := range e.geofences {
 		if fence == nil || fence.Area == nil {
 			continue
@@ -363,6 +375,13 @@ func (e *Engine) geofenceTransitions(position *model.Position) []*model.Event {
 			continue
 		}
 		if was == inside {
+			if !inside && e.config.GeofenceSegmentCrossing && last != nil &&
+				fence.CrossesSegment(last, position) {
+				crossed := e.newAlert(model.EventGeofenceCrossed, position)
+				crossed.GeofenceID = fence.ID
+				crossed.Set("geofence", fence.Name)
+				alerts = append(alerts, crossed)
+			}
 			continue
 		}
 		e.members[key] = inside
@@ -377,6 +396,23 @@ func (e *Engine) geofenceTransitions(position *model.Position) []*model.Event {
 		alerts = append(alerts, alert)
 	}
 	return alerts
+}
+
+// remember keeps the current position for the next segment crossing test. The
+// position is copied so a caller that reuses its buffer cannot change history.
+func (e *Engine) remember(position *model.Position) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	copied := *position
+	e.last[position.DeviceID] = &copied
+}
+
+// DeviceAttributes returns the device attribute snapshot the engine holds for
+// one device, which is what the event rules use for their threshold overrides.
+func (e *Engine) DeviceAttributes(deviceID int64) map[string]any {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.devices[deviceID]
 }
 
 // newAlert snapshots the coordinates into the attributes: the alerts table has

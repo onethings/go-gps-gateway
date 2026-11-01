@@ -7,6 +7,7 @@ package handler
 import (
 	"context"
 
+	"traccar-server_go/go_server/internal/eventctx"
 	"traccar-server_go/go_server/internal/model"
 )
 
@@ -140,9 +141,10 @@ func (c *Chain) Handle(position *model.Position) error {
 	return c.HandlePosition(context.Background(), position)
 }
 
-// HandlePosition runs the chain for one position.
+// HandlePosition runs the chain for one position. The context carries the event
+// buffer the stages append to and the terminal drains.
 func (c *Chain) HandlePosition(ctx context.Context, position *model.Position) error {
-	return c.step(ctx, 0, position)
+	return c.step(eventctx.WithBuffer(ctx), 0, position)
 }
 
 // step runs the stage at index and, through the next function it is given, the

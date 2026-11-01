@@ -23,6 +23,7 @@ import (
 	"traccar-server_go/go_server/internal/api"
 	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/config"
+	"traccar-server_go/go_server/internal/eventctx"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/handler"
 	"traccar-server_go/go_server/internal/metrics"
@@ -100,6 +101,7 @@ func main() {
 		dispatcher *notify.Dispatcher
 		motion     *session.Motion
 		sessions   *session.Manager
+		state      *eventState
 	)
 
 	if settings.DatabaseURL != "" {
@@ -123,10 +125,11 @@ func main() {
 		directory = store
 
 		engine := alert.New(alert.Config{
-			OverspeedKnots: settings.OverspeedKnots,
-			PowerCutVolts:  settings.PowerCutVolts,
-			NotRepeat:      settings.AlertRepeat,
-			PreferLowest:   settings.OverspeedLowest,
+			OverspeedKnots:          settings.OverspeedKnots,
+			PowerCutVolts:           settings.PowerCutVolts,
+			NotRepeat:               settings.AlertRepeat,
+			PreferLowest:            settings.OverspeedLowest,
+			GeofenceSegmentCrossing: settings.GeofenceSegmentCrossing,
 		}, nil)
 
 		var hook func(*model.Event)
@@ -152,11 +155,27 @@ func main() {
 			}
 		}
 
+		// The event rules and the proximity check need the links and
+		// maintenance intervals, refreshed in the background like the alert
+		// thresholds.
+		state = newEventState()
+		if err := state.reload(ctx, store); err != nil {
+			log.Printf("events: load state: %v", err)
+		}
+		if settings.DeviceRefresh > 0 {
+			go runEventStateRefresh(ctx, state, store, settings.DeviceRefresh)
+		}
+
+		positionHook := func(position *model.Position) {
+			state.setPosition(position)
+			socketHub.PublishPosition(position)
+		}
+
 		pipeline = alert.NewPipeline(engine, nil, store,
 			alert.WithLogger(log.Printf),
 			alert.WithMetrics(meters),
 			alert.WithAlertHook(alertHook),
-			alert.WithPositionHook(socketHub.PublishPosition))
+			alert.WithPositionHook(positionHook))
 
 		// The motion state machine records deviceMoving / deviceStopped, so it
 		// needs somewhere to write them.
@@ -165,12 +184,67 @@ func main() {
 			Logger: log.Printf,
 		})
 
-		// The chain is the ProcessingHandler: the alert pipeline is one stage of
-		// it and the batch sink closes it.
+		eventConfig := handler.EventConfig{
+			IgnoreDuplicateAlarms:  settings.IgnoreDuplicateAlerts,
+			FuelIncreaseThreshold:  settings.FuelIncreaseThreshold,
+			FuelDropThreshold:      settings.FuelDropThreshold,
+			AccelerationThreshold:  settings.BehaviorAcceleration,
+			BrakingThreshold:       settings.BehaviorBraking,
+			ProximityEnterDistance: settings.ProximityEnter,
+			ProximityExitDistance:  settings.ProximityExit,
+			UnaccompaniedDistance:  settings.Unaccompanied,
+		}
+		providers := handler.EventProviders{
+			Attributes:    engine.DeviceAttributes,
+			Maintenances:  state.Maintenances,
+			LinkedDevices: state.LinkedDevices,
+			LastPosition:  state.LastPosition,
+		}
+
+		// The chain is the ProcessingHandler: the alert pipeline is the business
+		// stage, the M4-1 rules sit on their own stages and the terminal writes
+		// the position once, together with every event raised for it.
 		sink, err = handler.New(handler.Config{
 			Alerts: pipeline,
-			Store:  batcher,
-			Stages: map[string]handler.PositionHandler{handler.StageMotion: motion},
+			Terminal: func(ctx context.Context, position *model.Position) error {
+				events := eventctx.Events(ctx)
+				if len(events) == 0 {
+					return batcher.Handle(position)
+				}
+				pipeline.EnqueueReport(position, events)
+				return nil
+			},
+			Stages: map[string]handler.PositionHandler{
+				handler.StageMotion: motion,
+				handler.StageAlertEvent: handler.RuleStage{
+					Stage: handler.StageAlertEvent,
+					Rules: []handler.EventRule{
+						&handler.AlarmRule{IgnoreDuplicates: eventConfig.IgnoreDuplicateAlarms},
+						&handler.IgnitionRule{},
+						&handler.BehaviorRule{Config: eventConfig, Providers: providers},
+					},
+				},
+				handler.StageFuel: handler.RuleStage{
+					Stage: handler.StageFuel,
+					Rules: []handler.EventRule{
+						&handler.FuelRule{Config: eventConfig, Providers: providers},
+					},
+				},
+				handler.StageDriver: handler.RuleStage{
+					Stage: handler.StageDriver,
+					Rules: []handler.EventRule{&handler.DriverRule{}},
+				},
+				handler.StageMaintenance: handler.RuleStage{
+					Stage: handler.StageMaintenance,
+					Rules: []handler.EventRule{
+						&handler.MaintenanceRule{Maintenances: state.Maintenances},
+					},
+				},
+				handler.StageMedia: handler.RuleStage{
+					Stage: handler.StageMedia,
+					Rules: []handler.EventRule{&handler.MediaRule{}, &handler.CommandResultRule{}},
+				},
+			},
 		})
 		if err != nil {
 			log.Fatalf("handler: %v", err)

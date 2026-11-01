@@ -14,6 +14,13 @@ type Processor interface {
 	Handle(position *model.Position) error
 }
 
+// ContextProcessor is a Processor that can also see the processing context,
+// which is where the event buffer lives. The alert pipeline implements it; a
+// processor that does not is called through Handle and keeps its old behavior.
+type ContextProcessor interface {
+	HandleContext(ctx context.Context, position *model.Position) error
+}
+
 // BusinessHandler is the stage that runs a Processor. The gateway's own rules
 // are the alert pipeline today; in the Java server the same work is spread over
 // OverspeedHandler, GeofenceHandler and AlertEventHandler.
@@ -35,7 +42,11 @@ func (b BusinessHandler) Name() string { return b.Stage }
 func (b BusinessHandler) HandlePosition(ctx context.Context, position *model.Position, next Next) error {
 	var processorErr error
 	if b.Processor != nil {
-		processorErr = b.Processor.Handle(position)
+		if contextual, ok := b.Processor.(ContextProcessor); ok {
+			processorErr = contextual.HandleContext(ctx, position)
+		} else {
+			processorErr = b.Processor.Handle(position)
+		}
 	}
 	return errors.Join(processorErr, next(ctx, position))
 }

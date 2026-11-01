@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 
 	"traccar-server_go/go_server/internal/geofence"
+	"traccar-server_go/go_server/internal/model"
 )
 
 // Geofences loads every geofence and parses its Traccar WKT area. A row with an
@@ -53,4 +55,73 @@ func (s *Store) Geofences(ctx context.Context) ([]*geofence.Geofence, error) {
 		return geofences, fmt.Errorf("postgres: query geofences: %w", err)
 	}
 	return geofences, errors.Join(failures...)
+}
+
+// geofenceSpec exposes the geofences table to the CRUD helpers. The area stays
+// WKT text in the column and is parsed on the way in and out, so a row that the
+// engine could not read is a row the API cannot write either.
+var geofenceSpec = resourceSpec[geofence.Geofence]{
+	table:   "geofences",
+	columns: []string{"calendar_id", "name", "description", "area", "attributes"},
+	keyword: []string{"name", "description"},
+	values: func(fence *geofence.Geofence) ([]any, error) {
+		attributes, err := encodeAttributes(fence.Attributes)
+		if err != nil {
+			return nil, err
+		}
+		area := fence.WKT()
+		if area == "" {
+			return nil, fmt.Errorf("postgres: geofence %d has no area", fence.ID)
+		}
+		return []any{nullableID(fence.CalendarID), fence.Name, fence.Description, area, attributes}, nil
+	},
+	scan: func(row rowScanner) (*geofence.Geofence, error) {
+		var (
+			fence      geofence.Geofence
+			calendarID sql.NullInt64
+			area       string
+			attributes []byte
+		)
+		if err := row.Scan(&fence.ID, &calendarID, &fence.Name, &fence.Description,
+			&area, &attributes); err != nil {
+			return nil, notFoundAs(fmt.Errorf("postgres: scan geofence: %w", err))
+		}
+		fence.CalendarID = calendarID.Int64
+		parsed, err := geofence.Parse(area)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: geofence %d: %w", fence.ID, err)
+		}
+		fence.Area = parsed
+		decoded, err := decodeAttributes(attributes)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: geofence %d: %w", fence.ID, err)
+		}
+		fence.Attributes = decoded
+		return &fence, nil
+	},
+	id:    func(fence *geofence.Geofence) int64 { return fence.ID },
+	setID: func(fence *geofence.Geofence, id int64) { fence.ID = id },
+}
+
+// CreateGeofence inserts a geofence and fills its ID.
+func (s *Store) CreateGeofence(ctx context.Context, fence *geofence.Geofence) error {
+	return createResource(ctx, s.db, geofenceSpec, fence)
+}
+
+// UpdateGeofence replaces the mutable columns of a geofence.
+func (s *Store) UpdateGeofence(ctx context.Context, fence *geofence.Geofence) error {
+	return updateResource(ctx, s.db, geofenceSpec, fence)
+}
+
+// DeleteGeofence removes a geofence. Events that referred to it keep their
+// rows, because the geofence id there is a plain number and not a reference.
+func (s *Store) DeleteGeofence(ctx context.Context, geofenceID int64) error {
+	return deleteResource(ctx, s.db, geofenceSpec.table, geofenceID)
+}
+
+// QueryGeofences returns the geofences matching the filter. Unlike Geofences it
+// reports an unreadable area instead of skipping the row, which is what a CRUD
+// caller wants to see.
+func (s *Store) QueryGeofences(ctx context.Context, filter model.ResourceFilter) ([]*geofence.Geofence, error) {
+	return listResources(ctx, s.db, geofenceSpec, filter)
 }

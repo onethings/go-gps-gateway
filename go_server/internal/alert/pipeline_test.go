@@ -11,13 +11,13 @@ import (
 
 type recordingWriter struct {
 	mu      sync.Mutex
-	batches [][]*model.Report
+	batches [][]*model.PositionReport
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
-func (w *recordingWriter) InsertReports(_ context.Context, reports []*model.Report) error {
+func (w *recordingWriter) InsertReports(_ context.Context, reports []*model.PositionReport) error {
 	w.once.Do(func() {
 		if w.started != nil {
 			close(w.started)
@@ -29,12 +29,12 @@ func (w *recordingWriter) InsertReports(_ context.Context, reports []*model.Repo
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.batches = append(w.batches, append([]*model.Report(nil), reports...))
+	w.batches = append(w.batches, append([]*model.PositionReport(nil), reports...))
 	return nil
 }
 
 // snapshot returns the batches and how many events they carried in total.
-func (w *recordingWriter) snapshot() ([][]*model.Report, int) {
+func (w *recordingWriter) snapshot() ([][]*model.PositionReport, int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

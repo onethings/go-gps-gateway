@@ -222,12 +222,20 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 
 `internal/storage/postgres/migrations/*.sql` 由 `Store.Migrate` 依版本套用：
 
-- `devices(id, unique_id, name, model, protocol, attributes, status, last_update, created_at)`
-  （`status` 由 `0010_events.sql` 補上：online / offline / unknown）
+- `devices(id, unique_id, name, model, protocol, group_id, attributes, status, last_update, created_at)`
+  （`status` 由 `0010_events.sql` 補上：online / offline / unknown；`group_id` 由 `0012_resources.sql` 補上，
+  指向 `groups`）
 - `positions(id, device_id, protocol, device_time, server_time, valid, latitude, longitude, altitude, speed, course, accuracy, attributes)`
 - `events(id, device_id, position_id, geofence_id, type, event_time, attributes)`（`0010_events.sql`；
   `0011_events_replace_alerts.sql` 把舊的 `alerts` 資料搬進來後把該表刪掉）
-- `geofences(id, name, area, attributes, created_at)`（`0002_alerts.sql`）
+- `geofences(id, calendar_id, name, description, area, attributes, created_at)`（`0002_alerts.sql`；
+  `calendar_id` / `description` 由 `0012_resources.sql` 補上）
+- `groups(id, name, group_id, attributes)`、`calendars(id, name, data, attributes)`、
+  `drivers(id, name, unique_id, attributes)`、`maintenances(id, name, type, start, period, attributes)`、
+  `orders(id, unique_id, description, from_address, to_address, attributes)`、
+  `reports(id, calendar_id, type, description, attributes)`、
+  `statistics(id, capture_time, active_users, ..., protocols, attributes)`、
+  `attributes(id, description, attribute, expression, type, priority)`（皆為 `0012_resources.sql`）
 - `users(id, email, name, admin, disabled, created_at, password_hash)`（`0003_users.sql`；`disabled` 由
   `0004_users_disabled.sql` 補上，`password_hash` 由 `0006_users_password.sql` 補上，預設 NULL =
   只能用 token 登入）
@@ -1054,7 +1062,11 @@ scrape_configs:
 - 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知只有 webhook 與 email 兩種。使用者訂閱只決定
   類型與管道：email 收件者是帳號 email，webhook 仍共用 `-notify-webhook` 的 URL。門檻可用
   裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
-- 圍欄只能以 SQL 維護，且對所有裝置生效（`events.position_id` 已會填，見上節）。
+- 圍欄只能以 SQL 維護，且對所有裝置生效（`events.position_id` 已會填，見上節）。M2-1 已把
+  `groups` / `geofences` / `calendars` / `drivers` / `maintenances` / `orders` / `reports` /
+  `statistics` / `attributes` 的 CRUD 做進儲存層，但 REST 端點要等 M2-3。
+- Calendar 只存 iCalendar 原文，VEVENT / RRULE 的重複規則還沒評估，所以排程與「行事曆內才通知」
+  目前不會生效。`devices.group_id` 只讀不寫，寫入隨 M2-2 的權限指派一起做。
 - `devices.model` 會被讀取，而且決定解碼路徑。GT06 的 `LW*` / `SEEWORLD` / `VL103` `LL303` `VL512` `G18`
   換掉告警碼的意義，`NT_MODELS`（`NT11` `NT20` `NT26` `NT40` `NT46` `VL100` `XT40`）換掉 `0x22` /
   `0x25` 整段欄位佈局；JT808 的 `G-360P` `G-508P` `AL300` `GL100` `VL300` 各走自己的報警字串分支，
@@ -1163,8 +1175,27 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
 
 ### M2 資料模型與權限（L）
 
-- [ ] **M2-1 補模型**：Group / Geofence（完整欄位）/ Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute；`ExtendedModel` 的 attributes 存取子（`getString` / `getDouble` / `getBoolean` / `getInteger`）照母本語義，含型別錯誤時回預設值。
+- [x] **M2-1 補模型**：Group / Geofence（完整欄位）/ Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute；`ExtendedModel` 的 attributes 存取子（`getString` / `getDouble` / `getBoolean` / `getInteger`）照母本語義，含型別錯誤時回預設值。
   - 驗收：每個型別都有 table 與 CRUD 測試；attributes 的型別轉換測試對齊 `ExtendedModelTest`。
+  - 落地：`internal/model/attributes.go` 的 `Attributes` 有 `Has` / `Set` / `GetString` / `GetDouble` / `GetInteger` / `GetLong` / `GetBoolean` / `Remove`。
+    `Set` 跟母本一樣丟掉 nil 與空字串；唯一刻意偏差是**解析失敗回預設值**（母本 `parseAsDouble` 會拋
+    `NumberFormatException`），因為一個壞掉的裝置屬性不該讓整幀或整列失敗。`Device` / `Position` /
+    `Event` / `Command` / `geofence.Geofence` 的 attributes 全部換成這個型別，`geofence` 原本的
+    `numberAttribute` 刪掉，`floor` / `ceiling` 改用 `GetDouble`。
+    模型：`Group`（`GroupID` 指父群組）、`Calendar`（只存 iCalendar 原文）、`Driver`（uniqueId 去空白）、
+    `Maintenance`、`Order`、`Report`（`tc_reports` 的排程定義）、`Statistics`（`protocols` 存 JSONB）、
+    `Attribute`（computed attribute）。原本「位置＋事件」的聚合改名 `PositionReport`，把 `Report` 讓給母本
+    的 `tc_reports`。`Geofence` 補 `CalendarID` / `Description`，以及把 WKT 印回去的 `WKT()`。
+    `0012_resources.sql` 建 calendars / groups / drivers / maintenances / orders / reports / statistics /
+    attributes 八張表，並替 `geofences` 補 `calendar_id`、`description`，替 `devices` 補 `group_id`。
+    儲存層用 `resourceSpec` 把「欄位順序、關鍵字欄、掃描」跟模型放在一起，CRUD 共用一套
+    create / update / delete / list，找不到一律 `model.ErrResourceNotFound`。
+  - 測試：`TestAttributes*`（10 個，型別轉換與 Set/Remove 語義）、`TestResourceQuery*`（分頁夾取、id 集合、
+    關鍵字）、`TestResourcesMigration`；`resources_integration_test.go` 對九種資源各跑一次
+    create → list → update → delete（`TRACCAR_POSTGRES_DSN` 有設才跑）。這台機器跑不了 PostgreSQL
+    （sandbox 擋 `shmget`），所以整合測試在此未執行。
+  - 已知限制：Calendar 的 recurrence（VEVENT / RRULE）還沒實作，目前只有 CRUD；`devices.group_id`
+    只讀不寫，寫入留給 M2-2 的權限指派。
 - [ ] **M2-2 權限**：`tc_user_*` / `tc_device_*` 的通用多對多表、`Permission`、`PermissionsService`（`MAX_GROUP_DEPTH = 3`）、`/api/permissions`、`/api/share/{device,group}`。
   - 驗收：group 三層展開的查詢測試；越權一律 403；現有 `permissions_test.go` 擴充到 group 與共享屬性。
 - [ ] **M2-3 資源 CRUD**：`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenances`、`/api/orders`、`/api/reports`、`/api/attributes/computed`。

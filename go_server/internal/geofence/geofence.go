@@ -29,10 +29,22 @@ type Area interface {
 // Geofence is a named area plus the altitude limits Traccar keeps in the
 // attributes map (floor / ceiling, both in metres).
 type Geofence struct {
-	ID         int64
-	Name       string
-	Area       Area
-	Attributes map[string]any
+	ID          int64
+	CalendarID  int64
+	Name        string
+	Description string
+	Area        Area
+	Attributes  model.Attributes
+}
+
+// WKT renders the stored area, which is what the geofences.area column keeps.
+// An empty string means the row cannot be stored; callers parse the text back
+// with Parse before they build the struct.
+func (g *Geofence) WKT() string {
+	if g == nil || g.Area == nil {
+		return ""
+	}
+	return g.Area.WKT()
 }
 
 // Contains reports whether the position is inside the area and within the
@@ -41,10 +53,10 @@ func (g *Geofence) Contains(position *model.Position) bool {
 	if g == nil || g.Area == nil || position == nil {
 		return false
 	}
-	if floor := numberAttribute(g.Attributes, "floor"); floor != 0 && position.Altitude < floor {
+	if floor := g.Attributes.GetDouble("floor", 0); floor != 0 && position.Altitude < floor {
 		return false
 	}
-	if ceiling := numberAttribute(g.Attributes, "ceiling"); ceiling != 0 && position.Altitude > ceiling {
+	if ceiling := g.Attributes.GetDouble("ceiling", 0); ceiling != 0 && position.Altitude > ceiling {
 		return false
 	}
 	return g.Area.Contains(position.Latitude, position.Longitude)
@@ -334,27 +346,4 @@ func parseCoordinate(text string) (Coordinate, error) {
 
 func formatCoordinate(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
-}
-
-// numberAttribute reads a numeric attribute that JSON decoding may have left
-// as float64, int or a string.
-func numberAttribute(attributes map[string]any, key string) float64 {
-	switch value := attributes[key].(type) {
-	case float64:
-		return value
-	case float32:
-		return float64(value)
-	case int:
-		return float64(value)
-	case int64:
-		return float64(value)
-	case string:
-		parsed, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return 0
-		}
-		return parsed
-	default:
-		return 0
-	}
 }

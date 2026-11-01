@@ -17,12 +17,15 @@ var (
 // Device is one row of the devices table: the registration record the gateway
 // creates on the first handshake of a device.
 type Device struct {
-	ID         int64
-	UniqueID   string
-	Name       string
-	Model      string
-	Protocol   string
-	Attributes map[string]any
+	ID       int64
+	UniqueID string
+	Name     string
+	Model    string
+	Protocol string
+	// GroupID is the groups row the device belongs to, zero for a device
+	// outside the tree. Device permissions are granted on groups.
+	GroupID    int64
+	Attributes Attributes
 	// Status is the connection state the session manager last recorded:
 	// online while the device holds a connection, offline after it went away.
 	Status string

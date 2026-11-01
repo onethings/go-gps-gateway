@@ -42,7 +42,7 @@ type Event struct {
 	GeofenceID int64
 	Type       string
 	Time       time.Time
-	Attributes map[string]any
+	Attributes Attributes
 }
 
 // Set stores an attribute, ignoring nil values.
@@ -51,9 +51,9 @@ func (e *Event) Set(key string, value any) {
 		return
 	}
 	if e.Attributes == nil {
-		e.Attributes = make(map[string]any)
+		e.Attributes = Attributes{}
 	}
-	e.Attributes[key] = value
+	e.Attributes.Set(key, value)
 }
 
 // NewEvent creates an event of the given type for a device.

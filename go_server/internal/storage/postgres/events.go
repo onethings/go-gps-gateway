@@ -146,7 +146,7 @@ func eventArgs(event *model.Event) ([]any, error) {
 // transaction, so each event carries the id of its position. This is what the
 // alerts table could not do: its position_id stayed NULL because the alert was
 // written before the position it belonged to.
-func (s *Store) InsertReports(ctx context.Context, reports []*model.Report) error {
+func (s *Store) InsertReports(ctx context.Context, reports []*model.PositionReport) error {
 	positions := make([]*model.Position, 0, len(reports))
 	eventsByPosition := make(map[*model.Position][]*model.Event, len(reports))
 	totalEvents := 0

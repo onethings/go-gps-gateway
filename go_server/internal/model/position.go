@@ -167,20 +167,20 @@ type Position struct {
 	// information such as cell towers or battery level.
 	Outdated bool
 	// Attributes holds every extra value reported by the device.
-	Attributes map[string]any
+	Attributes Attributes
 }
 
 // NewPosition creates an empty position tagged with the protocol name.
 func NewPosition(protocol string) *Position {
-	return &Position{Protocol: protocol, Attributes: make(map[string]any)}
+	return &Position{Protocol: protocol, Attributes: Attributes{}}
 }
 
 // Set stores an attribute, ignoring nil values like the Java implementation.
 func (p *Position) Set(key string, value any) {
-	if value == nil {
-		return
+	if p.Attributes == nil {
+		p.Attributes = Attributes{}
 	}
-	p.Attributes[key] = value
+	p.Attributes.Set(key, value)
 }
 
 // SetIndexed stores a prefixed attribute, e.g. SetIndexed("temp", 1, 21.5)

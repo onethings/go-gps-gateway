@@ -115,7 +115,7 @@ func TestInsertReportsIntegration(t *testing.T) {
 	}
 	event := model.NewEvent(model.EventDeviceOverspeed, device.ID, at)
 
-	if err := store.InsertReports(ctx, []*model.Report{{Position: position, Events: []*model.Event{event}}}); err != nil {
+	if err := store.InsertReports(ctx, []*model.PositionReport{{Position: position, Events: []*model.Event{event}}}); err != nil {
 		t.Fatalf("insert report: %v", err)
 	}
 

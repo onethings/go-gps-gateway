@@ -16,7 +16,7 @@ const (
 	maxDeviceLimit     = 1000
 
 	// deviceColumns keeps the SELECT list and the scan order in sync.
-	deviceColumns = `id, unique_id, name, model, protocol, attributes,
+	deviceColumns = `id, unique_id, name, model, protocol, group_id, attributes,
 		status, last_update, created_at`
 )
 
@@ -90,18 +90,20 @@ func scanDevice(row interface{ Scan(dest ...any) error }) (*model.Device, error)
 		device      model.Device
 		deviceModel sql.NullString
 		protocol    sql.NullString
+		groupID     sql.NullInt64
 		lastUpdate  sql.NullTime
 		attributes  []byte
 	)
 	if err := row.Scan(
 		&device.ID, &device.UniqueID, &device.Name, &deviceModel, &protocol,
-		&attributes, &device.Status, &lastUpdate, &device.CreatedAt,
+		&groupID, &attributes, &device.Status, &lastUpdate, &device.CreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("postgres: scan device: %w", err)
 	}
 
 	device.Model = deviceModel.String
 	device.Protocol = protocol.String
+	device.GroupID = groupID.Int64
 	if lastUpdate.Valid {
 		device.LastUpdate = lastUpdate.Time
 	}

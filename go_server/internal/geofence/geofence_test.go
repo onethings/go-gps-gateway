@@ -1,7 +1,6 @@
 package geofence
 
 import (
-	"math"
 	"testing"
 
 	"traccar-server_go/go_server/internal/model"
@@ -160,24 +159,5 @@ func TestGeofenceAltitudeLimits(t *testing.T) {
 	// Without attributes the altitude is ignored.
 	if !(&Geofence{Area: area}).Contains(position) {
 		t.Error("a geofence without limits should ignore the altitude")
-	}
-}
-
-func TestNumberAttribute(t *testing.T) {
-	attributes := map[string]any{
-		"float":  float64(1.5),
-		"int":    2,
-		"int64":  int64(3),
-		"string": "4.5",
-		"bad":    "nope",
-		"bool":   true,
-	}
-	tests := map[string]float64{
-		"float": 1.5, "int": 2, "int64": 3, "string": 4.5, "bad": 0, "bool": 0, "missing": 0,
-	}
-	for key, want := range tests {
-		if got := numberAttribute(attributes, key); math.Abs(got-want) > 1e-9 {
-			t.Errorf("numberAttribute(%q) = %v, want %v", key, got, want)
-		}
 	}
 }

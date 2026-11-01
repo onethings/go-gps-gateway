@@ -90,7 +90,7 @@ type Command struct {
 	// DeviceID, Type and Attributes are the request as the caller wrote it.
 	DeviceID   int64
 	Type       string
-	Attributes map[string]any
+	Attributes Attributes
 	// Status is one of the CommandStatus* values. An encoder ignores it.
 	Status string
 	// ResultCode is the result the device reported with its acknowledgement.
@@ -124,15 +124,15 @@ type CommandFilter struct {
 
 // NewCommand creates a command with an initialised attribute map.
 func NewCommand(deviceID int64, commandType string) *Command {
-	return &Command{DeviceID: deviceID, Type: commandType, Attributes: map[string]any{}}
+	return &Command{DeviceID: deviceID, Type: commandType, Attributes: Attributes{}}
 }
 
 // SetAttribute stores a command parameter.
 func (c *Command) SetAttribute(key string, value any) {
 	if c.Attributes == nil {
-		c.Attributes = map[string]any{}
+		c.Attributes = Attributes{}
 	}
-	c.Attributes[key] = value
+	c.Attributes.Set(key, value)
 }
 
 // GetAttribute returns a command parameter.

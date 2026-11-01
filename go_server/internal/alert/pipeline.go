@@ -19,12 +19,12 @@ const (
 // the events the rules raised for it, which is what lets the writer store the
 // two in one transaction and put the position id on every event.
 type Writer interface {
-	InsertReports(ctx context.Context, reports []*model.Report) error
+	InsertReports(ctx context.Context, reports []*model.PositionReport) error
 }
 
-type writerFunc func(ctx context.Context, reports []*model.Report) error
+type writerFunc func(ctx context.Context, reports []*model.PositionReport) error
 
-func (f writerFunc) InsertReports(ctx context.Context, reports []*model.Report) error {
+func (f writerFunc) InsertReports(ctx context.Context, reports []*model.PositionReport) error {
 	return f(ctx, reports)
 }
 
@@ -50,7 +50,7 @@ type Pipeline struct {
 	meters   *metrics.Set
 	hook     func(*model.Event)
 
-	queue chan *model.Report
+	queue chan *model.PositionReport
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -135,9 +135,9 @@ func NewPipeline(engine *Engine, next Sink, writer Writer, options ...Option) *P
 		pipeline.size = defaultBatchSize
 	}
 	if pipeline.writer == nil {
-		pipeline.writer = writerFunc(func(context.Context, []*model.Report) error { return nil })
+		pipeline.writer = writerFunc(func(context.Context, []*model.PositionReport) error { return nil })
 	}
-	pipeline.queue = make(chan *model.Report, pipeline.size*4)
+	pipeline.queue = make(chan *model.PositionReport, pipeline.size*4)
 
 	pipeline.wg.Add(1)
 	go pipeline.run()
@@ -148,7 +148,7 @@ func NewPipeline(engine *Engine, next Sink, writer Writer, options ...Option) *P
 // report or forward the position untouched.
 func (p *Pipeline) Handle(position *model.Position) error {
 	if events := p.evaluate(position); len(events) > 0 {
-		p.enqueue(&model.Report{Position: position, Events: events})
+		p.enqueue(&model.PositionReport{Position: position, Events: events})
 		return nil
 	}
 	if p.next == nil {
@@ -177,7 +177,7 @@ func (p *Pipeline) evaluate(position *model.Position) []*model.Event {
 	return events
 }
 
-func (p *Pipeline) enqueue(report *model.Report) {
+func (p *Pipeline) enqueue(report *model.PositionReport) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -237,7 +237,7 @@ func (p *Pipeline) Close(ctx context.Context) error {
 func (p *Pipeline) run() {
 	defer p.wg.Done()
 
-	batch := make([]*model.Report, 0, p.size)
+	batch := make([]*model.PositionReport, 0, p.size)
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 

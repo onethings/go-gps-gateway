@@ -45,4 +45,7 @@ type NotificationSubscription struct {
 	UserID       int64
 	Email        string
 	Notificators []string
+	// Attributes is the users.attributes row, which is where a per-user channel
+	// target lives (telegramChatId, pushoverUserKey, phone, notificationTokens).
+	Attributes Attributes
 }

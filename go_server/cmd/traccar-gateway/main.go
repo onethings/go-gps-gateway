@@ -78,6 +78,7 @@ func main() {
 		EmailUsername:        settings.EmailUsername,
 		EmailPassword:        settings.EmailPassword,
 		EmailTLS:             settings.EmailTLS,
+		Config:               settings.Config,
 	})
 	if err != nil {
 		log.Fatalf("notify: %v", err)
@@ -401,6 +402,7 @@ func main() {
 				api.WithStatistics(store),
 				api.WithAudit(store),
 				api.WithNotificators(notifyChannelList(channels)),
+				api.WithNotifierSender(notifierService{channels: channels}),
 				api.WithVersion(version),
 				api.WithWebPath(settings.WebPath),
 				api.WithReboot(stop),
@@ -612,6 +614,8 @@ type notifyChannelConfig struct {
 	EmailUsername        string
 	EmailPassword        string
 	EmailTLS             string
+	// Config supplies the provider settings that have no flags.
+	Config *config.Config
 }
 
 // notifyChannels builds the channels the flags enable. A channel with no flag
@@ -655,10 +659,154 @@ func notifyChannels(config notifyChannelConfig) ([]notify.Channel, *notify.Mail,
 			Notifier:  mailer,
 			Defaults:  notify.SplitList(config.EmailTo),
 			Attribute: notify.AttrNotifyEmail,
+			UserTarget: func(subscription model.NotificationSubscription) []string {
+				if subscription.Email == "" {
+					return nil
+				}
+				return []string{subscription.Email}
+			},
 		})
 	}
 
+	extra, err := extraNotifyChannels(config.Config)
+	if err != nil {
+		return nil, nil, err
+	}
+	channels = append(channels, extra...)
+
 	return channels, mailer, nil
+}
+
+// extraNotifyChannels builds the providers that have no command line flags. An
+// unset provider is skipped; a provider with a partial configuration is an
+// error, so a missing token cannot silently disable alerts.
+func extraNotifyChannels(cfg *config.Config) ([]notify.Channel, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	value := func(key string) string { return strings.TrimSpace(cfg.String(key)) }
+	var channels []notify.Channel
+
+	if token := value(config.NotifyTelegramToken); token != "" {
+		built, err := notify.NewTelegram(notify.TelegramConfig{
+			Token:   token,
+			BaseURL: value(config.NotifyTelegramBaseURL),
+		})
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, notify.Channel{
+			Notifier: built,
+			Defaults: notify.SplitList(value(config.NotifyTelegramChatID)),
+			// A chat id has no per-device override in the Java server; the
+			// account attribute is the per-user target.
+			Attribute:  "notifyTelegram",
+			UserTarget: userAttributeTargets("telegramChatId"),
+		})
+	}
+
+	if token := value(config.NotifyPushoverToken); token != "" {
+		built, err := notify.NewPushover(notify.PushoverConfig{
+			Token: token,
+			User:  value(config.NotifyPushoverUser),
+			URL:   value(config.NotifyPushoverURL),
+		})
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, notify.Channel{
+			Notifier:   built,
+			Defaults:   notify.SplitList(value(config.NotifyPushoverUser)),
+			Attribute:  "notifyPushover",
+			UserTarget: userAttributeTargets("pushoverUserKey"),
+		})
+	}
+
+	if account := value(config.NotifyFirebaseAccount); account != "" {
+		built, err := notify.NewFirebase(notify.FirebaseConfig{
+			ServiceAccount: account,
+			Mode:           value(config.NotifyFirebaseMode),
+			TokenURL:       value(config.NotifyFirebaseTokenURL),
+			BaseURL:        value(config.NotifyFirebaseURL),
+		})
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, notify.Channel{
+			Notifier:   built,
+			Attribute:  "notifyFirebase",
+			UserTarget: userAttributeTargets("notificationTokens"),
+		})
+	}
+
+	if key := value(config.NotifyTraccarKey); key != "" {
+		built, err := notify.NewTraccarPush(notify.TraccarPushConfig{
+			Key: key,
+			URL: value(config.NotifyTraccarURL),
+		})
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, notify.Channel{
+			Notifier:   built,
+			Attribute:  "notifyTraccar",
+			UserTarget: userAttributeTargets("notificationTokens"),
+		})
+	}
+
+	if token := value(config.NotifyWhatsappToken); token != "" {
+		built, err := notify.NewWhatsapp(notify.WhatsappConfig{
+			Token:            token,
+			PhoneNumberID:    value(config.NotifyWhatsappPhoneID),
+			TemplateName:     value(config.NotifyWhatsappTemplate),
+			TemplateLanguage: value(config.NotifyWhatsappLanguage),
+			URL:              value(config.NotifyWhatsappURL),
+		})
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, notify.Channel{
+			Notifier:   built,
+			Attribute:  "notifyWhatsapp",
+			UserTarget: userAttributeTargets("phone"),
+		})
+	}
+
+	if value(config.SMSHTTPURL) != "" || value(config.SMSAWSAccess) != "" {
+		built, err := notify.NewSms(notify.SmsConfig{
+			HTTPURL:             value(config.SMSHTTPURL),
+			HTTPTemplate:        value(config.SMSHTTPTemplate),
+			AuthorizationHeader: value(config.SMSHTTPAuthorizationHdr),
+			Authorization:       value(config.SMSHTTPAuthorization),
+			User:                value(config.SMSHTTPUser),
+			Password:            value(config.SMSHTTPPassword),
+			AWSAccess:           value(config.SMSAWSAccess),
+			AWSSecret:           value(config.SMSAWSSecret),
+			AWSRegion:           value(config.SMSAWSRegion),
+			AWSEndpoint:         value(config.SMSAWSEndpoint),
+		})
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, notify.Channel{
+			Notifier:   built,
+			Attribute:  "notifySms",
+			UserTarget: userAttributeTargets("phone"),
+		})
+	}
+
+	return channels, nil
+}
+
+// userAttributeTargets resolves a per-user channel target from the users
+// attributes row, splitting a list so notificationTokens can hold several.
+func userAttributeTargets(key string) func(model.NotificationSubscription) []string {
+	return func(subscription model.NotificationSubscription) []string {
+		if subscription.Attributes == nil {
+			return nil
+		}
+		return notify.SplitList(subscription.Attributes.GetString(key, ""))
+	}
 }
 
 // notifyTypeFilter validates -notify-types so that a misspelled type fails at

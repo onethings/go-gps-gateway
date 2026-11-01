@@ -27,7 +27,7 @@ func TestParseNotificators(t *testing.T) {
 	if _, err := ParseNotificators(nil); err == nil {
 		t.Error("expected an error for an empty channel list")
 	}
-	if _, err := ParseNotificators([]string{"sms"}); err == nil {
+	if _, err := ParseNotificators([]string{"carrier-pigeon"}); err == nil {
 		t.Error("expected an error for an unknown channel")
 	}
 }

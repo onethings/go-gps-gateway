@@ -26,7 +26,44 @@ const (
 	NotificatorMail = "mail"
 	// NotificatorWebhook delivers to the server-wide webhook URLs.
 	NotificatorWebhook = "webhook"
+	// NotificatorTelegram sends a message through the Telegram bot API.
+	NotificatorTelegram = "telegram"
+	// NotificatorPushover sends a push notification through Pushover.
+	NotificatorPushover = "pushover"
+	// NotificatorSms sends a text message through an HTTP gateway or AWS SNS.
+	NotificatorSms = "sms"
+	// NotificatorFirebase sends a push notification through Firebase Cloud
+	// Messaging.
+	NotificatorFirebase = "firebase"
+	// NotificatorTraccar sends a push notification through the Traccar push
+	// service.
+	NotificatorTraccar = "traccar"
+	// NotificatorWhatsapp sends a template message through the WhatsApp Cloud
+	// API.
+	NotificatorWhatsapp = "whatsapp"
+	// NotificatorCommand forwards the alert as a device command.
+	NotificatorCommand = "command"
 )
+
+// KnownNotificators is every channel name a subscription may store.
+var KnownNotificators = []string{
+	NotificatorMail, NotificatorWebhook, NotificatorTelegram, NotificatorPushover,
+	NotificatorSms, NotificatorFirebase, NotificatorTraccar, NotificatorWhatsapp,
+	NotificatorCommand,
+}
+
+// canonicalNotificator maps the historical spellings onto the channel names the
+// code uses: "email" was accepted for "mail" and "web" for "webhook".
+func canonicalNotificator(value string) string {
+	switch name := strings.ToLower(strings.TrimSpace(value)); name {
+	case "email":
+		return NotificatorMail
+	case "web":
+		return NotificatorWebhook
+	default:
+		return name
+	}
+}
 
 // Device attributes that override a channel for one device. They live in
 // devices.attributes and are refreshed together with the alert thresholds.
@@ -70,13 +107,8 @@ func ParseNotificators(values []string) ([]string, error) {
 	channels := make([]string, 0, len(values))
 	for _, value := range values {
 		for _, part := range SplitList(value) {
-			name := strings.ToLower(part)
-			if name == "email" {
-				name = NotificatorMail
-			}
-			switch name {
-			case NotificatorMail, NotificatorWebhook:
-			default:
+			name := canonicalNotificator(part)
+			if !knownNotificator(name) {
 				return nil, fmt.Errorf("unknown notification channel %q", part)
 			}
 			if _, duplicate := seen[name]; duplicate {
@@ -110,6 +142,16 @@ type Notifier interface {
 	Send(ctx context.Context, message Message, recipients []string) error
 }
 
+// knownNotificator reports whether name is one of KnownNotificators.
+func knownNotificator(name string) bool {
+	for _, known := range KnownNotificators {
+		if known == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Channel binds a notifier to its default recipients and to the device
 // attribute that overrides them.
 type Channel struct {
@@ -121,4 +163,8 @@ type Channel struct {
 	// Attribute is the devices.attributes key that overrides Defaults and any
 	// subscription.
 	Attribute string
+	// UserTarget resolves the per-account recipients of a subscription, such as
+	// telegramChatId or phone. Nil means the channel has no per-user target, so
+	// a subscription only enables Defaults.
+	UserTarget func(subscription model.NotificationSubscription) []string
 }

@@ -24,14 +24,28 @@ func (s *Server) handleNotificators(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	names := s.notificators
+	if s.notifierSender != nil && len(s.notifierSender.Channels()) > 0 {
+		names = s.notifierSender.Channels()
+	}
 	if len(names) == 0 {
 		names = defaultNotificators
 	}
+	// An announcement has no device, so the channels that need one (the
+	// command notificator) and the one that posts to a fixed URL are left out,
+	// which is what the Java resource does.
+	announcement, _ := boolQuery(r.URL.Query(), "announcement")
+	unsupported := map[string]struct{}{"command": {}, "webhook": {}}
+
 	seen := make(map[string]struct{}, len(names))
 	response := make([]notificatorResponse, 0, len(names))
 	for _, name := range names {
 		if name == "" {
 			continue
+		}
+		if announcement {
+			if _, skip := unsupported[name]; skip {
+				continue
+			}
 		}
 		if _, ok := seen[name]; ok {
 			continue

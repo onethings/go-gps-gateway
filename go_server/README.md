@@ -1338,7 +1338,7 @@ scrape_configs:
 | 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + 通用 `permissions` 表（user / group / device → 任何資源），group 最多三層 | 缺 `managedUser`（管理員代管下屬）與分享帳號到期自動清理                                                               |
 | REST     | 25 個 resource、81 個端點                                                                           | 110+ 條路由（資源 CRUD、單筆裝置 / 事件、四種位置匯出、WebSocket、protocol / server / session / statistics / audit、commands 下發） | 報表、媒體與 stream 端點見 M5 / M7-3                                                                                  |
 | 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 25 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名） | 日曆限制與 media 檔案欄位待 M7-3                                                                                       |
-| 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email                                              | 7 個管道、模板語法                                                                                                     |
+| 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email + telegram / pushover / sms（HTTP / SNS）/ firebase / traccar push / whatsapp + Velocity 子集模板 | `command` notificator（告警轉命令）還沒接                                                              |
 | 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | 無                                                           | 全部                                                                                                                   |
 | 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | 無                                                           | 全部                                                                                                                   |
 | 排程     | `schedule/` 8 個 task                                                                               | 無                                                           | 全部                                                                                                                   |
@@ -1583,8 +1583,31 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
   - 偏差：日曆限制（geofence / maintenance 的 calendarId）還沒套用；`Motion` 仍走 M1-3 的
     簡化狀態機，沒有母本 `NewMotionProcessor` 的距離 / 停留門檻。
   - 驗收：每支都有以母本事件語義寫的測試；`commandResult` 事件與 `commands` 表的收尾是同一次寫入。
-- [ ] **M4-2 notificator**：telegram / pushover / sms（HTTP + SNS）/ firebase / traccar（轉命令）/ whatsapp，加上 `TextTemplateFormatter`（Velocity 子集）。
-  - 驗收：`notify.Channel` 介面不變，逐管道測試用 `httptest`；模板缺欄位的行為與母本一致。
+- [x] **M4-2 notificator**：telegram / pushover / sms（HTTP + SNS）/ firebase / traccar（轉命令）/ whatsapp，加上 `TextTemplateFormatter`（Velocity 子集）。
+  - 落地：`notify.Channel` 多一個 `UserTarget`，把「這個帳號在這個通道的收件地址」從
+    `users.attributes` 取出來（`telegramChatId` / `pushoverUserKey` / `phone` /
+    `notificationTokens`），沒有 `UserTarget` 的通道（webhook）維持「訂閱即啟用伺服器預設值」。
+    `DeviceSubscriptions` 現在一起讀 `users.attributes`。
+  - 各管道（`internal/notify/`）：`telegram.go`（bot API、可換 base URL、每個 chat id 一則）、
+    `pushover.go`（token + user，支援 `user@device`）、`sms.go` + `sms_sns.go`（HTTP 模板依
+    `<` / `{` / `[` 決定 content type；AWS SNS 用自製 SigV4，不拉 SDK）、`firebase.go`（HTTP v1，
+    服務帳號 JWT → OAuth2 token → 逐 token 發送，token 快取）、`traccarpush.go`（官方 push
+    服務）、`whatsapp.go`（Cloud API 樣板訊息）。
+  - 模板：`template.go` 的 `TextTemplateFormatter` / `RenderTemplate` 支援 `$name`、`${a.b}`、
+    `$$` 跳脫、`#if($x)…#else…#end`（可嵌套），缺欄位輸出空字串；map 與 struct 都能走
+    （欄位名不分大小寫），所以 `${event.type}` / `${device.name}` / `${position.speed}` 直接可用。
+  - REST：`GET /api/notifications/notificators` 支援 `announcement=true`（濾掉 command / webhook），
+    `POST /api/notifications/test[/{notificator}]` 與 `POST /api/notifications/send/{notificator}`
+    （admin，回 204）由命令注入的 `notifierService` 實作。
+  - 設定：新增 `notificator.telegram.*`、`notificator.pushover.*`、`notificator.firebase.*`、
+    `notificator.traccar.*`、`notificator.whatsapp.*`、`sms.http.*`、`sms.aws.*`；這些走設定檔 /
+    環境變數，不佔命令列 flag。
+  - 測試：`internal/notify/notifiers_test.go`（6 個管道用假的 `http.RoundTripper`，含 SNS 簽章與
+    FCM JWT / token 流程、失敗狀態）、`template_test.go`（變數、if/else、巢狀、缺欄位、`$$`）、
+    `TestParseNotificatorsAcceptsEveryChannel`、`TestSubscriptionTargetsUseUserAttributes`；
+    `internal/api` 的 `TestNotificationTestAndSend`、`TestNotificatorsAnnouncementFilter`。
+  - 偏差：`command` notificator（把告警轉成裝置命令）只接受名稱、沒有對應通道；Firebase 只支援
+    FCM token，沒有 Java 的 22 字元 FID 分支；telegram 只送文字，沒有 `sendLocation`。
 - [ ] **M4-3 比對規則**：`NotificationManager` 的 `notificators`、`always`、`notifyTypes`，以及裝置 / 使用者兩層 override。
   - 驗收：訂閱測試擴充到「同一事件命中多個範本時只送一次」。
 

@@ -388,10 +388,27 @@ func resolveTargets(attributes map[string]any, channel Channel) ([]string, bool,
 }
 
 // subscriptionTargets selects the recipients a channel gets from the accounts
-// subscribed for this device. Mail targets the account email; the webhook has
-// no per-account target, so a subscriber only enables the server-wide URLs.
+// subscribed for this device. A channel with a per-user target takes the target
+// of every subscribed account (the account email, its telegram chat id, its
+// phone); a channel without one, such as the webhook, is enabled by a
+// subscription and keeps its server-wide targets.
 func subscriptionTargets(channel Channel, subscriptions []model.NotificationSubscription) []string {
 	name := channel.Notifier.Name()
+	if channel.UserTarget != nil {
+		var targets []string
+		for _, subscription := range subscriptions {
+			if !hasNotificator(subscription, name) {
+				continue
+			}
+			for _, target := range channel.UserTarget(subscription) {
+				targets = appendRecipient(targets, target)
+			}
+		}
+		return targets
+	}
+	// Mail keeps its built-in target even for a channel built without a
+	// UserTarget, which is how the package worked before the other providers
+	// existed and what the tests of that contract pin.
 	if name == NotificatorMail {
 		var targets []string
 		for _, subscription := range subscriptions {
@@ -415,11 +432,7 @@ func subscriptionTargets(channel Channel, subscriptions []model.NotificationSubs
 // stays an accepted alias for rows written directly with SQL.
 func hasNotificator(subscription model.NotificationSubscription, name string) bool {
 	for _, value := range subscription.Notificators {
-		channel := strings.ToLower(strings.TrimSpace(value))
-		if channel == "email" {
-			channel = NotificatorMail
-		}
-		if channel == name {
+		if canonicalNotificator(value) == name {
 			return true
 		}
 	}

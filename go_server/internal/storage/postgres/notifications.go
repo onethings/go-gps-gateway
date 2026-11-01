@@ -178,7 +178,7 @@ func (s *Store) UnassignNotification(ctx context.Context, userID, notificationID
 // merged per user so the dispatcher only has to name each recipient once.
 func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertType string) ([]model.NotificationSubscription, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT u.id, u.email, to_jsonb(n.notificators)::text
+		`SELECT u.id, u.email, to_jsonb(n.notificators)::text, u.attributes
 		 FROM notifications n
 		 JOIN user_notifications un ON un.notification_id = n.id
 		 JOIN users u ON u.id = un.user_id
@@ -201,14 +201,19 @@ func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertTy
 			userID           int64
 			email            string
 			notificatorsJSON string
+			attributesJSON   []byte
 		)
-		if err := rows.Scan(&userID, &email, &notificatorsJSON); err != nil {
+		if err := rows.Scan(&userID, &email, &notificatorsJSON, &attributesJSON); err != nil {
 			return nil, fmt.Errorf("postgres: scan device %d subscription: %w", deviceID, err)
 		}
 
 		var notificators []string
 		if err := json.Unmarshal([]byte(notificatorsJSON), &notificators); err != nil {
 			return nil, fmt.Errorf("postgres: decode notification channels: %w", err)
+		}
+		attributes, err := decodeAttributes(attributesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: user %d subscription: %w", userID, err)
 		}
 
 		if position, ok := index[userID]; ok {
@@ -221,6 +226,7 @@ func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertTy
 			UserID:       userID,
 			Email:        email,
 			Notificators: appendUniqueStrings(nil, notificators...),
+			Attributes:   attributes,
 		})
 	}
 	if err := rows.Err(); err != nil {

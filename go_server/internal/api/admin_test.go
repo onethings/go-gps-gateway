@@ -552,3 +552,92 @@ func postWithKey(t *testing.T, handler http.Handler, target, body string) *httpt
 	handler.ServeHTTP(recorder, request)
 	return recorder
 }
+
+// fakeNotifier records the test and announcement messages the API asks for.
+type fakeNotifier struct {
+	mu       sync.Mutex
+	channels []string
+	sent     []notifierCall
+	err      error
+}
+
+type notifierCall struct {
+	Channel string
+	UserID  int64
+	Subject string
+	Body    string
+}
+
+func (f *fakeNotifier) Channels() []string { return f.channels }
+
+func (f *fakeNotifier) SendTo(
+	_ context.Context, channel string, user model.User, subject, body string,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.sent = append(f.sent, notifierCall{
+		Channel: channel, UserID: user.ID, Subject: subject, Body: body,
+	})
+	return nil
+}
+
+func TestNotificationTestAndSend(t *testing.T) {
+	users := newFakeUsers(
+		&model.User{ID: 1, Email: "one@example.com"},
+		&model.User{ID: 2, Email: "two@example.com"},
+	)
+	sender := &fakeNotifier{channels: []string{"telegram", "mail"}}
+	handler := NewServer(nil,
+		WithUsers(users),
+		WithNotifierSender(sender),
+		WithAPIKey("secret"),
+	).Handler()
+
+	testRecorder := postWithKey(t, handler, "/api/notifications/test/telegram",
+		`{"subject":"Hi","body":"There"}`)
+	if testRecorder.Code != http.StatusNoContent {
+		t.Fatalf("test = %d, want 204 (body %s)", testRecorder.Code, testRecorder.Body)
+	}
+	if len(sender.sent) != 1 || sender.sent[0].Channel != "telegram" ||
+		sender.sent[0].Subject != "Hi" {
+		t.Fatalf("sent = %+v", sender.sent)
+	}
+
+	allRecorder := postWithKey(t, handler, "/api/notifications/test", `{}`)
+	if allRecorder.Code != http.StatusNoContent {
+		t.Fatalf("test all = %d, want 204 (body %s)", allRecorder.Code, allRecorder.Body)
+	}
+	if len(sender.sent) != 3 {
+		t.Fatalf("sent = %+v", sender.sent)
+	}
+
+	sendRecorder := postWithKey(t, handler,
+		"/api/notifications/send/telegram?userId=1&userId=2", `{"subject":"All","body":"Notice"}`)
+	if sendRecorder.Code != http.StatusNoContent {
+		t.Fatalf("send = %d, want 204 (body %s)", sendRecorder.Code, sendRecorder.Body)
+	}
+	if len(sender.sent) != 5 || sender.sent[3].UserID != 1 || sender.sent[4].UserID != 2 {
+		t.Fatalf("sent = %+v", sender.sent)
+	}
+}
+
+func TestNotificatorsAnnouncementFilter(t *testing.T) {
+	sender := &fakeNotifier{channels: []string{"telegram", "webhook", "command"}}
+	handler := NewServer(nil, WithNotifierSender(sender), WithAPIKey("secret")).Handler()
+
+	recorder := getWith(t, handler, "/api/notifications/notificators?announcement=true",
+		map[string]string{"X-Api-Key": "secret"})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", recorder.Code, recorder.Body)
+	}
+	var list []notificatorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list) != 1 || list[0].Type != "telegram" {
+		t.Fatalf("list = %+v", list)
+	}
+}

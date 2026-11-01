@@ -304,7 +304,7 @@ func TestNotificationValidation(t *testing.T) {
 	for _, body := range []string{
 		`{"type":"none","notificators":["mail"]}`,
 		`{"type":"deviceOverspeed","notificators":[]}`,
-		`{"type":"deviceOverspeed","notificators":["sms"]}`,
+		`{"type":"deviceOverspeed","notificators":["carrier-pigeon"]}`,
 		`{"type":"","notificators":["mail"]}`,
 	} {
 		recorder := apiRequest(t, handler, http.MethodPost, "/api/notifications", body, testAdminKey)

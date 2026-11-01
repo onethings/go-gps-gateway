@@ -137,6 +137,7 @@ type Server struct {
 	geocoder         Geocoder
 	reboot           func()
 	notificators     []string
+	notifierSender   NotificationSender
 	version          string
 	webPath          string
 	textEnabled      bool

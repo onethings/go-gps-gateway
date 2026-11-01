@@ -66,6 +66,37 @@ const (
 	MailSMTPPassword  = "mail.smtp.password"
 	MailSMTPTLS       = "mail.smtp.tls" // Go only: auto, starttls, implicit, none
 	MailTo            = "mail.to"       // Go only: default recipients
+
+	// Additional notification providers. These have no flags: they are set in
+	// the configuration file or the environment and read directly, so adding a
+	// provider does not grow the command line.
+	NotifyTelegramToken     = "notificator.telegram.key"
+	NotifyTelegramChatID    = "notificator.telegram.chatId"
+	NotifyTelegramBaseURL   = "notificator.telegram.baseUrl"
+	NotifyPushoverToken     = "notificator.pushover.token"
+	NotifyPushoverUser      = "notificator.pushover.user"
+	NotifyPushoverURL       = "notificator.pushover.url"
+	NotifyFirebaseAccount   = "notificator.firebase.serviceAccount"
+	NotifyFirebaseMode      = "notificator.firebase.mode"
+	NotifyFirebaseTokenURL  = "notificator.firebase.tokenUrl"
+	NotifyFirebaseURL       = "notificator.firebase.url"
+	NotifyTraccarKey        = "notificator.traccar.key"
+	NotifyTraccarURL        = "notificator.traccar.url"
+	NotifyWhatsappToken     = "notificator.whatsapp.token"
+	NotifyWhatsappPhoneID   = "notificator.whatsapp.phoneNumberId"
+	NotifyWhatsappTemplate  = "notificator.whatsapp.template"
+	NotifyWhatsappLanguage  = "notificator.whatsapp.language"
+	NotifyWhatsappURL       = "notificator.whatsapp.url"
+	SMSHTTPURL              = "sms.http.url"
+	SMSHTTPTemplate         = "sms.http.template"
+	SMSHTTPAuthorizationHdr = "sms.http.authorizationHeader"
+	SMSHTTPAuthorization    = "sms.http.authorization"
+	SMSHTTPUser             = "sms.http.user"
+	SMSHTTPPassword         = "sms.http.password"
+	SMSAWSAccess            = "sms.aws.access"
+	SMSAWSSecret            = "sms.aws.secret"
+	SMSAWSRegion            = "sms.aws.region"
+	SMSAWSEndpoint          = "sms.aws.endpoint" // Go only: an SNS compatible endpoint
 )
 
 // ConfigDefault is the key the Java server uses to chain a second file. The
@@ -129,6 +160,34 @@ var KnownKeys = []string{
 	MailSMTPPassword,
 	MailSMTPTLS,
 	MailTo,
+
+	NotifyTelegramToken,
+	NotifyTelegramChatID,
+	NotifyTelegramBaseURL,
+	NotifyPushoverToken,
+	NotifyPushoverUser,
+	NotifyPushoverURL,
+	NotifyFirebaseAccount,
+	NotifyFirebaseMode,
+	NotifyFirebaseTokenURL,
+	NotifyFirebaseURL,
+	NotifyTraccarKey,
+	NotifyTraccarURL,
+	NotifyWhatsappToken,
+	NotifyWhatsappPhoneID,
+	NotifyWhatsappTemplate,
+	NotifyWhatsappLanguage,
+	NotifyWhatsappURL,
+	SMSHTTPURL,
+	SMSHTTPTemplate,
+	SMSHTTPAuthorizationHdr,
+	SMSHTTPAuthorization,
+	SMSHTTPUser,
+	SMSHTTPPassword,
+	SMSAWSAccess,
+	SMSAWSSecret,
+	SMSAWSRegion,
+	SMSAWSEndpoint,
 }
 
 // Keys a protocol section may set. They are resolved through Protocol, which

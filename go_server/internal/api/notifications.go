@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/notify"
 )
@@ -354,4 +356,184 @@ func (s *Server) handleNotificationSubscription(w http.ResponseWriter, r *http.R
 		model.Attributes{"ownerType": "user", "ownerId": userID})
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// NotificationSender delivers a test message or an announcement through one
+// configured channel. The command implements it over the channels it built; a
+// deployment without it answers 501 on the test and send routes.
+type NotificationSender interface {
+	// SendTo delivers subject and body to one account through channel.
+	SendTo(ctx context.Context, channel string, user model.User, subject, body string) error
+	// Channels lists the channel names the deployment can deliver on.
+	Channels() []string
+}
+
+// WithNotifierSender enables POST /api/notifications/test and
+// /api/notifications/send.
+func WithNotifierSender(sender NotificationSender) Option {
+	return func(s *Server) { s.notifierSender = sender }
+}
+
+type notificationMessageRequest struct {
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
+// handleNotificationTest sends a test message to the caller through one channel,
+// or through every configured channel when the path has no name.
+func (s *Server) handleNotificationTest(w http.ResponseWriter, r *http.Request) {
+	if s.notifierSender == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("notification channels are not configured"))
+		return
+	}
+	if !s.authorize(w, r, auth.ScopeWriteCommands) {
+		return
+	}
+
+	var request notificationMessageRequest
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNotificationBody)).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
+			return
+		}
+	}
+	if request.Subject == "" {
+		request.Subject = "Test message"
+	}
+	if request.Body == "" {
+		request.Body = "This is a test notification from your Traccar server."
+	}
+
+	user, ok := s.callerUser(w, r)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	names := []string{r.PathValue("notificator")}
+	if names[0] == "" {
+		names = s.notifierSender.Channels()
+	}
+	for _, name := range names {
+		if err := s.notifierSender.SendTo(ctx, name, user, request.Subject, request.Body); err != nil {
+			s.logf("api: test notification %s: %v", name, err)
+			writeError(w, http.StatusBadGateway, fmt.Errorf("%s: %w", name, err))
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleNotificationSend delivers an announcement to the selected accounts. The
+// route is admin only because it reaches every account.
+func (s *Server) handleNotificationSend(w http.ResponseWriter, r *http.Request) {
+	if s.notifierSender == nil || s.users == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("notification channels are not configured"))
+		return
+	}
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	channel := r.PathValue("notificator")
+	if channel == "" {
+		writeError(w, http.StatusBadRequest, errors.New("a notificator is required"))
+		return
+	}
+
+	var request notificationMessageRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNotificationBody)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
+		return
+	}
+	if request.Subject == "" && request.Body == "" {
+		writeError(w, http.StatusBadRequest, errors.New("subject or body is required"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	userIDs, err := queryIDs(r.URL.Query()["userId"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	users, err := s.recipientUsers(ctx, userIDs)
+	if err != nil {
+		s.logf("api: list announcement recipients: %v", err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+
+	for _, user := range users {
+		if user.Temporary {
+			continue
+		}
+		if err := s.notifierSender.SendTo(ctx, channel, user, request.Subject, request.Body); err != nil {
+			s.logf("api: announcement to user %d: %v", user.ID, err)
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+	}
+	s.auditWithAttributes(r, model.ActionCommand, "notification", 0,
+		model.Attributes{"type": channel})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// callerUser loads the account behind the credential. The shared API key has no
+// account, so it comes back as a zero user and the channel falls back to its
+// server-wide targets.
+func (s *Server) callerUser(w http.ResponseWriter, r *http.Request) (model.User, bool) {
+	principal := auth.FromContext(r.Context())
+	if principal == nil || principal.UserID == 0 || s.users == nil {
+		return model.User{}, true
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+	user, err := s.users.User(ctx, principal.UserID)
+	if errors.Is(err, model.ErrUserNotFound) {
+		writeError(w, http.StatusNotFound, errors.New("unknown account"))
+		return model.User{}, false
+	}
+	if err != nil {
+		s.logf("api: load user %d: %v", principal.UserID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return model.User{}, false
+	}
+	return *user, true
+}
+
+// recipientUsers resolves the announcement recipients: the requested ids, or
+// every account when the request names none.
+func (s *Server) recipientUsers(ctx context.Context, userIDs []int64) ([]model.User, error) {
+	if len(userIDs) > 0 {
+		users := make([]model.User, 0, len(userIDs))
+		for _, userID := range userIDs {
+			user, err := s.users.User(ctx, userID)
+			if errors.Is(err, model.ErrUserNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			users = append(users, *user)
+		}
+		return users, nil
+	}
+	return s.users.Users(ctx, model.UserFilter{Limit: maxUserLimit})
+}
+
+// queryIDs parses the repeated userId query parameter.
+func queryIDs(values []string) ([]int64, error) {
+	ids := make([]int64, 0, len(values))
+	for _, value := range values {
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid userId %q", value)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }

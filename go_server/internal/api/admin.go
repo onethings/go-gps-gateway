@@ -913,6 +913,9 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/notificators", s.handleNotificators)
 	mux.HandleFunc("GET /api/notifications/notificators", s.handleNotificators)
 	mux.HandleFunc("GET /api/notifications/types", s.handleNotificationTypes)
+	mux.HandleFunc("POST /api/notifications/test", s.handleNotificationTest)
+	mux.HandleFunc("POST /api/notifications/test/{notificator}", s.handleNotificationTest)
+	mux.HandleFunc("POST /api/notifications/send/{notificator}", s.handleNotificationSend)
 
 	mux.HandleFunc("GET /api/session", s.handleSession)
 	mux.HandleFunc("POST /api/session", s.handleSessionCreate)

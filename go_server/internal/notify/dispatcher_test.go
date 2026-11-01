@@ -457,3 +457,109 @@ func TestDispatcherSubscriptionLookupFailureFallsBack(t *testing.T) {
 		t.Error("expected the subscription lookup failure to be logged")
 	}
 }
+
+// TestDispatcherPresetAlarmFilter pins the per-preset alarm filter: a preset
+// that names alarms only fires for those alarms, and an alarm event without a
+// matching preset does not notify.
+func TestDispatcherPresetAlarmFilter(t *testing.T) {
+	mailer := &recordingNotifier{name: "mail"}
+	subscriptions := &fakeSubscriptions{subscriptions: []model.NotificationSubscription{
+		{
+			UserID: 1, Email: "alice@example.test", Notificators: []string{"mail"},
+			NotificationID: 1, NotificationType: model.EventAlarm,
+			NotificationAttributes: model.Attributes{"alarms": "sos,tow"},
+		},
+	}}
+	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: testDevice()}},
+		[]Channel{{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail}},
+		WithSubscriptions(subscriptions))
+
+	dispatcher.Enqueue(testAlert(model.EventAlarm, map[string]any{model.KeyAlarm: model.AlarmSOS}))
+	dispatcher.Enqueue(testAlert(model.EventAlarm, map[string]any{model.KeyAlarm: model.AlarmVibration}))
+	closeDispatcher(t, dispatcher)
+
+	if calls := mailer.snapshot(); len(calls) != 1 {
+		t.Fatalf("mail calls = %d, want only the sos alarm", len(calls))
+	}
+}
+
+// TestDispatcherPresetGeofenceFilter pins the geofenceIds filter.
+func TestDispatcherPresetGeofenceFilter(t *testing.T) {
+	mailer := &recordingNotifier{name: "mail"}
+	subscriptions := &fakeSubscriptions{subscriptions: []model.NotificationSubscription{
+		{
+			UserID: 1, Email: "alice@example.test", Notificators: []string{"mail"},
+			NotificationID: 1, NotificationType: model.EventGeofenceEnter,
+			NotificationAttributes: model.Attributes{"geofenceIds": "5,6"},
+		},
+	}}
+	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: testDevice()}},
+		[]Channel{{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail}},
+		WithSubscriptions(subscriptions))
+
+	inside := testAlert(model.EventGeofenceEnter, nil)
+	inside.GeofenceID = 5
+	outside := testAlert(model.EventGeofenceEnter, nil)
+	outside.GeofenceID = 7
+	dispatcher.Enqueue(inside)
+	dispatcher.Enqueue(outside)
+	closeDispatcher(t, dispatcher)
+
+	if calls := mailer.snapshot(); len(calls) != 1 {
+		t.Fatalf("mail calls = %d, want only geofence 5", len(calls))
+	}
+}
+
+// TestDispatcherUserNotifyTypes pins the account-level override.
+func TestDispatcherUserNotifyTypes(t *testing.T) {
+	mailer := &recordingNotifier{name: "mail"}
+	subscriptions := &fakeSubscriptions{subscriptions: []model.NotificationSubscription{
+		{
+			UserID: 1, Email: "alice@example.test", Notificators: []string{"mail"},
+			NotificationID: 1, NotificationType: "all",
+			Attributes: model.Attributes{AttrNotifyTypes: "powerCut"},
+		},
+	}}
+	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: testDevice()}},
+		[]Channel{{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail}},
+		WithSubscriptions(subscriptions))
+
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventPowerCut, nil))
+	closeDispatcher(t, dispatcher)
+
+	calls := mailer.snapshot()
+	if len(calls) != 1 || calls[0].message.Alert.Type != model.EventPowerCut {
+		t.Fatalf("mail calls = %+v", calls)
+	}
+}
+
+// TestDispatcherDeduplicatesRecipients pins the acceptance criterion: two
+// matching presets of the same account still produce one delivery per channel.
+func TestDispatcherDeduplicatesRecipients(t *testing.T) {
+	mailer := &recordingNotifier{name: "mail"}
+	subscriptions := &fakeSubscriptions{subscriptions: []model.NotificationSubscription{
+		{
+			UserID: 1, Email: "alice@example.test", Notificators: []string{"mail"},
+			NotificationID: 1, NotificationType: model.EventPowerCut, Always: true,
+		},
+		{
+			UserID: 1, Email: "alice@example.test", Notificators: []string{"mail"},
+			NotificationID: 2, NotificationType: "all", Always: true,
+		},
+	}}
+	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: testDevice()}},
+		[]Channel{{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail}},
+		WithSubscriptions(subscriptions))
+
+	dispatcher.Enqueue(testAlert(model.EventPowerCut, nil))
+	closeDispatcher(t, dispatcher)
+
+	calls := mailer.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("mail calls = %d, want 1", len(calls))
+	}
+	if got := calls[0].recipients; len(got) != 1 || got[0] != "alice@example.test" {
+		t.Fatalf("recipients = %v", got)
+	}
+}

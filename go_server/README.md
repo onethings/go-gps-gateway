@@ -1608,8 +1608,24 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
     `internal/api` 的 `TestNotificationTestAndSend`、`TestNotificatorsAnnouncementFilter`。
   - 偏差：`command` notificator（把告警轉成裝置命令）只接受名稱、沒有對應通道；Firebase 只支援
     FCM token，沒有 Java 的 22 字元 FID 分支；telegram 只送文字，沒有 `sendLocation`。
-- [ ] **M4-3 比對規則**：`NotificationManager` 的 `notificators`、`always`、`notifyTypes`，以及裝置 / 使用者兩層 override。
-  - 驗收：訂閱測試擴充到「同一事件命中多個範本時只送一次」。
+- [x] **M4-3 比對規則**：`NotificationManager` 的 `notificators`、`always`、`notifyTypes`，以及裝置 / 使用者兩層 override。
+  - 落地：`notifications` 補 `always`、`command_id`、`calendar_id`、`attributes`（`0015_notification_rules.sql`）。
+    `DeviceSubscriptions` 改成每個 preset 一列，條件是「帳號看得到這台裝置 + 已訂閱 +
+    型別相符 + （`always` 或這台裝置有 device→notification 權限）」。遷移把既有 preset 設成
+    `always = true`，升級不會靜默停送。
+  - 過濾鏈：`matchingSubscriptions` 先套使用者層 `notifyTypes`（users.attributes，支援
+    `none` / `all` / `*` 與逗號清單），再套 preset 的 `alarms`（`alarm` 事件要比對
+    `event.attributes.alarm`）與 `geofenceIds`（比對 `event.geofenceId`）。裝置層
+    `notifyTypes` 與伺服器層 `-notify-types` 仍照舊，三層都過才送。
+  - 去重：同一個帳號命中多個 preset 時，`subscriptionTargets` 用 `appendRecipient` 把同一通道的
+    收件地址合併，只送一次；測試把它釘住。
+  - 重要行為修正：以前「有訂閱但這筆事件不符」會退回伺服器預設收件人；現在只要帳號有訂閱，
+    被過濾掉的結果就是「不送」，不會再寄給預設 webhook / email。
+  - 測試：`internal/notify` 的 `TestDispatcherPresetAlarmFilter`、
+    `TestDispatcherPresetGeofenceFilter`、`TestDispatcherUserNotifyTypes`、
+    `TestDispatcherDeduplicatesRecipients`；`internal/api` 的 `TestNotificationRulesRoundTrip`。
+  - 偏差：`calendarId` 只儲存不判斷（iCalendar 週期規則還沒實作）；`commandId` 只儲存，
+    `command` notificator 沒有對應通道。
 
 ### M5 報表與外送（M）
 

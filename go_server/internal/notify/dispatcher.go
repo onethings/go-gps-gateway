@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -199,7 +200,12 @@ func (d *Dispatcher) deliver(alert *model.Event) {
 	if device != nil {
 		attributes = device.Attributes
 	}
-	subscriptions := d.subscribers(alert)
+	// The unfiltered set decides whether an account subscribed at all: a preset
+	// that the alert does not match must silence the channel instead of
+	// falling back to the server-wide defaults.
+	resolved := d.subscribers(alert)
+	subscriptions := d.matchingSubscriptions(alert, resolved)
+	subscribed := len(resolved) > 0
 
 	for _, channel := range d.channels {
 		if channel.Notifier == nil {
@@ -212,7 +218,7 @@ func (d *Dispatcher) deliver(alert *model.Event) {
 		// An explicit device attribute wins over every subscription. Otherwise
 		// a matching subscription set decides which channels run; when nobody
 		// subscribed, the server-wide defaults apply.
-		if !overridden && len(subscriptions) > 0 {
+		if !overridden && subscribed {
 			targets = subscriptionTargets(channel, subscriptions)
 		}
 		if len(targets) == 0 {
@@ -274,28 +280,39 @@ func (d *Dispatcher) subscribers(alert *model.Event) []model.NotificationSubscri
 	return subscriptions
 }
 
-func (d *Dispatcher) typeEnabled(alertType string) bool {
-	if d.types == nil {
-		return true
+// matchingSubscriptions applies the per-user and per-preset filters of M4-3 to
+// the subscriptions resolved for the device. A preset can restrict itself to
+// certain alarms and geofences, and an account can restrict the event types it
+// receives with its notifyTypes attribute.
+func (d *Dispatcher) matchingSubscriptions(
+	alert *model.Event, subscriptions []model.NotificationSubscription,
+) []model.NotificationSubscription {
+	if alert == nil {
+		return nil
 	}
-	if _, all := d.types["*"]; all {
-		return true
+	kept := make([]model.NotificationSubscription, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		if !userAllows(subscription.Attributes, alert.Type) {
+			continue
+		}
+		if !presetMatches(subscription.NotificationAttributes, alert) {
+			continue
+		}
+		kept = append(kept, subscription)
 	}
-	_, enabled := d.types[alertType]
-	return enabled
+	return kept
 }
 
-// deviceAllows applies the per-device notifyTypes attribute. An absent
-// attribute leaves the server-wide filter as the only decision.
-func deviceAllows(device *model.Device, alertType string) bool {
-	if device == nil || device.Attributes == nil {
+// userAllows applies the accounts notifyTypes attribute. An absent attribute
+// leaves the server-wide and device filters as the only decision.
+func userAllows(attributes model.Attributes, alertType string) bool {
+	if attributes == nil {
 		return true
 	}
-	raw, ok := device.Attributes[AttrNotifyTypes]
+	raw, ok := attributes[AttrNotifyTypes]
 	if !ok {
 		return true
 	}
-
 	switch typed := raw.(type) {
 	case bool:
 		return typed
@@ -315,6 +332,64 @@ func deviceAllows(device *model.Device, alertType string) bool {
 	default:
 		return true
 	}
+}
+
+// presetMatches applies the filters a notification preset carries: a list of
+// alarms for the alarm event and a list of geofence ids for geofence events.
+func presetMatches(attributes model.Attributes, alert *model.Event) bool {
+	if attributes == nil {
+		return true
+	}
+	if alert.Type == model.EventAlarm {
+		if raw := attributes.GetString("alarms", ""); raw != "" {
+			alarm := alert.Attributes.GetString(model.KeyAlarm, "")
+			matched := false
+			for _, candidate := range SplitList(raw) {
+				if candidate == alarm {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+		}
+	}
+	if alert.GeofenceID != 0 {
+		if raw := attributes.GetString("geofenceIds", ""); raw != "" {
+			matched := false
+			for _, candidate := range SplitList(raw) {
+				if candidate == strconv.FormatInt(alert.GeofenceID, 10) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (d *Dispatcher) typeEnabled(alertType string) bool {
+	if d.types == nil {
+		return true
+	}
+	if _, all := d.types["*"]; all {
+		return true
+	}
+	_, enabled := d.types[alertType]
+	return enabled
+}
+
+// deviceAllows applies the per-device notifyTypes attribute. An absent
+// attribute leaves the server-wide filter as the only decision.
+func deviceAllows(device *model.Device, alertType string) bool {
+	if device == nil {
+		return true
+	}
+	return userAllows(model.Attributes(device.Attributes), alertType)
 }
 
 func allowedBy(types map[string]struct{}, alertType string) bool {

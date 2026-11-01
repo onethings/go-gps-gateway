@@ -31,11 +31,15 @@ type NotificationStore interface {
 }
 
 type notificationResponse struct {
-	ID           int64     `json:"id"`
-	Type         string    `json:"type"`
-	Notificators []string  `json:"notificators"`
-	Description  string    `json:"description,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID           int64          `json:"id"`
+	Type         string         `json:"type"`
+	Notificators []string       `json:"notificators"`
+	Description  string         `json:"description,omitempty"`
+	Always       bool           `json:"always"`
+	CommandID    int64          `json:"commandId,omitempty"`
+	CalendarID   int64          `json:"calendarId,omitempty"`
+	Attributes   map[string]any `json:"attributes"`
+	CreatedAt    time.Time      `json:"createdAt"`
 }
 
 type notificationsResponse struct {
@@ -50,16 +54,24 @@ type userNotificationsResponse struct {
 }
 
 type notificationCreateRequest struct {
-	Type         string   `json:"type"`
-	Notificators []string `json:"notificators"`
-	Description  string   `json:"description"`
+	Type         string         `json:"type"`
+	Notificators []string       `json:"notificators"`
+	Description  string         `json:"description"`
+	Always       bool           `json:"always"`
+	CommandID    int64          `json:"commandId"`
+	CalendarID   int64          `json:"calendarId"`
+	Attributes   map[string]any `json:"attributes"`
 }
 
 // notificationUpdateRequest is a partial update: absent fields stay unchanged.
 type notificationUpdateRequest struct {
-	Type         *string   `json:"type"`
-	Notificators *[]string `json:"notificators"`
-	Description  *string   `json:"description"`
+	Type         *string         `json:"type"`
+	Notificators *[]string       `json:"notificators"`
+	Description  *string         `json:"description"`
+	Always       *bool           `json:"always"`
+	CommandID    *int64          `json:"commandId"`
+	CalendarID   *int64          `json:"calendarId"`
+	Attributes   *map[string]any `json:"attributes"`
 }
 
 func newNotificationResponse(notification model.Notification) notificationResponse {
@@ -67,11 +79,19 @@ func newNotificationResponse(notification model.Notification) notificationRespon
 	if notificators == nil {
 		notificators = []string{}
 	}
+	attributes := map[string]any(notification.Attributes)
+	if attributes == nil {
+		attributes = map[string]any{}
+	}
 	return notificationResponse{
 		ID:           notification.ID,
 		Type:         notification.Type,
 		Notificators: notificators,
 		Description:  notification.Description,
+		Always:       notification.Always,
+		CommandID:    notification.CommandID,
+		CalendarID:   notification.CalendarID,
+		Attributes:   attributes,
 		CreatedAt:    notification.CreatedAt.UTC(),
 	}
 }
@@ -157,6 +177,10 @@ func (s *Server) handleCreateNotification(w http.ResponseWriter, r *http.Request
 		Type:         notificationType,
 		Notificators: notificators,
 		Description:  strings.TrimSpace(request.Description),
+		Always:       request.Always,
+		CommandID:    request.CommandID,
+		CalendarID:   request.CalendarID,
+		Attributes:   model.Attributes(request.Attributes),
 	})
 	if err != nil {
 		s.logf("api: create notification: %v", err)
@@ -185,7 +209,15 @@ func (s *Server) handleUpdateNotification(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	update := model.NotificationUpdate{}
+	update := model.NotificationUpdate{
+		Always:     request.Always,
+		CommandID:  request.CommandID,
+		CalendarID: request.CalendarID,
+	}
+	if request.Attributes != nil {
+		attributes := model.Attributes(*request.Attributes)
+		update.Attributes = &attributes
+	}
 	if request.Type != nil {
 		notificationType, err := normalizeNotificationType(*request.Type)
 		if err != nil {

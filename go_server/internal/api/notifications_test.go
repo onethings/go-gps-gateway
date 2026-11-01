@@ -88,6 +88,10 @@ func (f *fakeNotifications) CreateNotification(_ context.Context, create model.N
 		Type:         create.Type,
 		Notificators: append([]string(nil), create.Notificators...),
 		Description:  create.Description,
+		Always:       create.Always,
+		CommandID:    create.CommandID,
+		CalendarID:   create.CalendarID,
+		Attributes:   create.Attributes,
 		CreatedAt:    time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
 	}
 	f.notifications[notification.ID] = notification
@@ -113,6 +117,18 @@ func (f *fakeNotifications) UpdateNotification(_ context.Context, notificationID
 	}
 	if update.Description != nil {
 		notification.Description = *update.Description
+	}
+	if update.Always != nil {
+		notification.Always = *update.Always
+	}
+	if update.CommandID != nil {
+		notification.CommandID = *update.CommandID
+	}
+	if update.CalendarID != nil {
+		notification.CalendarID = *update.CalendarID
+	}
+	if update.Attributes != nil {
+		notification.Attributes = *update.Attributes
 	}
 	copied := cloneNotification(*notification)
 	return &copied, nil
@@ -384,5 +400,43 @@ func TestUserNotificationListingAsAdmin(t *testing.T) {
 	}
 	if payload.Count != 1 || payload.Notifications[0].ID != 5 {
 		t.Errorf("payload = %+v", payload)
+	}
+}
+
+// TestNotificationRulesRoundTrip pins the M4-3 fields: always, the alarm and
+// geofence filters in attributes, the calendar and the saved command id.
+func TestNotificationRulesRoundTrip(t *testing.T) {
+	handler := notificationHandler(newFakeUsers(), newFakeNotifications())
+
+	created := apiRequest(t, handler, http.MethodPost, "/api/notifications",
+		`{"type":"alarm","notificators":["mail"],"always":true,"commandId":3,"calendarId":4,
+		  "attributes":{"alarms":"sos,tow","priority":true}}`, testAdminKey)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create = %d (body %s)", created.Code, created.Body)
+	}
+	var notification notificationResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &notification); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !notification.Always || notification.CommandID != 3 || notification.CalendarID != 4 {
+		t.Fatalf("notification = %+v", notification)
+	}
+	if notification.Attributes["alarms"] != "sos,tow" || notification.Attributes["priority"] != true {
+		t.Errorf("attributes = %v", notification.Attributes)
+	}
+
+	updated := apiRequest(t, handler, http.MethodPut, "/api/notifications/1",
+		`{"always":false,"attributes":{"alarms":"sos"}}`, testAdminKey)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update = %d (body %s)", updated.Code, updated.Body)
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &notification); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if notification.Always || notification.Attributes["alarms"] != "sos" {
+		t.Errorf("notification = %+v", notification)
+	}
+	if notification.CommandID != 3 || notification.CalendarID != 4 {
+		t.Errorf("partial update cleared a field it did not send: %+v", notification)
 	}
 }

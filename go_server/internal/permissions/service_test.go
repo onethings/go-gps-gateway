@@ -308,3 +308,81 @@ func TestServicePermissionsFilters(t *testing.T) {
 		t.Fatalf("filtered = %v, err %v", one, err)
 	}
 }
+
+func TestServiceObjectIDs(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(store)
+	ctx := context.Background()
+
+	// Group 1 is the root of 1 -> 2 -> 3; group 4 is a separate root.
+	for _, pair := range []Permission{
+		mustPair(t, ObjectUser, 5, ObjectGroup, 1),
+		mustPair(t, ObjectUser, 5, ObjectGeofence, 20),
+		mustPair(t, ObjectGroup, 1, ObjectGeofence, 21),
+		mustPair(t, ObjectUser, 5, ObjectDriver, 30),
+	} {
+		if err := service.Grant(ctx, pair); err != nil {
+			t.Fatalf("grant: %v", err)
+		}
+	}
+
+	groups, err := service.ObjectIDs(ctx, 5, ObjectGroup)
+	if err != nil {
+		t.Fatalf("group ids: %v", err)
+	}
+	if want := []int64{1, 2, 3}; !reflect.DeepEqual(groups, want) {
+		t.Errorf("group ids = %v, want %v (the grant covers descendants, not group 4)", groups, want)
+	}
+
+	devices, err := service.ObjectIDs(ctx, 5, ObjectDevice)
+	if err != nil {
+		t.Fatalf("device ids: %v", err)
+	}
+	if want := []int64{10, 11}; !reflect.DeepEqual(devices, want) {
+		t.Errorf("device ids = %v, want %v", devices, want)
+	}
+
+	// Every other type is reachable through a direct user grant only, which
+	// is what PermissionsService.checkPermission does in the Java server.
+	geofences, err := service.ObjectIDs(ctx, 5, ObjectGeofence)
+	if err != nil {
+		t.Fatalf("geofence ids: %v", err)
+	}
+	if want := []int64{20}; !reflect.DeepEqual(geofences, want) {
+		t.Errorf("geofence ids = %v, want %v", geofences, want)
+	}
+
+	drivers, err := service.ObjectIDs(ctx, 5, ObjectDriver)
+	if err != nil {
+		t.Fatalf("driver ids: %v", err)
+	}
+	if want := []int64{30}; !reflect.DeepEqual(drivers, want) {
+		t.Errorf("driver ids = %v, want %v", drivers, want)
+	}
+
+	empty, err := service.ObjectIDs(ctx, 5, ObjectCalendar)
+	if err != nil || len(empty) != 0 || empty == nil {
+		t.Errorf("calendar ids = %v, err %v, want an empty non-nil slice", empty, err)
+	}
+
+	if _, err := service.ObjectIDs(ctx, 5, "planet"); !errors.Is(err, ErrInvalidPermission) {
+		t.Errorf("unknown object: err = %v, want ErrInvalidPermission", err)
+	}
+}
+
+func TestServiceCheckGroupInheritsFromGrantedParent(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(store)
+	ctx := context.Background()
+
+	if err := service.Grant(ctx, mustPair(t, ObjectUser, 5, ObjectGroup, 1)); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	if err := service.Check(ctx, 5, ObjectGroup, 3); err != nil {
+		t.Errorf("group 3 is below the granted root: %v", err)
+	}
+	if err := service.Check(ctx, 5, ObjectGroup, 4); !errors.Is(err, ErrAccessDenied) {
+		t.Errorf("group 4 is a sibling root: err = %v, want ErrAccessDenied", err)
+	}
+}

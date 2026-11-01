@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 var calendarSpec = resourceSpec[model.Calendar]{
@@ -45,9 +46,12 @@ func (s *Store) UpdateCalendar(ctx context.Context, calendar *model.Calendar) er
 }
 
 // DeleteCalendar removes a calendar. Geofences and reports that referenced it
-// keep their rows and lose the reference.
+// keep their rows and lose the reference; its grants go with it.
 func (s *Store) DeleteCalendar(ctx context.Context, calendarID int64) error {
-	return deleteResource(ctx, s.db, calendarSpec.table, calendarID)
+	if err := deleteResource(ctx, s.db, calendarSpec.table, calendarID); err != nil {
+		return err
+	}
+	return s.ClearPermissions(ctx, permissions.ObjectCalendar, calendarID)
 }
 
 // Calendars returns the calendars matching the filter, ordered by id.

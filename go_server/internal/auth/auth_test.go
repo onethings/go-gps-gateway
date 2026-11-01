@@ -46,6 +46,40 @@ func TestPermissionScopesParse(t *testing.T) {
 	}
 }
 
+// The resource routes carry one read/write pair per type; all of them have to
+// survive ParseScopes so -token-scopes can issue them.
+func TestResourceScopesParse(t *testing.T) {
+	scopes := []Scope{
+		ScopeReadGroups, ScopeWriteGroups,
+		ScopeReadGeofences, ScopeWriteGeofences,
+		ScopeReadCalendars, ScopeWriteCalendars,
+		ScopeReadDrivers, ScopeWriteDrivers,
+		ScopeReadMaintenances, ScopeWriteMaintenances,
+		ScopeReadOrders, ScopeWriteOrders,
+		ScopeReadReports, ScopeWriteReports,
+		ScopeReadAttributes, ScopeWriteAttributes,
+	}
+	raw := make([]string, len(scopes))
+	for index, scope := range scopes {
+		raw[index] = string(scope)
+	}
+	parsed, err := ParseScopes(strings.Join(raw, ","))
+	if err != nil {
+		t.Fatalf("ParseScopes: %v", err)
+	}
+	if len(parsed) != len(scopes) {
+		t.Fatalf("scopes = %v, want %d", parsed, len(scopes))
+	}
+
+	principal := NewPrincipal(1, false, []Scope{ScopeReadGeofences}, nil)
+	if !principal.Has(ScopeReadGeofences) {
+		t.Error("principal does not hold read:geofences")
+	}
+	if principal.Has(ScopeWriteGeofences) {
+		t.Error("read:geofences must not imply write:geofences")
+	}
+}
+
 func TestGenerateToken(t *testing.T) {
 	first, err := GenerateToken()
 	if err != nil {

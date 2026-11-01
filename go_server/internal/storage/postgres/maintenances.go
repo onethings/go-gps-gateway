@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 var maintenanceSpec = resourceSpec[model.Maintenance]{
@@ -47,9 +48,12 @@ func (s *Store) UpdateMaintenance(ctx context.Context, maintenance *model.Mainte
 	return updateResource(ctx, s.db, maintenanceSpec, maintenance)
 }
 
-// DeleteMaintenance removes a service interval.
+// DeleteMaintenance removes a service interval and the grants that name it.
 func (s *Store) DeleteMaintenance(ctx context.Context, maintenanceID int64) error {
-	return deleteResource(ctx, s.db, maintenanceSpec.table, maintenanceID)
+	if err := deleteResource(ctx, s.db, maintenanceSpec.table, maintenanceID); err != nil {
+		return err
+	}
+	return s.ClearPermissions(ctx, permissions.ObjectMaintenance, maintenanceID)
 }
 
 // Maintenances returns the service intervals matching the filter.

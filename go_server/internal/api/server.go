@@ -113,6 +113,9 @@ type Server struct {
 	permissionStore PermissionStore
 	permissions     *permissions.Service
 	shareDisabled   bool
+	// resources backs the configuration routes (groups, geofences, calendars,
+	// drivers, maintenances, orders, reports, computed attributes).
+	resources ResourceStore
 	// loginMaxFailures counts consecutive wrong passwords per account; zero
 	// disables the lockout.
 	loginMaxFailures  int
@@ -279,6 +282,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/permissions", s.handlePermissions)
 	mux.HandleFunc("POST /api/share/device", s.handleShareDevice)
 	mux.HandleFunc("POST /api/share/group", s.handleShareGroup)
+
+	// Configuration resources, the Go counterpart of the Java
+	// SimpleObjectResource / ExtendedObjectResource routes.
+	s.registerResourceRoutes(mux)
 
 	if s.apiKey == "" && s.tokens == nil {
 		return mux

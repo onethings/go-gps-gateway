@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 var attributeSpec = resourceSpec[model.Attribute]{
@@ -39,9 +40,12 @@ func (s *Store) UpdateAttribute(ctx context.Context, attribute *model.Attribute)
 	return updateResource(ctx, s.db, attributeSpec, attribute)
 }
 
-// DeleteAttribute removes a computed attribute.
+// DeleteAttribute removes a computed attribute and the grants that name it.
 func (s *Store) DeleteAttribute(ctx context.Context, attributeID int64) error {
-	return deleteResource(ctx, s.db, attributeSpec.table, attributeID)
+	if err := deleteResource(ctx, s.db, attributeSpec.table, attributeID); err != nil {
+		return err
+	}
+	return s.ClearPermissions(ctx, permissions.ObjectAttribute, attributeID)
 }
 
 // Attributes returns the computed attributes matching the filter, ordered by

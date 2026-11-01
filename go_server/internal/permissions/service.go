@@ -85,6 +85,46 @@ func (s *Service) DeviceIDs(ctx context.Context, userID int64) ([]int64, error) 
 	return ids, nil
 }
 
+// ObjectIDs returns the ids of the objects of one type a user may reach. It is
+// what the REST list endpoints filter on when they are not asked for "all".
+//
+// Devices inherit from the groups the user was granted, and so do groups
+// themselves, exactly like Condition.Permission in the Java server: a grant on
+// a group reaches that group and its descendants inside MaxGroupDepth. Every
+// other object type, geofences for instance, is reachable only through a direct
+// user -> object grant, which is also what PermissionsService.checkPermission
+// does in Java.
+func (s *Service) ObjectIDs(ctx context.Context, userID int64, object Object) ([]int64, error) {
+	if !object.Valid() {
+		return nil, fmt.Errorf("%w: unknown object %q", ErrInvalidPermission, object)
+	}
+	if userID <= 0 {
+		return []int64{}, nil
+	}
+	if object == ObjectDevice {
+		return s.DeviceIDs(ctx, userID)
+	}
+
+	pairs, err := s.store.Permissions(ctx, ObjectUser, userID, object, 0)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(pairs))
+	for _, pair := range pairs {
+		ids = append(ids, pair.PropertyID)
+	}
+	if object != ObjectGroup || len(ids) == 0 {
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		return ids, nil
+	}
+
+	parents, err := s.store.GroupParents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return Reach(ids, parents), nil
+}
+
 // CanAccess reports whether a user may read or change one object. An admin
 // reaches everything, a user reaches itself, a device is reachable through a
 // direct grant or through its group, and every other object needs a grant of its
@@ -143,6 +183,15 @@ func (s *Service) Check(ctx context.Context, userID int64, object Object, object
 			return nil
 		}
 	}
+	if object == ObjectGroup {
+		covered, err := s.checkGroupGrant(ctx, userID, objectID)
+		if err != nil {
+			return err
+		}
+		if covered {
+			return nil
+		}
+	}
 
 	return fmt.Errorf("%w: %s %d", ErrAccessDenied, object, objectID)
 }
@@ -158,6 +207,29 @@ func (s *Service) checkDeviceGroup(ctx context.Context, userID, deviceID int64) 
 		return false, nil
 	}
 
+	_, groups, err := s.store.UserGrants(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if len(groups) == 0 {
+		return false, nil
+	}
+
+	parents, err := s.store.GroupParents(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, reached := range Reach(groups, parents) {
+		if reached == groupID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// checkGroupGrant follows the granted groups down to groupID: a grant on an
+// ancestor covers the group itself and everything below it.
+func (s *Service) checkGroupGrant(ctx context.Context, userID, groupID int64) (bool, error) {
 	_, groups, err := s.store.UserGrants(ctx, userID)
 	if err != nil {
 		return false, err

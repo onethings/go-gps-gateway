@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 var driverSpec = resourceSpec[model.Driver]{
@@ -47,9 +48,12 @@ func (s *Store) UpdateDriver(ctx context.Context, driver *model.Driver) error {
 	return updateResource(ctx, s.db, driverSpec, driver)
 }
 
-// DeleteDriver removes a driver.
+// DeleteDriver removes a driver and the grants that name it.
 func (s *Store) DeleteDriver(ctx context.Context, driverID int64) error {
-	return deleteResource(ctx, s.db, driverSpec.table, driverID)
+	if err := deleteResource(ctx, s.db, driverSpec.table, driverID); err != nil {
+		return err
+	}
+	return s.ClearPermissions(ctx, permissions.ObjectDriver, driverID)
 }
 
 // Drivers returns the drivers matching the filter, ordered by id.

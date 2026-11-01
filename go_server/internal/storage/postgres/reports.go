@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 var reportSpec = resourceSpec[model.Report]{
@@ -47,9 +48,12 @@ func (s *Store) UpdateReport(ctx context.Context, report *model.Report) error {
 	return updateResource(ctx, s.db, reportSpec, report)
 }
 
-// DeleteReport removes a report definition.
+// DeleteReport removes a report definition and the grants that name it.
 func (s *Store) DeleteReport(ctx context.Context, reportID int64) error {
-	return deleteResource(ctx, s.db, reportSpec.table, reportID)
+	if err := deleteResource(ctx, s.db, reportSpec.table, reportID); err != nil {
+		return err
+	}
+	return s.ClearPermissions(ctx, permissions.ObjectReport, reportID)
 }
 
 // Reports returns the report definitions matching the filter, ordered by id.

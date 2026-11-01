@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 var groupSpec = resourceSpec[model.Group]{
@@ -48,9 +49,14 @@ func (s *Store) UpdateGroup(ctx context.Context, group *model.Group) error {
 }
 
 // DeleteGroup removes a group. Child groups keep their rows and lose the
-// parent reference; devices keep pointing at nothing.
+// parent reference; devices keep pointing at nothing. The grants that name the
+// group on either side are dropped with it, because the generic permission
+// table has no foreign key to clean them up.
 func (s *Store) DeleteGroup(ctx context.Context, groupID int64) error {
-	return deleteResource(ctx, s.db, groupSpec.table, groupID)
+	if err := deleteResource(ctx, s.db, groupSpec.table, groupID); err != nil {
+		return err
+	}
+	return s.ClearPermissions(ctx, permissions.ObjectGroup, groupID)
 }
 
 // Groups returns the groups matching the filter, ordered by id.

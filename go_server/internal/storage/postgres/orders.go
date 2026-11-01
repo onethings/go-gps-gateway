@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 var orderSpec = resourceSpec[model.Order]{
@@ -47,9 +48,12 @@ func (s *Store) UpdateOrder(ctx context.Context, order *model.Order) error {
 	return updateResource(ctx, s.db, orderSpec, order)
 }
 
-// DeleteOrder removes an order.
+// DeleteOrder removes an order and the grants that name it.
 func (s *Store) DeleteOrder(ctx context.Context, orderID int64) error {
-	return deleteResource(ctx, s.db, orderSpec.table, orderID)
+	if err := deleteResource(ctx, s.db, orderSpec.table, orderID); err != nil {
+		return err
+	}
+	return s.ClearPermissions(ctx, permissions.ObjectOrder, orderID)
 }
 
 // Orders returns the orders matching the filter, ordered by id.

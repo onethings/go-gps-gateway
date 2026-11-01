@@ -307,6 +307,7 @@ func main() {
 				api.WithLogger(log.Printf),
 				api.WithLoginLockout(settings.LoginMaxFailures, settings.LoginLockDuration),
 				api.WithPermissions(store),
+				api.WithResources(store),
 				api.WithShareDisabled(settings.DisableShare),
 			}
 			if mailer != nil {

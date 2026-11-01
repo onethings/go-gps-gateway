@@ -34,6 +34,27 @@ const (
 	// ScopeWriteShare mints a public read only token for one device or group.
 	ScopeWriteShare Scope = "write:share"
 
+	// The resource configuration routes (groups, geofences, calendars, ...)
+	// each have their own read/write pair, the same way devices and permissions
+	// do: a token that may read geofences must not silently read driver
+	// records too.
+	ScopeReadGroups        Scope = "read:groups"
+	ScopeWriteGroups       Scope = "write:groups"
+	ScopeReadGeofences     Scope = "read:geofences"
+	ScopeWriteGeofences    Scope = "write:geofences"
+	ScopeReadCalendars     Scope = "read:calendars"
+	ScopeWriteCalendars    Scope = "write:calendars"
+	ScopeReadDrivers       Scope = "read:drivers"
+	ScopeWriteDrivers      Scope = "write:drivers"
+	ScopeReadMaintenances  Scope = "read:maintenances"
+	ScopeWriteMaintenances Scope = "write:maintenances"
+	ScopeReadOrders        Scope = "read:orders"
+	ScopeWriteOrders       Scope = "write:orders"
+	ScopeReadReports       Scope = "read:reports"
+	ScopeWriteReports      Scope = "write:reports"
+	ScopeReadAttributes    Scope = "read:attributes"
+	ScopeWriteAttributes   Scope = "write:attributes"
+
 	// ScopeAll grants every current and future scope. It is meant for machine
 	// tokens that have to act like the legacy -api-key.
 	ScopeAll Scope = "*"
@@ -52,6 +73,22 @@ var KnownScopes = []Scope{
 	ScopeReadPermissions,
 	ScopeWritePermissions,
 	ScopeWriteShare,
+	ScopeReadGroups,
+	ScopeWriteGroups,
+	ScopeReadGeofences,
+	ScopeWriteGeofences,
+	ScopeReadCalendars,
+	ScopeWriteCalendars,
+	ScopeReadDrivers,
+	ScopeWriteDrivers,
+	ScopeReadMaintenances,
+	ScopeWriteMaintenances,
+	ScopeReadOrders,
+	ScopeWriteOrders,
+	ScopeReadReports,
+	ScopeWriteReports,
+	ScopeReadAttributes,
+	ScopeWriteAttributes,
 	ScopeAll,
 }
 

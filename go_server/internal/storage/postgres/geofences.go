@@ -9,6 +9,7 @@ import (
 
 	"traccar-server_go/go_server/internal/geofence"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 // Geofences loads every geofence and parses its Traccar WKT area. A row with an
@@ -115,8 +116,12 @@ func (s *Store) UpdateGeofence(ctx context.Context, fence *geofence.Geofence) er
 
 // DeleteGeofence removes a geofence. Events that referred to it keep their
 // rows, because the geofence id there is a plain number and not a reference.
+// The grants naming the geofence are dropped with it.
 func (s *Store) DeleteGeofence(ctx context.Context, geofenceID int64) error {
-	return deleteResource(ctx, s.db, geofenceSpec.table, geofenceID)
+	if err := deleteResource(ctx, s.db, geofenceSpec.table, geofenceID); err != nil {
+		return err
+	}
+	return s.ClearPermissions(ctx, permissions.ObjectGeofence, geofenceID)
 }
 
 // QueryGeofences returns the geofences matching the filter. Unlike Geofences it

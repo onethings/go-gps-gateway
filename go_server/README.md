@@ -42,7 +42,9 @@ client ──HTTP──▶ api.Server (RequireAuth)
                    ├─ POST /api/commands ──▶ commands 落一列 ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
                    ├─ GET /api/commands  ──▶ commands 查詢（自動加裝置條件）
                    ├─ /api/users/*       ──▶ 帳號 / token / 裝置授權 / 通知訂閱（admin 或本人）
-                   └─ /api/notifications ──▶ 通知範本（admin 維護，任何帳號可讀）
+                   ├─ /api/notifications ──▶ 通知範本（admin 維護，任何帳號可讀）
+                   └─ /api/{groups,geofences,calendars,drivers,maintenance,orders,reports}、/api/attributes/computed
+                                          ──▶ 設定型資源 CRUD（參數照母本 Simple / ExtendedObjectResource）
 ```
 
 ## 目錄
@@ -64,7 +66,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/handler`               | 位置處理鏈：母本 `ProcessingHandler` 的 14 個階段順序、`PositionHandler` 介面、`BusinessHandler`（一次跑一個 `Processor`）與 terminal store                                                                                                                                  |
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
-| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/events`（`/api/alerts` 為別名）、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`；認證 / scope / 裝置擁有權 |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/events`（`/api/alerts` 為別名）、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）；認證 / scope / 裝置擁有權 |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                                                                                                                                              |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                                                                                                                                                           |
 | `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                                                                                                                                                           |
@@ -309,8 +311,9 @@ INSERT INTO geofences (name, area, attributes) VALUES
 ```
 
 `CIRCLE` 的半徑單位是公尺；`floor` / `ceiling` 是公尺高度限制（兩者為 0 或不存在時忽略）。
-目前沒有圍欄管理 API，圍欄以 SQL 維護，`-geofence-refresh` 週期性地重新載入。
-圍欄對**所有裝置**生效（Traccar 的 user/device 權限表還沒移植）。
+圍欄已可用 `/api/geofences` 維護（見「資源管理 API」），`-geofence-refresh` 會週期性地重新載入
+API 寫進去的內容；仍支援上面的 SQL 寫法。支援的幾何只有 `POLYGON` 與 `CIRCLE`
+（母本的 `LINESTRING` 還沒移植）。圍欄對**所有裝置**生效。
 
 查詢：
 
@@ -526,6 +529,14 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 | `read:permissions` | `GET /api/permissions`                                                 |
 | `write:permissions` | `POST` / `DELETE /api/permissions`                                    |
 | `write:share`    | `POST /api/share/device`、`POST /api/share/group`                        |
+| `read:groups` / `write:groups`               | `/api/groups`                                 |
+| `read:geofences` / `write:geofences`         | `/api/geofences`                              |
+| `read:calendars` / `write:calendars`         | `/api/calendars`                              |
+| `read:drivers` / `write:drivers`             | `/api/drivers`                                |
+| `read:maintenances` / `write:maintenances`   | `/api/maintenance`、`/api/maintenances`        |
+| `read:orders` / `write:orders`               | `/api/orders`                                 |
+| `read:reports` / `write:reports`             | `/api/reports`                                |
+| `read:attributes` / `write:attributes`       | `/api/attributes/computed`                    |
 | `*`              | 全部（給機器用，等同舊 API key），另外是列出 / 撤銷自己 token 的必要條件 |
 
 `*` 不等於 admin：帳號管理（建 / 改 / 刪帳號、發 token）仍然只認 `users.admin = true`，
@@ -799,6 +810,64 @@ curl -i -X DELETE localhost:8082/api/devices/7
 
 `uniqueId`、`name`、`model`、`protocol` 兩端都會 trim；空白的 `uniqueId` 回 400。
 id 不是正整數回 400。`attributes` 目前只能以 SQL 維護。
+
+## 資源管理 API
+
+M2-3 把母本 `SimpleObjectResource` / `ExtendedObjectResource` 的設定型資源補齊，全部共用
+`internal/api/resources.go` 的一套 handler：
+
+| 路徑                        | 資源                      | 寫入時的額外檢查             |
+| --------------------------- | ------------------------- | ---------------------------- |
+| `/api/groups`               | 群組（最多三層）          | 父群組要碰得到、樹不能超過三層 |
+| `/api/geofences`            | 圍欄（Traccar WKT）       | `calendarId` 要碰得到          |
+| `/api/calendars`            | iCalendar 原文            |                              |
+| `/api/drivers`              | 駕駛                      |                              |
+| `/api/maintenance`（`/api/maintenances` 為別名） | 保養週期 |                          |
+| `/api/orders`               | 訂單                      |                              |
+| `/api/reports`              | 報表排程                  | `calendarId` 要碰得到          |
+| `/api/attributes/computed`  | 計算屬性                  | 只有 admin 能寫                |
+
+每個路徑都是 `GET`（清單）、`GET /{id}`、`POST`、`PUT /{id}`、`DELETE /{id}`。
+清單回**裸陣列**（traccar-web 直接讀），`POST` 回 201、`PUT` 回 200、`DELETE` 回 204；
+不存在回 404，碰不到的一律回 403（不洩漏 id 存不存在）。
+
+參數照母本：
+
+| 參數                | 語義                                                                 |
+| ------------------- | -------------------------------------------------------------------- |
+| `all`               | 只有 admin 有效：`true` 回全部；省略時回呼叫者自己的授權              |
+| `userId`            | 指定帳號的授權；非 admin 只能填自己，否則 403（`all=true` 時忽略，與母本相同） |
+| `groupId` / `deviceId` | 只看授權給該群組 / 裝置的資源；呼叫者碰不到該群組 / 裝置回 403    |
+| `excludeAttributes` | 不回 `attributes` 欄位                                               |
+| `keyword`           | 對該表的文字欄位做 `ILIKE`                                           |
+| `limit` / `offset`  | 分頁；storage 夾在 1–1000 與 `>= 0`，預設 100                        |
+
+授權展開跟母本 `Condition.Permission` 一致：裝置與**群組本身**會從授權的群組往子群組展開
+（最多三層），其餘資源（圍欄、日曆、駕駛、…）只認 `user → 資源` 的直接授權。
+非 admin 的 token 寫入成功後會自動拿到 `user → 新資源`（母本 `BaseObjectResource.add`）；
+舊的共用 API key 不是帳號，所以不寫授權，也看得到全部。
+
+```bash
+# 建一個圍欄：樓層限制放在 attributes，不用再碰 SQL
+curl -i -X POST localhost:8082/api/geofences \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"depot","description":"main yard","area":"CIRCLE (51.5 0.0, 100)","attributes":{"floor":10,"ceiling":120}}'
+# 201 {"id":5,"calendarId":0,"name":"depot","description":"main yard","area":"CIRCLE (51.5 0.0, 100.0)","attributes":{"floor":10,"ceiling":120}}
+
+# 清單是裸陣列；excludeAttributes 讓列表不要帶 attributes
+curl 'localhost:8082/api/geofences?all=true&keyword=depot&excludeAttributes=true'
+
+# 群組：父群組要碰得到，整棵樹最多三層
+curl -i -X POST localhost:8082/api/groups \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"North","groupId":2}'
+# 太深或父群組不存在回 400
+```
+
+`area` 只接受 `POLYGON` / `CIRCLE` 的 Traccar WKT，寫入時就 parse，壞掉回 400；寫進去的
+`floor` / `ceiling` 直接由圍欄引擎使用。`calendars.data` 沿用母本 `byte[]` 的 JSON 表示，
+所以是 base64 字串。`PUT` 是整欄取代：省略的欄位會變成零值 / 空 `attributes`，和母本的
+update 相同。
 
 ## 位置查詢
 
@@ -1137,11 +1206,15 @@ scrape_configs:
 - 非 admin 只能把裝置授權給**自己**：母本用 `managedUser` 權限讓管理員代管下屬帳號，這裡還沒建
   那個模型，所以「A 把裝置給 B」目前需要 admin。
 - 分享帳號只能靠 admin 事後刪除來撤銷（沒有到期自動清理）；`expiration` 只作用在 token 上。
-- 圍欄只能以 SQL 維護，且對所有裝置生效（`events.position_id` 已會填，見上節）。M2-1 已把
-  `groups` / `geofences` / `calendars` / `drivers` / `maintenances` / `orders` / `reports` /
-  `statistics` / `attributes` 的 CRUD 做進儲存層，但 REST 端點要等 M2-3。
-- Calendar 只存 iCalendar 原文，VEVENT / RRULE 的重複規則還沒評估，所以排程與「行事曆內才通知」
-  目前不會生效。`devices.group_id` 只讀不寫，寫入隨 M2-2 的權限指派一起做。
+- 圍欄已經能用 `/api/geofences` 維護（見「資源管理 API」），不必再以 SQL 寫；但圍欄仍對所有
+  裝置生效，只有帶 `floor` / `ceiling` 的圍欄才會過濾高度。`/api/maintenance` 與
+  `/api/maintenances` 是同一組 handler；母本還有 `/api/attributes/computed/test`（拿最新位置
+  試算）還沒做，計算屬性目前只有 CRUD。
+- 資源清單固定依 `id` 排序（母本依 `name` / `description`），因為 storage 的共用查詢只保證
+  這個順序。`statistics` 的 CRUD 在儲存層，但 REST 端點屬 M3-4。
+- Calendar 只存 iCalendar 原文，VEVENT / RRULE 的重複規則還沒評估，所以 `calendarId` 目前
+  不會讓排程或「行事曆內才通知」生效。`devices.group_id` 仍只讀不寫：群組 CRUD 有了，把
+  裝置放進群組的端點屬 M3-2。
 - `devices.model` 會被讀取，而且決定解碼路徑。GT06 的 `LW*` / `SEEWORLD` / `VL103` `LL303` `VL512` `G18`
   換掉告警碼的意義，`NT_MODELS`（`NT11` `NT20` `NT26` `NT40` `NT46` `VL100` `XT40`）換掉 `0x22` /
   `0x25` 整段欄位佈局；JT808 的 `G-360P` `G-508P` `AL300` `GL100` `VL300` 各走自己的報警字串分支，
@@ -1178,10 +1251,10 @@ scrape_configs:
 | 傳輸     | `ServerManager` + `TrackerServer`：TCP / UDP、TLS、每協議一個埠、`TrackerConnector` 主動連線        | `gateway.Server` 每協議一個 TCP listener                     | 無 UDP、無 TLS、無 client 模式                                                                                         |
 | 連線狀態 | `session/ConnectionManager`、`session/state`（motion / overspeed 狀態機）、`session/cache` 圖狀快取 | `gateway.DeviceDirectory` + `LocationCache`                  | 無 online / offline / timeout 與事件、無狀態機、無快取圖                                                               |
 | 處理管線 | `ProcessingHandler`：19 段 position handler + 12 段 event handler + `PostProcessHandler`            | 固定兩段：`alert.Pipeline`（4 條規則）→ `postgres.BatchSink` | position 只對應到 `GeofenceHandler` 的一部分，event 只對應到 Overspeed / Alarm / Geofence 的一部分，且管線寫死不可插拔 |
-| 資料模型 | `model/` 40 個類別                                                                                  | `internal/model` 7 檔 8 個型別                               | 缺 Group / Geofence / Calendar / Driver / Maintenance / Order / Statistics / Attribute                                 |
-| 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL，11 張表                                            | 缺 39 張表，且沒有通用查詢與權限儲存                                                                                   |
-| 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + `user_devices`                                       | 只有裝置一種資源，無群組、無共享                                                                                       |
-| REST     | 25 個 resource、81 個端點                                                                           | 31 條路由                                                    | 見 M3                                                                                                                  |
+| 資料模型 | `model/` 40 個類別                                                                                  | `internal/model` 18 檔 33 個型別（含 Group / Geofence / Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute） | 缺 media / geocoder / forward 等週邊型別                                                                               |
+| 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL + `resourceSpec` 共用 CRUD，19 張表                 | 缺的 31 張以 M4–M6 的週邊為主，且沒有通用查詢建構器                                                                     |
+| 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + 通用 `permissions` 表（user / group / device → 任何資源），group 最多三層 | 缺 `managedUser`（管理員代管下屬）與分享帳號到期自動清理                                                               |
+| REST     | 25 個 resource、81 個端點                                                                           | 80 條路由（含資源 CRUD 與 `/api/maintenance` 別名）          | 見 M3（events 參數、WebSocket、protocol / server / session / statistics / audit、commands/send）                       |
 | 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 9 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名）  | 14 種；表名與母本相同，事件型別待 M4-1 補齊                                                                            |
 | 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email                                              | 7 個管道、模板語法                                                                                                     |
 | 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | 無                                                           | 全部                                                                                                                   |
@@ -1294,9 +1367,28 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
   - 偏差：非 admin 不能把裝置授權給別人（母本的 `managedUser` 還沒移植）；通知收件者仍是直接授權。
   - 未驗證：`0013_permissions.sql` 與 postgres 實作只做到單元測試與編譯，這台機器起不了
     PostgreSQL（sandbox 擋 `shmget`），`TRACCAR_POSTGRES_DSN` 的整合測試會 skip。
-- [ ] **M2-3 資源 CRUD**：`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenances`、`/api/orders`、`/api/reports`、`/api/attributes/computed`。
+- [x] **M2-3 資源 CRUD**：`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenances`、`/api/orders`、`/api/reports`、`/api/attributes/computed`。
   - 參數照母本 `SimpleObjectResource` / `ExtendedObjectResource`：`all`、`userId`、`groupId`、`deviceId`、`excludeAttributes`、`limit`、`offset`、`keyword`。
   - 驗收：圍欄不用再以 SQL 維護；`alerts` 的圍欄失效條件（`floor` / `ceiling`）改由 API 寫入並經 `TestGeofenceCRUD`。
+  - 落地：`internal/api/resources.go` 用一個泛型 `resource[T]` 描述「storage 呼叫 + 權限物件 + JSON 形狀」，
+    list / get / create / update / delete 只寫一次，九個路徑（含 `/api/maintenance` 與
+    `/api/maintenances` 兩種拼法）共用。清單回裸陣列、`POST` 201、`PUT` 200、`DELETE` 204；
+    `excludeAttributes` 用 `*model.Attributes` 的 `omitempty` 拿掉欄位。`area` 在寫入時就
+    `geofence.Parse`，`calendars.data` 直接用 `[]byte` 讓 encoding/json 與 Jackson 一樣走 base64。
+    母本的 `checkEdit`（readonly / 額度）與計算屬性試算 `/test` 沒移植；其餘權限語義照搬：
+    `all` 只對 admin 放寬、`userId` 非 admin 只能填自己、`groupId` / `deviceId` 先檢查再過濾、
+    非 admin 寫入後自動加 `user → 資源`、只有 admin 能寫計算屬性。群組的父節點與深度用
+    `permissions.CheckHierarchy`（三層、防循環）；`geofence` / `report` 的 `calendarId` 需碰得到。
+  - 儲存層：刪除資源時一併 `ClearPermissions`（通用配對表沒有 FK），所以孤兒授權不會留下來。
+    `internal/permissions` 新增 `Service.ObjectIDs`（裝置 / 群組會展開子群組，其餘只認直接授權）
+    並讓 `Check` 對群組也吃父群組授權，對齊母本 `Condition.Permission`。
+  - 測試：`internal/api/resources_test.go` 17 個測試函式（未配置 501、scope 403、參數轉發與壞參數 400、
+    `all` / `userId` / `groupId` / `deviceId`、`excludeAttributes`、建立後授權與授權失敗回滾、
+    群組深度 400、日曆存取 403、`TestGeofenceCRUD` 的 create → get → update → delete、base64
+    日曆、maintenance 別名、計算屬性只有 admin 能寫）；`internal/permissions` 新增
+    `TestServiceObjectIDs` 與 `TestServiceCheckGroupInheritsFromGrantedParent`。
+  - 未驗證：沒有 PostgreSQL 可用（sandbox 擋 `shmget`），`TRACCAR_POSTGRES_DSN` 的整合測試仍 skip；
+    實際 SQL 只做到編譯與單元測試，`TestGeofenceCRUD` 用的是記憶體 store。
 
 ### M3 REST 對齊與即時推播（M）
 

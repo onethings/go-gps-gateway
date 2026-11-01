@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,15 +15,36 @@ type fakeStore struct {
 	devices int
 	users   int
 	err     error
-	rows    []*model.Statistics
+
+	mu   sync.Mutex
+	rows []*model.Statistics
 }
 
 func (f *fakeStore) InsertStatistics(_ context.Context, row *model.Statistics) error {
 	if f.err != nil {
 		return f.err
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.rows = append(f.rows, row)
 	return nil
+}
+
+// row returns one captured row, safe against the writer goroutine.
+func (f *fakeStore) row(index int) *model.Statistics {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if index >= len(f.rows) {
+		return nil
+	}
+	return f.rows[index]
+}
+
+// count reports how many rows were written so far.
+func (f *fakeStore) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.rows)
 }
 
 func (f *fakeStore) OnlineCounts(context.Context) (int, int, error) {
@@ -48,10 +70,10 @@ func TestCaptureWritesTheIncrementSinceTheLastRow(t *testing.T) {
 	if err := writer.Capture(context.Background()); err != nil {
 		t.Fatalf("capture: %v", err)
 	}
-	if len(store.rows) != 1 {
-		t.Fatalf("rows = %d", len(store.rows))
+	if store.count() != 1 {
+		t.Fatalf("rows = %d", store.count())
 	}
-	row := store.rows[0]
+	row := store.row(0)
 	if row.ActiveDevices != 2 || row.ActiveUsers != 1 {
 		t.Errorf("active = %d/%d", row.ActiveDevices, row.ActiveUsers)
 	}
@@ -77,7 +99,7 @@ func TestCaptureWritesTheIncrementSinceTheLastRow(t *testing.T) {
 	if err := writer.Capture(context.Background()); err != nil {
 		t.Fatalf("capture: %v", err)
 	}
-	second := store.rows[1]
+	second := store.row(1)
 	if second.MessagesReceived != 1 || second.Requests != 2 {
 		t.Errorf("second row = %d/%d", second.MessagesReceived, second.Requests)
 	}
@@ -103,8 +125,8 @@ func TestCaptureSurvivesACounterReset(t *testing.T) {
 	if err := writer.Capture(context.Background()); err != nil {
 		t.Fatalf("capture: %v", err)
 	}
-	if store.rows[1].Requests != 1 {
-		t.Fatalf("requests = %d", store.rows[1].Requests)
+	if second := store.row(1); second.Requests != 1 {
+		t.Fatalf("requests = %d", second.Requests)
 	}
 }
 
@@ -127,7 +149,7 @@ func TestRunWritesRowsUntilCancelled(t *testing.T) {
 	}()
 
 	deadline := time.Now().Add(time.Second)
-	for len(store.rows) == 0 && time.Now().Before(deadline) {
+	for store.count() == 0 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	cancel()
@@ -136,7 +158,7 @@ func TestRunWritesRowsUntilCancelled(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not stop")
 	}
-	if len(store.rows) == 0 {
+	if store.count() == 0 {
 		t.Fatal("no row was written")
 	}
 }

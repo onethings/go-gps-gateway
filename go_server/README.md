@@ -1339,8 +1339,8 @@ scrape_configs:
 | REST     | 25 個 resource、81 個端點                                                                           | 110+ 條路由（資源 CRUD、單筆裝置 / 事件、四種位置匯出、WebSocket、protocol / server / session / statistics / audit、commands 下發） | 報表、媒體與 stream 端點見 M5 / M7-3                                                                                  |
 | 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 25 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名） | 日曆限制與 media 檔案欄位待 M7-3                                                                                       |
 | 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email + telegram / pushover / sms（HTTP / SNS）/ firebase / traccar push / whatsapp + Velocity 子集模板 | `command` notificator（告警轉命令）還沒接                                                              |
-| 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | 無                                                           | 全部                                                                                                                   |
-| 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | 無                                                           | 全部                                                                                                                   |
+| 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | json / url / mqtt / redis / wialon（`internal/forward`，每個目的地一條佇列 + 退避重試） | amqp / kafka                                                                                                           |
+| 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | route / trips / stops / summary / events / geofences / devices / combined + CSV / GPX / KML / XLSX | 油耗事件差值、calendar 過濾                                                                                            |
 | 排程     | `schedule/` 8 個 task                                                                               | 無                                                           | 全部                                                                                                                   |
 | 地理加值 | 28 個 geocoder 檔、`speedlimit/`、`mapmatcher/`、`geolocation/`                                     | 無                                                           | 全部                                                                                                                   |
 | 設定     | `Config` + 267 個 `Keys`，支援 `protocol.<name>.<key>`                                              | 38 個 command line flag                                      | 無設定檔、無 per-protocol、無動態重載                                                                                  |
@@ -1657,8 +1657,31 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
   - 偏差：油耗沒有加回 `deviceFuelIncrease` / `deviceFuelDrop` 事件的差值（只讀位置屬性）；
     `calendarId` 不參與；報表不產生 Java 的多 sheet 活頁簿（單一 sheet）。
   - 驗收備註：`reports/` 的 Java 測試向量還沒逐欄比對，現有測試是自己構造的位置序列。
-- [ ] **M5-2 forwarder**：position 與 event 兩條，先 json / url / mqtt，再 amqp / kafka / redis / wialon。
-  - 驗收：斷線重連與佇列滿的行為有測試（母本沒有，這裡要贏）。
+- [x] **M5-2 forwarder**：position 與 event 兩條，先 json / url / mqtt，再 amqp / kafka / redis / wialon。
+  - `internal/forward`：`Service` 為每個 transport 開一條自己的佇列與 goroutine，`ForwardPosition` /
+    `ForwardEvent` 只做非阻塞入列，滿了就丟並計數（`Dropped()`），所以外部系統掛掉不會回壓到裝置
+    連線。`deliver` 用 100ms 起跳的指數退避重試到 `forward.attempts`，放棄時計 `Failed()`；
+    `Close(ctx)` 會先關佇列、排空、再關 transport。
+  - transport：`json`（POST `{"position":…}` / `{"event":…, "device":…, "position":…}`）、`url`
+    （Java 的 `{uniqueId}` / `{latitude}` / `{statusCode}` … 模板替換 + `forward.header` 多行標頭）、
+    `mqtt`（自帶 MQTT 3.1.1 CONNECT / PUBLISH QoS0，clean session，斷線自動重連）、
+    `redis`（RESP `LPUSH positions.<uniqueId> <json>`）、`wialon`（UDP Wialon IPS，`version=2`
+    會補 CRC16）。
+  - `Only(transport, events)` 把一個目的地限制在單一 feed：`forward.url` 與 event 版本各自只收
+    自己的訊息，符合母本兩個 handler 分開的行為；`forward.kind=position|event|all` 則控制
+    mqtt / redis 這類自行宣告的目的地。
+  - 接線：`positionHook` 送 position，`alert` hook 送 event（帶 `eventState` 快取的 device 與
+    最近位置）；`eventState.reload` 另外分頁快取整份裝置清單，forward 路徑上不查 DB。關機時
+    pipeline / dispatcher 之後才關 forwarder。
+  - 設定：`forward.url` / `forward.type` / `forward.header`、`event.forward.url` /
+    `event.forward.type` / `event.forward.header`、`forward.mqtt.broker|topic|clientId|username|password`、
+    `forward.redis.url|keyPrefix`、`forward.wialon.address|version`、`forward.kind`、
+    `forward.queue`、`forward.attempts`、`forward.backoff`、`forward.timeout`（只有後五個是 Go 專有）。
+  - 測試：`internal/forward/forward_test.go`（JSON / URL 模板、MQTT CONNECT+PUBLISH 封包、
+    Redis LPUSH 的 RESP、Wialon v1/v2 含 CRC、退避重試、佇列滿、`Only` 過濾；
+    全部用 `net.Pipe` 與假 `http.RoundTripper`，不開 socket）；
+    `cmd/traccar-gateway/forwarding_test.go`（設定解析、目的地組裝、`forward.kind`）。
+  - 偏差：沒有 amqp 與 kafka（母本有，這裡留待需要時再補）；`forward.type` 只認 json / url。
 
 ### M6 傳輸層與協議廣度（L）
 

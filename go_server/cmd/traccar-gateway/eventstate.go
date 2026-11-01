@@ -20,6 +20,9 @@ type eventState struct {
 	maintenances map[int64][]*model.Maintenance
 	links        map[int64][]int64
 	last         map[int64]*model.Position
+	// devices is the row each position and event is rendered with by the
+	// forwarders, so forwarding never queries the database.
+	devices map[int64]*model.Device
 }
 
 func newEventState() *eventState {
@@ -27,6 +30,7 @@ func newEventState() *eventState {
 		maintenances: make(map[int64][]*model.Maintenance),
 		links:        make(map[int64][]int64),
 		last:         make(map[int64]*model.Position),
+		devices:      make(map[int64]*model.Device),
 	}
 }
 
@@ -49,6 +53,17 @@ func (s *eventState) LastPosition(deviceID int64) *model.Position {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.last[deviceID]
+}
+
+// Device returns the cached device row. It is nil safe so a hook can call it
+// before the first reload.
+func (s *eventState) Device(deviceID int64) *model.Device {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.devices[deviceID]
 }
 
 // setPosition keeps the newest position, which the proximity rule compares the
@@ -74,10 +89,15 @@ func (s *eventState) reload(ctx context.Context, store *postgres.Store) error {
 	if err != nil {
 		return err
 	}
+	devices, err := loadDevices(ctx, store)
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	s.maintenances = maintenances
 	s.links = links
+	s.devices = devices
 	s.mu.Unlock()
 
 	// Seed the last position of every linked device, so a proximity check
@@ -98,6 +118,25 @@ func (s *eventState) reload(ctx context.Context, store *postgres.Store) error {
 		s.setPosition(&positions[index])
 	}
 	return nil
+}
+
+// loadDevices reads every device in pages, because the device listing is
+// capped at a thousand rows per query.
+func loadDevices(ctx context.Context, store *postgres.Store) (map[int64]*model.Device, error) {
+	const page = 1000
+	devices := make(map[int64]*model.Device)
+	for offset := 0; ; offset += page {
+		batch, err := store.Devices(ctx, model.DeviceFilter{Limit: page, Offset: offset})
+		if err != nil {
+			return nil, err
+		}
+		for index := range batch {
+			devices[batch[index].ID] = &batch[index]
+		}
+		if len(batch) < page {
+			return devices, nil
+		}
+	}
 }
 
 // runEventStateRefresh keeps the links and maintenance intervals current. A

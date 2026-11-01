@@ -24,6 +24,7 @@ import (
 	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/config"
 	"traccar-server_go/go_server/internal/eventctx"
+	"traccar-server_go/go_server/internal/forward"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/handler"
 	"traccar-server_go/go_server/internal/metrics"
@@ -104,6 +105,7 @@ func main() {
 		motion     *session.Motion
 		sessions   *session.Manager
 		state      *eventState
+		forwarder  *forward.Service
 	)
 
 	if settings.DatabaseURL != "" {
@@ -168,9 +170,29 @@ func main() {
 			go runEventStateRefresh(ctx, state, store, settings.DeviceRefresh)
 		}
 
+		// The forwarders read the device row from the same snapshot, so a
+		// destination sees the position exactly as it was ingested.
+		forwardSettings := readForwardConfig(settings.Config)
+		if transports := buildForwarders(settings.Config, forwardSettings); len(transports) > 0 {
+			forwarder = forward.New(forward.Config{
+				QueueSize:   forwardSettings.queue,
+				MaxBackoff:  forwardSettings.backoff,
+				MaxAttempts: forwardSettings.attempts,
+			}, transports, forward.WithLogger(log.Printf))
+			log.Printf("forward: %s enabled", transportNames(transports))
+
+			previous := alertHook
+			alertHook = func(event *model.Event) {
+				previous(event)
+				forwarder.ForwardEvent(event,
+					state.Device(event.DeviceID), state.LastPosition(event.DeviceID))
+			}
+		}
+
 		positionHook := func(position *model.Position) {
 			state.setPosition(position)
 			socketHub.PublishPosition(position)
+			forwarder.ForwardPosition(position, state.Device(position.DeviceID))
 		}
 
 		pipeline = alert.NewPipeline(engine, nil, store,
@@ -485,6 +507,22 @@ func main() {
 		cancel()
 		if dropped := dispatcher.Dropped(); dropped > 0 {
 			log.Printf("dropped %d notifications because the queue was full", dropped)
+		}
+	}
+
+	// The forwarders are fed by the pipeline and dispatcher hooks, so they drain
+	// after both.
+	if forwarder != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := forwarder.Close(shutdownCtx); err != nil {
+			log.Printf("flush forwards: %v", err)
+		}
+		cancel()
+		if dropped := forwarder.Dropped(); dropped > 0 {
+			log.Printf("dropped %d forwards because the queue was full", dropped)
+		}
+		if failed := forwarder.Failed(); failed > 0 {
+			log.Printf("gave up on %d forwards after the retries", failed)
 		}
 	}
 

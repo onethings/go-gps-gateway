@@ -107,6 +107,30 @@ const (
 	ReportTripParkingDuration = "report.trip.minimalParkingDuration"
 	ReportTripNoDataDuration  = "report.trip.minimalNoDataDuration"
 	ReportIgnoreOdometer      = "report.ignoreOdometer"
+
+	// Forwarding. forward.url and event.forward.url are the Java keys; the
+	// mqtt, redis and wialon sections are Go only, because the Java server
+	// forwards through its protocol modules instead of a dedicated transport.
+	ForwardURL            = "forward.url"
+	ForwardType           = "forward.type"
+	ForwardHeader         = "forward.header"
+	EventForwardURL       = "event.forward.url"
+	EventForwardType      = "event.forward.type"
+	EventForwardHeader    = "event.forward.header"
+	ForwardMQTTBroker     = "forward.mqtt.broker"
+	ForwardMQTTTopic      = "forward.mqtt.topic"
+	ForwardMQTTClientID   = "forward.mqtt.clientId"
+	ForwardMQTTUser       = "forward.mqtt.username"
+	ForwardMQTTPassword   = "forward.mqtt.password"
+	ForwardRedisURL       = "forward.redis.url"
+	ForwardRedisKeyPrefix = "forward.redis.keyPrefix"
+	ForwardWialonAddress  = "forward.wialon.address"
+	ForwardWialonVersion  = "forward.wialon.version"
+	ForwardKind           = "forward.kind"
+	ForwardQueue          = "forward.queue"
+	ForwardAttempts       = "forward.attempts"
+	ForwardBackoff        = "forward.backoff"
+	ForwardTimeout        = "forward.timeout"
 )
 
 // ConfigDefault is the key the Java server uses to chain a second file. The
@@ -206,6 +230,27 @@ var KnownKeys = []string{
 	ReportTripParkingDuration,
 	ReportTripNoDataDuration,
 	ReportIgnoreOdometer,
+
+	ForwardURL,
+	ForwardType,
+	ForwardHeader,
+	EventForwardURL,
+	EventForwardType,
+	EventForwardHeader,
+	ForwardMQTTBroker,
+	ForwardMQTTTopic,
+	ForwardMQTTClientID,
+	ForwardMQTTUser,
+	ForwardMQTTPassword,
+	ForwardRedisURL,
+	ForwardRedisKeyPrefix,
+	ForwardWialonAddress,
+	ForwardWialonVersion,
+	ForwardKind,
+	ForwardQueue,
+	ForwardAttempts,
+	ForwardBackoff,
+	ForwardTimeout,
 }
 
 // Keys a protocol section may set. They are resolved through Protocol, which

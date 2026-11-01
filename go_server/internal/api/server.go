@@ -20,6 +20,7 @@ import (
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 const (
@@ -107,6 +108,11 @@ type Server struct {
 	tokens        TokenLookup
 	// passwordReset delivers reset codes; nil leaves the forgot route at 501.
 	passwordReset PasswordResetMailer
+	// permissionStore and permissions back the /api/permissions and
+	// /api/share routes; shareDisabled refuses the share routes outright.
+	permissionStore PermissionStore
+	permissions     *permissions.Service
+	shareDisabled   bool
 	// loginMaxFailures counts consecutive wrong passwords per account; zero
 	// disables the lockout.
 	loginMaxFailures  int
@@ -267,6 +273,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/users/{id}/notifications", s.handleUserNotifications)
 	mux.HandleFunc("PUT /api/users/{id}/notifications/{notificationId}", s.handleAssignNotification)
 	mux.HandleFunc("DELETE /api/users/{id}/notifications/{notificationId}", s.handleUnassignNotification)
+
+	// Object permissions. The handler switches on the method so GET, POST and
+	// DELETE share one route and one 501 when no store is configured.
+	mux.HandleFunc("/api/permissions", s.handlePermissions)
+	mux.HandleFunc("POST /api/share/device", s.handleShareDevice)
+	mux.HandleFunc("POST /api/share/group", s.handleShareGroup)
 
 	if s.apiKey == "" && s.tokens == nil {
 		return mux

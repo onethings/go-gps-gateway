@@ -10,6 +10,7 @@ import (
 
 	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 // ErrUnknownUser is returned when a token is issued for an email that has no
@@ -23,8 +24,9 @@ const (
 	// userSelectColumns feeds scanUser for the list and single row queries.
 	// The two subqueries let an admin list accounts without one request per
 	// user.
-	userSelectColumns = `u.id, u.email, u.name, u.admin, u.disabled, u.created_at,
-		(SELECT count(*) FROM user_devices ud WHERE ud.user_id = u.id),
+	userSelectColumns = `u.id, u.email, u.name, u.admin, u.disabled, u.temporary, u.created_at,
+		(SELECT count(*) FROM permissions p
+		  WHERE p.owner_type = 'user' AND p.owner_id = u.id AND p.property_type = 'device'),
 		(SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id)`
 
 	// tokenColumns is the SELECT list shared by every token query. The scopes
@@ -49,19 +51,26 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 		admin       bool
 		scopesJSON  string
 		devicesJSON string
+		groupsJSON  string
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT t.id, u.id, u.admin,
 		        to_jsonb(t.scopes)::text,
-		        COALESCE((SELECT jsonb_agg(ud.device_id)
-		                  FROM user_devices ud WHERE ud.user_id = u.id), '[]'::jsonb)::text
+		        COALESCE((SELECT jsonb_agg(p.property_id)
+		                  FROM permissions p
+		                  WHERE p.owner_type = 'user' AND p.owner_id = u.id
+		                    AND p.property_type = 'device'), '[]'::jsonb)::text,
+		        COALESCE((SELECT jsonb_agg(p.property_id)
+		                  FROM permissions p
+		                  WHERE p.owner_type = 'user' AND p.owner_id = u.id
+		                    AND p.property_type = 'group'), '[]'::jsonb)::text
 		 FROM api_tokens t
 		 JOIN users u ON u.id = t.user_id
 		 WHERE t.token_hash = $1
 		   AND NOT u.disabled
 		   AND (t.expires_at IS NULL OR t.expires_at > now())`,
 		tokenHash,
-	).Scan(&tokenID, &userID, &admin, &scopesJSON, &devicesJSON)
+	).Scan(&tokenID, &userID, &admin, &scopesJSON, &devicesJSON, &groupsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -76,6 +85,21 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 	var deviceIDs []int64
 	if err := json.Unmarshal([]byte(devicesJSON), &deviceIDs); err != nil {
 		return nil, fmt.Errorf("postgres: decode token devices: %w", err)
+	}
+	var groupIDs []int64
+	if err := json.Unmarshal([]byte(groupsJSON), &groupIDs); err != nil {
+		return nil, fmt.Errorf("postgres: decode token groups: %w", err)
+	}
+
+	// Group grants are expanded once per request instead of per query, which is
+	// what the Java server does with Condition.Permission(includeGroups). An
+	// admin reaches every device anyway, so the expansion is skipped.
+	if !admin && len(groupIDs) > 0 {
+		inherited, err := s.inheritedDeviceIDs(ctx, groupIDs)
+		if err != nil {
+			return nil, err
+		}
+		deviceIDs = append(deviceIDs, inherited...)
 	}
 
 	scopes := make([]auth.Scope, 0, len(rawScopes))
@@ -112,9 +136,16 @@ func (s *Store) Users(ctx context.Context, filter model.UserFilter) ([]model.Use
 		offset = 0
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT "+userSelectColumns+" FROM users u ORDER BY u.id LIMIT $1 OFFSET $2",
-		limit, offset)
+	query := "SELECT " + userSelectColumns + " FROM users u"
+	args := make([]any, 0, 3)
+	if filter.Email != "" {
+		args = append(args, filter.Email)
+		query += " WHERE u.email = $1"
+	}
+	args = append(args, limit, offset)
+	query += fmt.Sprintf(" ORDER BY u.id LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: query users: %w", err)
 	}
@@ -151,7 +182,7 @@ func (s *Store) User(ctx context.Context, userID int64) (*model.User, error) {
 func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 	var user model.User
 	if err := row.Scan(
-		&user.ID, &user.Email, &user.Name, &user.Admin, &user.Disabled,
+		&user.ID, &user.Email, &user.Name, &user.Admin, &user.Disabled, &user.Temporary,
 		&user.CreatedAt, &user.DeviceCount, &user.TokenCount,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -287,10 +318,10 @@ func (s *Store) ResetLoginFailures(ctx context.Context, userID int64) error {
 func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model.User, error) {
 	var userID int64
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO users (email, name, admin) VALUES ($1, $2, $3)
+		`INSERT INTO users (email, name, admin, temporary) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (email) DO NOTHING
 		 RETURNING id`,
-		create.Email, create.Name, create.Admin,
+		create.Email, create.Name, create.Admin, create.Temporary,
 	).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrDuplicateUser
@@ -356,13 +387,21 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) error {
 	if affected == 0 {
 		return model.ErrUserNotFound
 	}
+
+	// permissions has no foreign key to users because a pair may name any
+	// object type, so the grants of the account are dropped here.
+	if err := s.ClearPermissions(ctx, permissions.ObjectUser, userID); err != nil {
+		return err
+	}
 	return nil
 }
 
 // UserDevices returns the device ids granted to a user, in id order.
 func (s *Store) UserDevices(ctx context.Context, userID int64) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT device_id FROM user_devices WHERE user_id = $1 ORDER BY device_id`,
+		`SELECT property_id FROM permissions
+		  WHERE owner_type = 'user' AND owner_id = $1 AND property_type = 'device'
+		  ORDER BY property_id`,
 		userID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: query user %d devices: %w", userID, err)
@@ -386,7 +425,8 @@ func (s *Store) UserDevices(ctx context.Context, userID int64) ([]int64, error) 
 // AssignDevice grants a user access to a device. Repeating the call is a no-op.
 func (s *Store) AssignDevice(ctx context.Context, userID, deviceID int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO user_devices (user_id, device_id) VALUES ($1, $2)
+		`INSERT INTO permissions (owner_type, owner_id, property_type, property_id)
+		 VALUES ('user', $1, 'device', $2)
 		 ON CONFLICT DO NOTHING`, userID, deviceID)
 	if err != nil {
 		return fmt.Errorf("postgres: assign device %d to user %d: %w", deviceID, userID, err)
@@ -398,7 +438,9 @@ func (s *Store) AssignDevice(ctx context.Context, userID, deviceID int64) error 
 // an error, so a repeated DELETE stays idempotent.
 func (s *Store) UnassignDevice(ctx context.Context, userID, deviceID int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM user_devices WHERE user_id = $1 AND device_id = $2`,
+		`DELETE FROM permissions
+		  WHERE owner_type = 'user' AND owner_id = $1
+		    AND property_type = 'device' AND property_id = $2`,
 		userID, deviceID)
 	if err != nil {
 		return fmt.Errorf("postgres: unassign device %d from user %d: %w", deviceID, userID, err)

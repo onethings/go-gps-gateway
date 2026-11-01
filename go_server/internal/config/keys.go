@@ -22,6 +22,9 @@ const (
 	APITokenTTL         = "api.tokenTTL"         // Go only
 	APILoginMaxFailures = "api.loginMaxFailures" // Go only
 	APILoginLockout     = "api.loginLockout"     // Go only
+	// DisableShare refuses POST /api/share/*. The Java server keeps the same
+	// switch as a server attribute named disableShare.
+	DisableShare = "disableShare"
 
 	// Alert rules.
 	AlertOverspeedKnots  = "alert.overspeedKnots"  // Go only
@@ -76,6 +79,7 @@ var KnownKeys = []string{
 	APITokenTTL,
 	APILoginMaxFailures,
 	APILoginLockout,
+	DisableShare,
 
 	AlertOverspeedKnots,
 	AlertPowerCutVolts,
@@ -141,6 +145,7 @@ var defaults = map[string]string{
 	APITokenTTL:         "0",
 	APILoginMaxFailures: "5",
 	APILoginLockout:     "15m",
+	DisableShare:        "false",
 
 	AlertGeofenceRefresh: "5m",
 	AlertDeviceRefresh:   "5m",

@@ -31,7 +31,10 @@ type User struct {
 	Name  string
 	Admin bool
 	// Disabled blocks every token of the user without deleting them.
-	Disabled  bool
+	Disabled bool
+	// Temporary marks an account created by a share link. It has no password
+	// and cannot be used to share anything itself.
+	Temporary bool
 	CreatedAt time.Time
 	// DeviceCount and TokenCount are computed by the list query so an admin
 	// does not need one request per user.
@@ -42,6 +45,9 @@ type User struct {
 // UserFilter selects users for a query. Limit and Offset are clamped by the
 // storage layer.
 type UserFilter struct {
+	// Email restricts the result to one exact address, which is how a share
+	// link finds the account it created earlier.
+	Email  string
 	Limit  int
 	Offset int
 }
@@ -52,6 +58,9 @@ type UserCreate struct {
 	Email string
 	Name  string
 	Admin bool
+	// Temporary creates a share account: no password, and refused as the owner
+	// of a further share.
+	Temporary bool
 }
 
 // UserUpdate holds the mutable fields of a user. Nil fields are left as they

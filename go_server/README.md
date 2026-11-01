@@ -32,7 +32,7 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                         └─ terminal          = postgres.BatchSink（positions 批次落地）
 
 client ──HTTP──▶ api.Server (RequireAuth)
-                   ├─ 憑證：-api-key（admin）、api_tokens（scope + user_devices）或 /api/login 換發的 token
+                   ├─ 憑證：-api-key（admin）、api_tokens（scope + permissions）或 /api/login 換發的 token
                    ├─ GET /api/devices   ──▶ devices 查詢 / 新增 / 修改 / 刪除
                    ├─ GET /api/positions ──▶ positions 查詢（自動加裝置條件）
                    ├─ GET /api/events    ──▶ events 查詢（/api/alerts 是別名；自動加裝置條件）
@@ -180,6 +180,7 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 `-command-queue-ttl`（預設 5m：命令最多等裝置重連多久）、
 `-command-retention`（預設 168h：命令歷史保留多久，0 = 永久保留；見「命令保留期限」）、
 `-allow-anonymous`（關閉 REST 認證，只給本機開發用）、
+`-disable-share`（對應母本的 `disableShare`：關掉 `POST /api/share/*`；見「權限 API」）、
 `-auto-register`（預設 true：未知識別碼的第一幀就建裝置列；false = 丟掉那幀）、
 `-notify-webhook` / `-notify-email-smtp` 等通知 flag（見「通知管道」）。
 
@@ -239,7 +240,10 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 - `users(id, email, name, admin, disabled, created_at, password_hash)`（`0003_users.sql`；`disabled` 由
   `0004_users_disabled.sql` 補上，`password_hash` 由 `0006_users_password.sql` 補上，預設 NULL =
   只能用 token 登入）
-- `user_devices(user_id, device_id)`（`0003_users.sql`，多對多）
+- `permissions(owner_type, owner_id, property_type, property_id, created_at)`（`0013_permissions.sql`：
+  一張通用多對多表，取代原本的 `user_devices`。母本是一種配對一張 `tc_user_device` /
+  `tc_group_geofence` / ...，這裡把配對型別當資料，新增資源不必再加 migration）
+- `users.temporary`（`0013_permissions.sql`）：分享連結建出來的唯讀帳號
 - `api_tokens(id, user_id, token_hash, scopes, expires_at, created_at)`（`0003_users.sql`）
 - `notifications(id, type, notificators, description, created_at)`（`0005_notifications.sql`）
 - `user_notifications(user_id, notification_id)`（`0005_notifications.sql`，多對多）
@@ -405,7 +409,8 @@ UPDATE devices SET attributes = attributes || '{
 ### 使用者訂閱
 
 `notifications` 是公用範本（告警類型 + 管道），`user_notifications` 是帳號的訂閱。
-帳號只會收到 `user_devices` 有授權的裝置的告警；`users.disabled = true` 的帳號不送。
+帳號只會收到 `permissions` 直接授權的裝置的告警（群組授權目前不展開，見「已知限制」）；
+`users.disabled = true` 的帳號不送。
 同一個帳號有多個符合的範本時，管道取聯集，同一個收件者只送一次。
 
 - `notifications.type`：`deviceOverspeed` / `powerCut` / `powerRestored` / `geofenceEnter` /
@@ -489,7 +494,7 @@ Webhook 的 body 固定為一份 JSON：
 | 憑證         | 來源                                  | 權限                         |
 | ------------ | ------------------------------------- | ---------------------------- |
 | 共用 API key | `-api-key` / `TRACCAR_API_KEY`        | admin：所有 scope、所有裝置  |
-| 使用者 token | `api_tokens` 表，用 `-issue-token` 發 | 依 `scopes` + `user_devices` |
+| 使用者 token | `api_tokens` 表，用 `-issue-token` 發 | 依 `scopes` + `permissions`  |
 | 密碼登入     | `POST /api/login`（email + 密碼）     | 換發一組帶 `*` 的新 token    |
 
 密碼只以 bcrypt（cost 12）雜湊存在 `users.password_hash`，登入請求和任何 user JSON 都不會出現它。
@@ -518,6 +523,9 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 | `read:commands`  | `GET /api/commands`                                                      |
 | `write:devices`  | `POST/PUT/DELETE /api/devices`                                           |
 | `write:commands` | `POST /api/commands`                                                     |
+| `read:permissions` | `GET /api/permissions`                                                 |
+| `write:permissions` | `POST` / `DELETE /api/permissions`                                    |
+| `write:share`    | `POST /api/share/device`、`POST /api/share/group`                        |
 | `*`              | 全部（給機器用，等同舊 API key），另外是列出 / 撤銷自己 token 的必要條件 |
 
 `*` 不等於 admin：帳號管理（建 / 改 / 刪帳號、發 token）仍然只認 `users.admin = true`，
@@ -531,8 +539,70 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 `users.disabled = true` 的帳號會立刻失效（token 查詢直接回 `401`），但 token 與授權都保留，
 之後重新啟用就照舊可用。
 
-非 admin token 用 `POST /api/devices` 建檔時，會自動寫入 `user_devices`，建立者立刻看得到；
-admin key 建的裝置不會自動綁定，要另外授權（見下節）。
+非 admin token 用 `POST /api/devices` 建檔時，會自動寫入一筆 `user → device` 授權，
+建立者立刻看得到；admin key 建的裝置不會自動綁定，要另外授權（見下節）。
+
+授權可以下在裝置上，也可以下在群組上：
+
+- `user → device`：直接看得到這一台。
+- `user → group`：看得到該群組、它的子群組、以及再下一層的子群組內的裝置
+  （`MAX_GROUP_DEPTH = 3`，群組樹最多三層：根、子、孫；母本同名常數）。
+- `group → 任何資源`、`device → 任何資源`：模型與儲存層都支援，REST 端點跟著 M2-3 的資源
+  CRUD 一起開。
+
+token 認證時會把群組授權展開成裝置清單（每個請求一次），所以後面所有查詢的裝置條件跟
+直接授權完全一樣。群組授權目前只影響「看得到哪些裝置」，不影響通知收件者（見「已知限制」）。
+
+## 權限 API
+
+`/api/permissions` 是母本 `PermissionsResource` 的對應端點：一筆權限就是一個兩個鍵的物件，
+**第一個鍵是 owner、第二個是 property**，跟母本一樣照 body 的順序解讀：
+
+```json
+{"userId": 2, "deviceId": 7}
+{"groupId": 1, "geofenceId": 5}
+```
+
+| 路由                     | 說明                                                                        |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `GET /api/permissions`   | 查詢，形如 `?userId=2&deviceId=7`；其中一個可以省略表示不限定。回傳**裸陣列**（母本格式，`traccar-web` 直接吃） |
+| `POST /api/permissions`  | 新增一筆或一批（陣列），全部同型別；成功回 `204`，重複新增不會出錯           |
+| `DELETE /api/permissions`| 刪除一筆或一批；成功回 `204`，原本沒有也回 `204`                              |
+
+- 需要 scope `read:permissions` / `write:permissions`。
+- admin 可以查、改任何配對。非 admin 只能碰自己碰得到的兩端（自己 → 自己的裝置），
+  否則 `403`；`?userId=<別人的 id>` 這種不限定查詢也是 admin 專屬，避免列舉別人的授權。
+- 兩端 id 必須是正整數，型別名稱必須是已知物件（`user` / `device` / `group` / `geofence` /
+  `driver` / `calendar` / `maintenance` / `order` / `report` / `notification` / `command` /
+  `attribute`），owner 只能是 `user` / `group` / `device`。不合法一律 `400`。
+
+```bash
+# 把 device 7 授權給 Bob(2)
+curl -X POST -H "Authorization: Bearer $ADMIN" -d '{"userId":2,"deviceId":7}' localhost:8082/api/permissions
+# Bob 現在拿得到哪些裝置
+curl -H "Authorization: Bearer $ADMIN" 'localhost:8082/api/permissions?userId=2&deviceId=7'
+# 授權整個群組（含子群組，最多三層）
+curl -X POST -H "Authorization: Bearer $ADMIN" -d '{"userId":2,"groupId":1}' localhost:8082/api/permissions
+```
+
+### 分享連結
+
+`POST /api/share/device` 與 `POST /api/share/group`（form-urlencoded）替一台裝置或一個群組
+開一個**唯讀**連結：伺服器建一個沒有密碼的臨時帳號（email 是 `<你的 email>:<uniqueId>` 或
+`<你的 email>:group:<id>`）、把裝置 / 群組授權給它，再發一組只有 `read:positions` /
+`read:devices` / `read:alerts` 的 token 回給你。這是母本 `ShareResource` 的行為。
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN"      -d 'deviceId=7&expiration=2026-12-31T00:00:00Z' localhost:8082/api/share/device
+# {"token":"trc_...","userId":9,"expiresAt":"2026-12-31T00:00:00Z"}
+```
+
+- 需要 scope `write:share`，而且呼叫者要碰得到該裝置 / 群組，否則 `403`。
+- `expiration` 省略表示不過期；格式是 RFC3339 或 `YYYY-MM-DD`（當天 00:00 UTC），必須在未來。
+- 同一個裝置 / 群組只建一次帳號，第二次回 `409`（母本行為）。要重新發一組 token 請用
+  `POST /api/users/{分享帳號}/tokens`。
+- 分享帳號是 `temporary`，沒有密碼、不能登入，也不能再拿去分享（`403`）。
+- `-disable-share`（設定檔 key `disableShare`）關掉這兩支路由，回 `403`。
 
 ### 帳號管理 API
 
@@ -549,7 +619,7 @@ token 的列出與撤銷對帳號本人開放，但本人手上那組 token 必�
 | `GET /api/users`                                        | 列出帳號（`limit` 1–1000、`offset`），含 `deviceCount` / `tokenCount`                   |
 | `POST /api/users`                                       | 建立帳號，body `{"email","name","admin"}`；email 重複回 `409`                           |
 | `PUT /api/users/{id}`                                   | 局部更新 `name` / `admin` / `disabled` / `password`，省略的欄位不動                     |
-| `DELETE /api/users/{id}`                                | 刪除帳號（token 與裝置授權 cascade）                                                    |
+| `DELETE /api/users/{id}`                                | 刪除帳號（token cascade；授權由儲存層一併清掉）                                          |
 | `GET /api/users/{id}/devices`                           | 列出已授權的裝置（格式同 `GET /api/devices`）                                           |
 | `PUT /api/users/{id}/devices/{deviceId}`                | 授權裝置（重複呼叫不會出錯）                                                            |
 | `DELETE /api/users/{id}/devices/{deviceId}`             | 撤銷授權（原本就沒有也回 `204`）                                                        |
@@ -1062,6 +1132,11 @@ scrape_configs:
 - 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知只有 webhook 與 email 兩種。使用者訂閱只決定
   類型與管道：email 收件者是帳號 email，webhook 仍共用 `-notify-webhook` 的 URL。門檻可用
   裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
+- 群組授權只影響「看得到哪些裝置」，通知收件者仍只認 `user → device` 直接授權
+  （`DeviceSubscriptions` 沒有展開群組）。這是 M4 通知改由事件驅動時要一起處理的缺口。
+- 非 admin 只能把裝置授權給**自己**：母本用 `managedUser` 權限讓管理員代管下屬帳號，這裡還沒建
+  那個模型，所以「A 把裝置給 B」目前需要 admin。
+- 分享帳號只能靠 admin 事後刪除來撤銷（沒有到期自動清理）；`expiration` 只作用在 token 上。
 - 圍欄只能以 SQL 維護，且對所有裝置生效（`events.position_id` 已會填，見上節）。M2-1 已把
   `groups` / `geofences` / `calendars` / `drivers` / `maintenances` / `orders` / `reports` /
   `statistics` / `attributes` 的 CRUD 做進儲存層，但 REST 端點要等 M2-3。
@@ -1196,8 +1271,29 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
     （sandbox 擋 `shmget`），所以整合測試在此未執行。
   - 已知限制：Calendar 的 recurrence（VEVENT / RRULE）還沒實作，目前只有 CRUD；`devices.group_id`
     只讀不寫，寫入留給 M2-2 的權限指派。
-- [ ] **M2-2 權限**：`tc_user_*` / `tc_device_*` 的通用多對多表、`Permission`、`PermissionsService`（`MAX_GROUP_DEPTH = 3`）、`/api/permissions`、`/api/share/{device,group}`。
+- [x] **M2-2 權限**：`tc_user_*` / `tc_device_*` 的通用多對多表、`Permission`、`PermissionsService`（`MAX_GROUP_DEPTH = 3`）、`/api/permissions`、`/api/share/{device,group}`。
   - 驗收：group 三層展開的查詢測試；越權一律 403；現有 `permissions_test.go` 擴充到 group 與共享屬性。
+  - 落地：母本是一種配對一張表（`tc_user_device`、`tc_group_geofence`、…），這裡合成一張
+    `permissions(owner_type, owner_id, property_type, property_id)`，把配對型別當資料，新增資源不必
+    再加 migration；`user_devices` 的資料由 `0013_permissions.sql` 搬進去後刪表。
+    `internal/permissions` 有 `Object` 註冊表、`Permission`（JSON 依 body 順序決定 owner，
+    所以用 token 串流解，不用 map）、`Reach` / `Depth` / `CheckHierarchy`（純函式，`MAX_GROUP_DEPTH = 3`，
+    含循環與自我父節點防護）與 `Service`（`Store` 介面背後是 postgres，測試用記憶體實作）。
+    token 認證時把 `user → group` 展開成裝置清單（`Reach` + `devices.group_id`），
+    所以 `Principal.DeviceIDs()` 已經是「含群組繼承」的完整集合，後面所有 REST 查詢不必再改。
+    `/api/permissions` 與 `/api/share/{device,group}` 照母本語義（裸陣列、單筆／批次、
+    第一鍵為 owner、分享帳號 `temporary` 且唯讀、第二次分享 `409`），並補了 scope
+    `read:permissions` / `write:permissions` / `write:share` 與 `-disable-share`。
+    儲存層在刪帳號 / 刪裝置時清掉相關配對（通用表沒有 FK）。
+  - 測試：`internal/permissions` 29 個（物件名稱、JSON 順序、拒絕形狀、`Reach` 三層與第四層、循環、
+    `CheckHierarchy`、`DeviceIDs` 群組展開、`CanAccess` / `Check`）；`internal/api` 新增 21 個
+    （列舉、萬用字元僅 admin、授權 / 撤銷、批次、壞 body、非 admin 越權 403、分享建帳號 / 409 /
+    範圍外的裝置 403 / `-disable-share` / 只有 api-key 不能分享 / 到期時間），放在
+    `internal/api/object_permissions_test.go`；原本的 `permissions_test.go` 仍管 token 的 scope 與
+    裝置範圍，另外在 `internal/auth` 加了一個測試確認三個新 scope 進得了 `KnownScopes`。
+  - 偏差：非 admin 不能把裝置授權給別人（母本的 `managedUser` 還沒移植）；通知收件者仍是直接授權。
+  - 未驗證：`0013_permissions.sql` 與 postgres 實作只做到單元測試與編譯，這台機器起不了
+    PostgreSQL（sandbox 擋 `shmget`），`TRACCAR_POSTGRES_DSN` 的整合測試會 skip。
 - [ ] **M2-3 資源 CRUD**：`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenances`、`/api/orders`、`/api/reports`、`/api/attributes/computed`。
   - 參數照母本 `SimpleObjectResource` / `ExtendedObjectResource`：`all`、`userId`、`groupId`、`deviceId`、`excludeAttributes`、`limit`、`offset`、`keyword`。
   - 驗收：圍欄不用再以 SQL 維護；`alerts` 的圍欄失效條件（`floor` / `ceiling`）改由 API 寫入並經 `TestGeofenceCRUD`。

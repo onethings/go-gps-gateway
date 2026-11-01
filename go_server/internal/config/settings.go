@@ -51,6 +51,9 @@ type Settings struct {
 	TokenTTL          time.Duration
 	LoginMaxFailures  int
 	LoginLockDuration time.Duration
+	// DisableShare refuses the share routes, which would otherwise mint a
+	// read only token for one device or group.
+	DisableShare bool
 
 	OverspeedKnots  float64
 	PowerCutVolts   float64
@@ -112,6 +115,7 @@ type rawFlags struct {
 	tokenTTL       string
 	loginFailures  string
 	loginLockout   string
+	disableShare   string
 
 	overspeedKnots  string
 	powerCutVolts   string
@@ -193,6 +197,8 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 		"consecutive wrong passwords that lock an account; 0 disables the lockout")
 	binder.text(&binder.raw.loginLockout, "login-lock-duration", cfg.String(APILoginLockout),
 		"how long a locked account refuses logins")
+	binder.text(&binder.raw.disableShare, "disable-share", cfg.String(DisableShare),
+		"refuse POST /api/share/* so no public share link can be created")
 
 	binder.text(&binder.raw.overspeedKnots, "overspeed-knots", cfg.String(AlertOverspeedKnots),
 		"overspeed alert threshold in knots; 0 disables the rule")
@@ -327,6 +333,7 @@ func (b *Binder) Settings() (Settings, error) {
 	settings.TokenTTL = toDuration("token-ttl", raw.tokenTTL)
 	settings.LoginMaxFailures = toInt("login-max-failures", raw.loginFailures)
 	settings.LoginLockDuration = toDuration("login-lock-duration", raw.loginLockout)
+	settings.DisableShare = toBool("disable-share", raw.disableShare)
 
 	settings.OverspeedKnots = toFloat("overspeed-knots", raw.overspeedKnots)
 	settings.PowerCutVolts = toFloat("power-cut-volts", raw.powerCutVolts)

@@ -84,6 +84,9 @@ func (f *fakeUsers) Users(_ context.Context, filter model.UserFilter) ([]model.U
 		if !ok {
 			continue
 		}
+		if filter.Email != "" && user.Email != filter.Email {
+			continue
+		}
 		copied := *user
 		copied.DeviceCount = len(f.grants[id])
 		copied.TokenCount = len(f.tokens[id])
@@ -123,6 +126,7 @@ func (f *fakeUsers) CreateUser(_ context.Context, create model.UserCreate) (*mod
 		Email:     create.Email,
 		Name:      create.Name,
 		Admin:     create.Admin,
+		Temporary: create.Temporary,
 		CreatedAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
 	}
 	f.users[user.ID] = user

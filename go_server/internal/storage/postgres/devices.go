@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 const (
@@ -198,7 +199,9 @@ func (s *Store) UpdateDevice(ctx context.Context, deviceID int64, update model.D
 	return device, nil
 }
 
-// DeleteDevice removes a device. Positions and alerts cascade.
+// DeleteDevice removes a device. Positions and events cascade; the grants that
+// name the device are dropped explicitly because the generic permission table
+// has no foreign key.
 func (s *Store) DeleteDevice(ctx context.Context, deviceID int64) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM devices WHERE id = $1`, deviceID)
 	if err != nil {
@@ -211,6 +214,10 @@ func (s *Store) DeleteDevice(ctx context.Context, deviceID int64) error {
 	}
 	if affected == 0 {
 		return model.ErrDeviceNotFound
+	}
+
+	if err := s.ClearPermissions(ctx, permissions.ObjectDevice, deviceID); err != nil {
+		return err
 	}
 	return nil
 }

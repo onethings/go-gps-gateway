@@ -26,6 +26,13 @@ const (
 	ScopeReadCommands  Scope = "read:commands"
 	ScopeWriteDevices  Scope = "write:devices"
 	ScopeWriteCommands Scope = "write:commands"
+	// The permission routes are separate from the objects they link: a token
+	// that may read devices does not automatically get to see who else was
+	// granted them.
+	ScopeReadPermissions  Scope = "read:permissions"
+	ScopeWritePermissions Scope = "write:permissions"
+	// ScopeWriteShare mints a public read only token for one device or group.
+	ScopeWriteShare Scope = "write:share"
 
 	// ScopeAll grants every current and future scope. It is meant for machine
 	// tokens that have to act like the legacy -api-key.
@@ -42,6 +49,9 @@ var KnownScopes = []Scope{
 	ScopeReadCommands,
 	ScopeWriteDevices,
 	ScopeWriteCommands,
+	ScopeReadPermissions,
+	ScopeWritePermissions,
+	ScopeWriteShare,
 	ScopeAll,
 }
 
@@ -171,7 +181,8 @@ func (p *Principal) Has(scope Scope) bool {
 }
 
 // CanAccessDevice reports whether the principal owns the device. Admins may
-// access every device; a non-admin needs a matching user_devices row.
+// access every device; a non-admin needs a matching permissions row (a direct
+// device grant or one inherited from a group).
 func (p *Principal) CanAccessDevice(deviceID int64) bool {
 	if p == nil {
 		return false

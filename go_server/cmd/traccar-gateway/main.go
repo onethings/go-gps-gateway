@@ -306,6 +306,8 @@ func main() {
 				api.WithHealthPinger(store),
 				api.WithLogger(log.Printf),
 				api.WithLoginLockout(settings.LoginMaxFailures, settings.LoginLockDuration),
+				api.WithPermissions(store),
+				api.WithShareDisabled(settings.DisableShare),
 			}
 			if mailer != nil {
 				options = append(options, api.WithPasswordReset(notify.NewPasswordResetMail(mailer)))

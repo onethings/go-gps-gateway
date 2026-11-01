@@ -182,8 +182,9 @@ func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertTy
 		 FROM notifications n
 		 JOIN user_notifications un ON un.notification_id = n.id
 		 JOIN users u ON u.id = un.user_id
-		 JOIN user_devices ud ON ud.user_id = u.id
-		 WHERE ud.device_id = $1
+		 JOIN permissions p ON p.owner_type = 'user' AND p.owner_id = u.id
+		                   AND p.property_type = 'device'
+		 WHERE p.property_id = $1
 		   AND NOT u.disabled
 		   AND (n.type = $2 OR n.type = 'all' OR n.type = '*')
 		 ORDER BY u.id, n.id`,

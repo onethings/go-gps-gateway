@@ -23,6 +23,29 @@ func TestParseScopes(t *testing.T) {
 	}
 }
 
+// Every scope a route checks must be a known scope, otherwise the token that
+// carries it cannot be issued in the first place.
+func TestPermissionScopesParse(t *testing.T) {
+	raw := string(ScopeReadPermissions) + "," + string(ScopeWritePermissions) + "," + string(ScopeWriteShare)
+	scopes, err := ParseScopes(raw)
+	if err != nil {
+		t.Fatalf("ParseScopes(%q): %v", raw, err)
+	}
+	if len(scopes) != 3 {
+		t.Fatalf("scopes = %v, want 3", scopes)
+	}
+
+	principal := NewPrincipal(1, false, scopes, nil)
+	for _, scope := range scopes {
+		if !principal.Has(scope) {
+			t.Errorf("principal does not hold %q", scope)
+		}
+	}
+	if principal.Has(ScopeWriteDevices) {
+		t.Error("a permission token must not carry write:devices")
+	}
+}
+
 func TestGenerateToken(t *testing.T) {
 	first, err := GenerateToken()
 	if err != nil {

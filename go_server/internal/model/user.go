@@ -15,6 +15,12 @@ var (
 	// ErrTokenNotFound is returned when a token id does not belong to the
 	// user it was looked up for.
 	ErrTokenNotFound = errors.New("token not found")
+	// ErrResetTokenInvalid is returned when a password reset code is unknown,
+	// expired or already used.
+	ErrResetTokenInvalid = errors.New("password reset token is invalid or expired")
+	// ErrResetTooSoon is returned when the account already has a fresh reset
+	// code, so the resend throttle suppresses a second email.
+	ErrResetTooSoon = errors.New("password reset was requested moments ago")
 )
 
 // User is one row of the users table: an account that owns devices and

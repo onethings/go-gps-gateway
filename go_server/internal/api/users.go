@@ -35,10 +35,29 @@ type UserStore interface {
 	IssueTokenForUser(ctx context.Context, userID int64, scopes []string, expiresAt *time.Time) (*model.APIToken, string, error)
 	RevokeToken(ctx context.Context, userID, tokenID int64) error
 	// CredentialByEmail backs POST /api/login and SetPassword backs the
-	// password field of PUT /api/users/{id}. The hash never leaves storage as
-	// part of a model.User.
+	// password field of PUT /api/users/{id}. CredentialByID backs a caller
+	// changing its own password. The hash never leaves storage as part of a
+	// model.User.
 	CredentialByEmail(ctx context.Context, email string) (*auth.Credential, error)
+	CredentialByID(ctx context.Context, userID int64) (*auth.Credential, error)
 	SetPassword(ctx context.Context, userID int64, passwordHash string) error
+	// RecordLoginFailure counts one wrong password and reports the lock
+	// deadline once the account reaches the threshold. A nil deadline means the
+	// account is still open. ResetLoginFailures clears both after a success.
+	RecordLoginFailure(ctx context.Context, userID int64, threshold int, lockFor time.Duration) (*time.Time, error)
+	ResetLoginFailures(ctx context.Context, userID int64) error
+	// CreatePasswordReset stores the hash of a reset code, ConsumePasswordReset
+	// trades an unused code for an account id, and DeletePasswordResets drops
+	// the outstanding codes of an account.
+	CreatePasswordReset(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error
+	ConsumePasswordReset(ctx context.Context, tokenHash string) (int64, error)
+	DeletePasswordResets(ctx context.Context, userID int64) error
+	// DeletePasswordReset drops exactly one code, so a failed delivery does not
+	// remove a newer code the account requested meanwhile.
+	DeletePasswordReset(ctx context.Context, tokenHash string) error
+	// RevokeTokensExcept removes every token of a user except keepTokenID. A
+	// keepTokenID of zero removes every token.
+	RevokeTokensExcept(ctx context.Context, userID, keepTokenID int64) error
 }
 
 type userResponse struct {
@@ -323,6 +342,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			s.logf("api: set password of user %d: %v", userID, err)
 			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 			return
+		}
+		// A new password is also how an administrator unlocks an account that
+		// exhausted its attempts, and it makes any mailed reset code obsolete.
+		if err := s.users.ResetLoginFailures(ctx, userID); err != nil {
+			s.logf("api: reset login failures of user %d: %v", userID, err)
+		}
+		if err := s.users.DeletePasswordResets(ctx, userID); err != nil {
+			s.logf("api: delete password resets of user %d: %v", userID, err)
 		}
 	}
 

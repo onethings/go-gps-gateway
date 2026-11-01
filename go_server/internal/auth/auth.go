@@ -76,15 +76,29 @@ func ParseScopes(raw string) ([]Scope, error) {
 	return scopes, nil
 }
 
-const tokenPrefix = "trc_"
+const (
+	tokenPrefix              = "trc_"
+	passwordResetTokenPrefix = "prt_"
+)
 
 // GenerateToken returns a new opaque bearer token. Only its hash is stored.
 func GenerateToken() (string, error) {
+	return generateToken(tokenPrefix)
+}
+
+// GeneratePasswordResetToken returns a single-use password reset code. It uses
+// the same entropy and hashing as a bearer token but carries its own prefix so
+// the two cannot be confused, and a reset code never reaches api_tokens.
+func GeneratePasswordResetToken() (string, error) {
+	return generateToken(passwordResetTokenPrefix)
+}
+
+func generateToken(prefix string) (string, error) {
 	buffer := make([]byte, 32)
 	if _, err := rand.Read(buffer); err != nil {
 		return "", fmt.Errorf("auth: generate token: %w", err)
 	}
-	return tokenPrefix + base64.RawURLEncoding.EncodeToString(buffer), nil
+	return prefix + base64.RawURLEncoding.EncodeToString(buffer), nil
 }
 
 // HashToken returns the hex encoded SHA-256 of the token, which is what
@@ -100,6 +114,10 @@ type Principal struct {
 	// UserID is the users.id row the token belongs to; zero for the legacy
 	// shared -api-key.
 	UserID int64
+	// TokenID is the api_tokens.id that authenticated the call. Zero means the
+	// credential is not a stored token, which is the case for the legacy shared
+	// key and for principals built by tests.
+	TokenID int64
 	// Admin bypasses scope and device ownership checks.
 	Admin bool
 

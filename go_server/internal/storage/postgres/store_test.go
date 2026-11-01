@@ -429,3 +429,129 @@ func TestUserPasswordIntegration(t *testing.T) {
 		t.Errorf("unknown user err = %v, want ErrUserNotFound", err)
 	}
 }
+
+// TestPasswordSelfServiceIntegration covers the lockout, reset code and token
+// revocation queries. It needs migrations 0008 applied.
+func TestPasswordSelfServiceIntegration(t *testing.T) {
+	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+	}
+
+	ctx := context.Background()
+	store, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	email := "selfservice-" + time.Now().Format("150405.000000") + "@example.test"
+	user, err := store.CreateUser(ctx, model.UserCreate{Email: email, Name: "Self Service"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.DB().ExecContext(ctx, `DELETE FROM users WHERE id = $1`, user.ID)
+	})
+
+	credential, err := store.CredentialByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("credential by id: %v", err)
+	}
+	if credential.LockedUntil != nil {
+		t.Errorf("a new account is locked until %v", credential.LockedUntil)
+	}
+
+	// Two wrong passwords lock the account for the requested window.
+	if lock, err := store.RecordLoginFailure(ctx, user.ID, 2, 10*time.Minute); err != nil || lock != nil {
+		t.Fatalf("first failure = %v, %v; want no lock", lock, err)
+	}
+	lock, err := store.RecordLoginFailure(ctx, user.ID, 2, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("second failure: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("second failure did not lock the account")
+	}
+	if wait := time.Until(*lock); wait <= 0 || wait > 10*time.Minute {
+		t.Errorf("lock lasts %v, want at most 10 minutes", wait)
+	}
+	credential, err = store.CredentialByEmail(ctx, email)
+	if err != nil || credential.LockedUntil == nil {
+		t.Fatalf("credential after lock = %+v, err = %v", credential, err)
+	}
+	if err := store.ResetLoginFailures(ctx, user.ID); err != nil {
+		t.Fatalf("reset failures: %v", err)
+	}
+	credential, err = store.CredentialByEmail(ctx, email)
+	if err != nil || credential.LockedUntil != nil {
+		t.Fatalf("credential after reset = %+v, err = %v", credential, err)
+	}
+
+	// Revoking keeps the token the caller used and drops the rest.
+	first, _, err := store.IssueTokenForUser(ctx, user.ID, []string{"*"}, nil)
+	if err != nil {
+		t.Fatalf("issue first token: %v", err)
+	}
+	if _, _, err := store.IssueTokenForUser(ctx, user.ID, []string{"*"}, nil); err != nil {
+		t.Fatalf("issue second token: %v", err)
+	}
+	if err := store.RevokeTokensExcept(ctx, user.ID, first.ID); err != nil {
+		t.Fatalf("revoke others: %v", err)
+	}
+	tokens, err := store.Tokens(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("tokens: %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].ID != first.ID {
+		t.Errorf("tokens after keep = %+v, want only %d", tokens, first.ID)
+	}
+	if err := store.RevokeTokensExcept(ctx, user.ID, 0); err != nil {
+		t.Fatalf("revoke all: %v", err)
+	}
+	if tokens, err := store.Tokens(ctx, user.ID); err != nil || len(tokens) != 0 {
+		t.Errorf("tokens after revoke all = %+v, err = %v", tokens, err)
+	}
+
+	// A reset code is throttled, single use, and expires.
+	if err := store.CreatePasswordReset(ctx, user.ID, "hash-a", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create reset: %v", err)
+	}
+	if err := store.CreatePasswordReset(ctx, user.ID, "hash-b", time.Now().Add(time.Hour)); !errors.Is(err, model.ErrResetTooSoon) {
+		t.Fatalf("second create err = %v, want ErrResetTooSoon", err)
+	}
+	if err := store.DeletePasswordResets(ctx, user.ID); err != nil {
+		t.Fatalf("delete resets: %v", err)
+	}
+	if err := store.CreatePasswordReset(ctx, user.ID, "hash-b", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create after delete: %v", err)
+	}
+	resetUser, err := store.ConsumePasswordReset(ctx, "hash-b")
+	if err != nil || resetUser != user.ID {
+		t.Fatalf("consume = %d, %v; want %d", resetUser, err, user.ID)
+	}
+	if _, err := store.ConsumePasswordReset(ctx, "hash-b"); !errors.Is(err, model.ErrResetTokenInvalid) {
+		t.Errorf("second consume err = %v, want ErrResetTokenInvalid", err)
+	}
+	if err := store.DeletePasswordResets(ctx, user.ID); err != nil {
+		t.Fatalf("delete resets before expiry test: %v", err)
+	}
+	if err := store.CreatePasswordReset(ctx, user.ID, "hash-c", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("create expired reset: %v", err)
+	}
+	if _, err := store.ConsumePasswordReset(ctx, "hash-c"); !errors.Is(err, model.ErrResetTokenInvalid) {
+		t.Errorf("expired consume err = %v, want ErrResetTokenInvalid", err)
+	}
+	if err := store.DeletePasswordResets(ctx, user.ID); err != nil {
+		t.Fatalf("delete resets: %v", err)
+	}
+	if err := store.CreatePasswordReset(ctx, user.ID, "hash-d", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create droppable reset: %v", err)
+	}
+	if err := store.DeletePasswordReset(ctx, "hash-d"); err != nil {
+		t.Fatalf("delete one reset: %v", err)
+	}
+	if _, err := store.ConsumePasswordReset(ctx, "hash-d"); !errors.Is(err, model.ErrResetTokenInvalid) {
+		t.Errorf("consume of a deleted code err = %v, want ErrResetTokenInvalid", err)
+	}
+}

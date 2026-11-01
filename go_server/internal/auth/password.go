@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -69,4 +70,7 @@ type Credential struct {
 	UserID       int64
 	PasswordHash string
 	Disabled     bool
+	// LockedUntil is when failed logins stop refusing the account. nil means
+	// no lock is active.
+	LockedUntil *time.Time
 }

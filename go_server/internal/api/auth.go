@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/model"
@@ -17,8 +20,10 @@ import (
 // working when authentication is enabled, and so that a caller with no
 // credential at all can obtain one.
 var exemptPaths = map[string]struct{}{
-	"/api/health": {},
-	"/api/login":  {},
+	"/api/health":          {},
+	"/api/login":           {},
+	"/api/password/forgot": {},
+	"/api/password/reset":  {},
 }
 
 // TokenLookup resolves a hashed bearer token to a principal. The postgres store
@@ -124,9 +129,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	// A locked account is refused before the password is checked. The status
+	// code already tells the caller that this address has a locked account, so
+	// spending a bcrypt here would only make a brute force cheaper to serve.
+	if credential.LockedUntil != nil && s.now().Before(*credential.LockedUntil) {
+		writeLockedOut(w, credential.LockedUntil.Sub(s.now()))
+		return
+	}
 	// An account that never had a password has an empty hash, which VerifyPassword
 	// charges one bcrypt for, so it answers like a wrong password.
 	if !auth.VerifyPassword(credential.PasswordHash, request.Password) {
+		if s.recordLoginFailure(ctx, w, credential) {
+			return
+		}
 		writeError(w, http.StatusUnauthorized, errors.New("invalid email or password"))
 		return
 	}
@@ -135,6 +150,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if credential.Disabled {
 		writeError(w, http.StatusForbidden, errors.New("account is disabled"))
 		return
+	}
+
+	// The password was right, so the failure window starts over.
+	if err := s.users.ResetLoginFailures(ctx, credential.UserID); err != nil {
+		s.logf("api: reset login failures of user %d: %v", credential.UserID, err)
 	}
 
 	token, plaintext, err := s.users.IssueTokenForUser(ctx, credential.UserID, []string{string(auth.ScopeAll)}, nil)
@@ -148,6 +168,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		tokenResponse: newTokenResponse(*token),
 		Token:         plaintext,
 	})
+}
+
+// recordLoginFailure counts one wrong password and reports whether it locked
+// the account, in which case the response is already written. A bookkeeping
+// error is logged but changes nothing: the password was wrong either way.
+func (s *Server) recordLoginFailure(ctx context.Context, w http.ResponseWriter, credential *auth.Credential) bool {
+	if s.loginMaxFailures <= 0 {
+		return false
+	}
+	lockedUntil, err := s.users.RecordLoginFailure(ctx, credential.UserID, s.loginMaxFailures, s.loginLockDuration)
+	if err != nil {
+		s.logf("api: record login failure of user %d: %v", credential.UserID, err)
+		return false
+	}
+	if lockedUntil == nil {
+		return false
+	}
+	writeLockedOut(w, lockedUntil.Sub(s.now()))
+	return true
+}
+
+// writeLockedOut answers 429 and tells the caller when the lock ends.
+func writeLockedOut(w http.ResponseWriter, wait time.Duration) {
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	writeError(w, http.StatusTooManyRequests, errors.New("too many failed login attempts; try again later"))
 }
 
 // requestToken reads the credential from X-Api-Key or a Bearer header.

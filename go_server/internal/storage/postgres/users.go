@@ -44,13 +44,14 @@ const (
 // distinguishing the cases.
 func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Principal, error) {
 	var (
+		tokenID     int64
 		userID      int64
 		admin       bool
 		scopesJSON  string
 		devicesJSON string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT u.id, u.admin,
+		`SELECT t.id, u.id, u.admin,
 		        to_jsonb(t.scopes)::text,
 		        COALESCE((SELECT jsonb_agg(ud.device_id)
 		                  FROM user_devices ud WHERE ud.user_id = u.id), '[]'::jsonb)::text
@@ -60,7 +61,7 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 		   AND NOT u.disabled
 		   AND (t.expires_at IS NULL OR t.expires_at > now())`,
 		tokenHash,
-	).Scan(&userID, &admin, &scopesJSON, &devicesJSON)
+	).Scan(&tokenID, &userID, &admin, &scopesJSON, &devicesJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -83,7 +84,9 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 			scopes = append(scopes, auth.Scope(scope))
 		}
 	}
-	return auth.NewPrincipal(userID, admin, scopes, deviceIDs), nil
+	principal := auth.NewPrincipal(userID, admin, scopes, deviceIDs)
+	principal.TokenID = tokenID
+	return principal, nil
 }
 
 // Ping reports whether the database is reachable, for the health probe.
@@ -168,18 +171,115 @@ func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 // An account without a password comes back with an empty PasswordHash, which
 // auth.VerifyPassword always rejects.
 func (s *Store) CredentialByEmail(ctx context.Context, email string) (*auth.Credential, error) {
-	var credential auth.Credential
+	return s.credential(ctx, `WHERE email = $1`, email)
+}
+
+// CredentialByID returns the password state of one account. A self-service
+// password change knows the caller's id, not its email.
+func (s *Store) CredentialByID(ctx context.Context, userID int64) (*auth.Credential, error) {
+	return s.credential(ctx, `WHERE id = $1`, userID)
+}
+
+func (s *Store) credential(ctx context.Context, predicate string, arg any) (*auth.Credential, error) {
+	var (
+		credential  auth.Credential
+		lockedUntil sql.NullTime
+	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, COALESCE(password_hash, ''), disabled FROM users WHERE email = $1`,
-		email,
-	).Scan(&credential.UserID, &credential.PasswordHash, &credential.Disabled)
+		`SELECT id, COALESCE(password_hash, ''), disabled, locked_until FROM users `+predicate,
+		arg,
+	).Scan(&credential.UserID, &credential.PasswordHash, &credential.Disabled, &lockedUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrUserNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("postgres: credential for user %q: %w", email, err)
+		return nil, fmt.Errorf("postgres: credential: %w", err)
+	}
+	if lockedUntil.Valid {
+		lock := lockedUntil.Time
+		credential.LockedUntil = &lock
 	}
 	return &credential, nil
+}
+
+// RecordLoginFailure counts one wrong password and locks the account once the
+// threshold is reached. It returns the lock deadline, or nil while the account
+// stays open.
+//
+// The row is locked for the read-modify-write so that parallel guesses cannot
+// each read the same counter and lose an increment, which would let an attacker
+// sidestep the threshold by flooding. An expired lock does not count as an
+// attempt, so the window starts over instead of re-locking on the first new
+// failure.
+func (s *Store) RecordLoginFailure(ctx context.Context, userID int64, threshold int, lockFor time.Duration) (*time.Time, error) {
+	if threshold <= 0 {
+		return nil, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: record login failure of user %d: %w", userID, err)
+	}
+	defer tx.Rollback()
+
+	var (
+		attempts    int
+		lockedUntil sql.NullTime
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT failed_login_attempts, locked_until FROM users WHERE id = $1 FOR UPDATE`,
+		userID,
+	).Scan(&attempts, &lockedUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: record login failure of user %d: %w", userID, err)
+	}
+
+	now := time.Now()
+	if lockedUntil.Valid && !lockedUntil.Time.After(now) {
+		attempts = 0
+	}
+	attempts++
+
+	var lock *time.Time
+	if attempts >= threshold {
+		deadline := now.Add(lockFor)
+		lock = &deadline
+		lockedUntil = sql.NullTime{Time: deadline, Valid: true}
+	} else {
+		lockedUntil = sql.NullTime{}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET failed_login_attempts = $2, locked_until = $3 WHERE id = $1`,
+		userID, attempts, lockedUntil,
+	); err != nil {
+		return nil, fmt.Errorf("postgres: record login failure of user %d: %w", userID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("postgres: record login failure of user %d: %w", userID, err)
+	}
+	return lock, nil
+}
+
+// ResetLoginFailures clears the counters after a successful password check or
+// a password change.
+func (s *Store) ResetLoginFailures(ctx context.Context, userID int64) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`, userID)
+	if err != nil {
+		return fmt.Errorf("postgres: reset login failures of user %d: %w", userID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("postgres: reset login failures of user %d: %w", userID, err)
+	}
+	if affected == 0 {
+		return model.ErrUserNotFound
+	}
+	return nil
 }
 
 // CreateUser inserts an account. An email that already exists returns
@@ -398,6 +498,18 @@ func (s *Store) RevokeToken(ctx context.Context, userID, tokenID int64) error {
 	}
 	if affected == 0 {
 		return model.ErrTokenNotFound
+	}
+	return nil
+}
+
+// RevokeTokensExcept deletes every token of one user except keepTokenID. A
+// keepTokenID of zero removes all of them, which is what a password reset
+// needs: the caller holds a reset code, not a token.
+func (s *Store) RevokeTokensExcept(ctx context.Context, userID, keepTokenID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM api_tokens WHERE user_id = $1 AND id <> $2`, userID, keepTokenID)
+	if err != nil {
+		return fmt.Errorf("postgres: revoke tokens of user %d: %w", userID, err)
 	}
 	return nil
 }

@@ -79,6 +79,10 @@ func main() {
 	notifyTimeout := flag.Duration("notify-timeout", 10*time.Second,
 		"timeout of one device lookup or notification send")
 	notifyQueue := flag.Int("notify-queue", 256, "alerts that may wait for notification delivery")
+	loginMaxFailures := flag.Int("login-max-failures", api.DefaultLoginMaxFailures,
+		"consecutive wrong passwords that lock an account; 0 disables the lockout")
+	loginLockDuration := flag.Duration("login-lock-duration", api.DefaultLoginLockDuration,
+		"how long a locked account refuses logins")
 	flag.Parse()
 
 	if *issueToken != "" && *dsn == "" {
@@ -89,7 +93,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("-notify-types: %v", err)
 	}
-	channels, err := notifyChannels(notifyChannelConfig{
+	channels, mailer, err := notifyChannels(notifyChannelConfig{
 		WebhookURL:           *notifyWebhook,
 		WebhookAuthorization: *notifyWebhookAuthorization,
 		SMTPAddress:          *notifySMTP,
@@ -258,6 +262,12 @@ func main() {
 				api.WithMetrics(meters),
 				api.WithHealthPinger(store),
 				api.WithLogger(log.Printf),
+				api.WithLoginLockout(*loginMaxFailures, *loginLockDuration),
+			}
+			if mailer != nil {
+				options = append(options, api.WithPasswordReset(notify.NewPasswordResetMail(mailer)))
+			} else {
+				log.Print("api: no SMTP relay configured; password reset email is unavailable")
 			}
 			switch {
 			case *allowAnonymous:
@@ -426,17 +436,21 @@ type notifyChannelConfig struct {
 
 // notifyChannels builds the channels the flags enable. A channel with no flag
 // is skipped; a partial configuration is an error so that a typo does not
-// silently turn notifications off.
-func notifyChannels(config notifyChannelConfig) ([]notify.Channel, error) {
-	var channels []notify.Channel
+// silently turn notifications off. The mail channel's SMTP client is returned
+// too, because the password reset email reuses the same relay.
+func notifyChannels(config notifyChannelConfig) ([]notify.Channel, *notify.Mail, error) {
+	var (
+		channels []notify.Channel
+		mailer   *notify.Mail
+	)
 
 	if config.WebhookURL != "" {
 		parsed, err := url.Parse(config.WebhookURL)
 		if err != nil {
-			return nil, fmt.Errorf("webhook %q: %w", config.WebhookURL, err)
+			return nil, nil, fmt.Errorf("webhook %q: %w", config.WebhookURL, err)
 		}
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return nil, fmt.Errorf("webhook %q: want an http or https URL", config.WebhookURL)
+			return nil, nil, fmt.Errorf("webhook %q: want an http or https URL", config.WebhookURL)
 		}
 		channels = append(channels, notify.Channel{
 			Notifier:  notify.NewWebhook(notify.WebhookConfig{Authorization: config.WebhookAuthorization}),
@@ -446,7 +460,7 @@ func notifyChannels(config notifyChannelConfig) ([]notify.Channel, error) {
 	}
 
 	if config.SMTPAddress != "" || config.EmailFrom != "" || config.EmailTo != "" {
-		mailer, err := notify.NewMail(notify.MailConfig{
+		built, err := notify.NewMail(notify.MailConfig{
 			Address:  config.SMTPAddress,
 			From:     config.EmailFrom,
 			Username: config.EmailUsername,
@@ -454,8 +468,9 @@ func notifyChannels(config notifyChannelConfig) ([]notify.Channel, error) {
 			TLS:      config.EmailTLS,
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		mailer = built
 		channels = append(channels, notify.Channel{
 			Notifier:  mailer,
 			Defaults:  notify.SplitList(config.EmailTo),
@@ -463,7 +478,7 @@ func notifyChannels(config notifyChannelConfig) ([]notify.Channel, error) {
 		})
 	}
 
-	return channels, nil
+	return channels, mailer, nil
 }
 
 // notifyTypeFilter validates -notify-types so that a misspelled type fails at

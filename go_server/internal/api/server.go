@@ -97,6 +97,12 @@ type Server struct {
 	now           func() time.Time
 	apiKey        string
 	tokens        TokenLookup
+	// passwordReset delivers reset codes; nil leaves the forgot route at 501.
+	passwordReset PasswordResetMailer
+	// loginMaxFailures counts consecutive wrong passwords per account; zero
+	// disables the lockout.
+	loginMaxFailures  int
+	loginLockDuration time.Duration
 }
 
 // Option customises a Server.
@@ -186,10 +192,12 @@ func WithMetrics(set *metrics.Set) Option {
 // NewServer creates the API handlers.
 func NewServer(alerts AlertQuerier, options ...Option) *Server {
 	server := &Server{
-		alerts:       alerts,
-		logf:         func(string, ...any) {},
-		queryTimeout: defaultQueryTimeout,
-		now:          time.Now,
+		alerts:            alerts,
+		logf:              func(string, ...any) {},
+		queryTimeout:      defaultQueryTimeout,
+		now:               time.Now,
+		loginMaxFailures:  DefaultLoginMaxFailures,
+		loginLockDuration: DefaultLoginLockDuration,
 	}
 	for _, option := range options {
 		option(server)
@@ -208,6 +216,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/password/forgot", s.handleForgotPassword)
+	mux.HandleFunc("POST /api/password/reset", s.handleResetPassword)
 	mux.HandleFunc("GET /api/positions", s.handlePositions)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/commands", s.handleCommands)
@@ -225,6 +235,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/users/{id}/tokens", s.handleTokens)
 	mux.HandleFunc("POST /api/users/{id}/tokens", s.handleIssueToken)
 	mux.HandleFunc("DELETE /api/users/{id}/tokens/{tokenId}", s.handleRevokeToken)
+	// A caller changes its own password here; admins set anyone's through
+	// PUT /api/users/{id}.
+	mux.HandleFunc("PUT /api/users/me/password", s.handleChangePassword)
 
 	// Notification presets are shared definitions; any authenticated caller may
 	// list them, only an admin may change them. Subscriptions are managed by

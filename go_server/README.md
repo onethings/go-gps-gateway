@@ -97,6 +97,7 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 `-device-refresh`（預設 5m，0 = 只在啟動時載入一次；每裝置門檻用的 attributes）、
 `-api-key`（預設讀 `TRACCAR_API_KEY`；空 = 只用資料庫 token 認證）、
 `-issue-token` / `-token-scopes` / `-token-ttl`（發 token 後結束，需要 `-dsn`）、
+`-login-max-failures`（預設 5，0 = 關閉登入失敗鎖定）與 `-login-lock-duration`（預設 15m）、
 `-allow-anonymous`（關閉 REST 認證，只給本機開發用）、
 `-notify-webhook` / `-notify-email-smtp` 等通知 flag（見「通知管道」）。
 
@@ -379,7 +380,8 @@ Webhook 的 body 固定為一份 JSON：
 
 ## 認證與權限
 
-除了 `/api/health` 與 `POST /api/login`，REST 每個請求都要帶憑證，放在 `X-Api-Key` 或
+除了 `/api/health`、`POST /api/login` 與兩支密碼自助路由（`POST /api/password/forgot`、
+`POST /api/password/reset`），REST 每個請求都要帶憑證，放在 `X-Api-Key` 或
 `Authorization: Bearer <token>`（兩者等價）：
 
 | 憑證         | 來源                                  | 權限                         |
@@ -393,7 +395,7 @@ Webhook 的 body 固定為一份 JSON：
 憑證以常數時間比較；token 只存 SHA-256（`api_tokens.token_hash`），資料庫外洩也拿不到原值。
 缺憑證或不符回 `401`（帶 `WWW-Authenticate: Bearer`），scope 不足或裝置未授權回 `403`。
 接了 `-dsn` 之後 token 認證一律啟用：**沒設 `-api-key` 又沒有任何有效 token 時，REST 是全關的**
-（只有 `/api/health` 與 `/api/login` 例外）。舊的 `-api-key` 仍然可用，等於 admin。
+（只有 `/api/health`、`/api/login`、`/api/password/forgot` 與 `/api/password/reset` 例外）。舊的 `-api-key` 仍然可用，等於 admin。
 本機開發若不想每次帶憑證，可以加 `-allow-anonymous`（啟動會印警告，不要用在對外環境）。
 
 ```bash
@@ -435,9 +437,10 @@ admin key 建的裝置不會自動綁定，要另外授權（見下節）。
 帳號相關路由全部需要 **admin 憑證**（`-api-key`，或 `users.admin = true` 的使用者 token），
 不看 scope：即使 token 帶 `*` 也不能建 / 改 / 刪帳號或發 token，避免提權。沒有配置 `-dsn` 時這些
 路由回 `501`；`-allow-anonymous` 時也會一併開放，只適合本機。
-兩處例外，兩者都只碰「自己的」資料：
+三處例外，都只碰「自己的」資料：
 token 的列出與撤銷對帳號本人開放，但本人手上那組 token 必須帶 `*`（見「密碼登入」）；
-通知訂閱的 `/api/users/{id}/notifications/...` 對帳號本人開放，不看 scope（見「使用者訂閱」）。
+通知訂閱的 `/api/users/{id}/notifications/...` 對帳號本人開放，不看 scope（見「使用者訂閱」）；
+`PUT /api/users/me/password` 由帳號本人改自己的密碼（見「密碼登入」）。
 
 | 路由                                       | 說明                                                               |
 | ------------------------------------------ | ------------------------------------------------------------------ |
@@ -451,6 +454,9 @@ token 的列出與撤銷對帳號本人開放，但本人手上那組 token 必�
 | `GET /api/users/{id}/tokens`               | 列出 token 中繼資料，**不含**明文與雜湊（admin，或本人帶 `*` 的 token） |
 | `POST /api/users/{id}/tokens`              | 發 token，body `{"scopes":[...],"expiresIn":"720h"}`，明文只回這一次（僅 admin） |
 | `DELETE /api/users/{id}/tokens/{tokenId}`  | 撤銷 token（admin，或本人帶 `*` 的 token）                          |
+| `PUT /api/users/me/password`               | 本人改密碼，body `{"currentPassword","newPassword"}`（需要使用者 token，共用 key 不行） |
+| `POST /api/password/forgot`                | 寄出重設碼，body `{"email"}`；不論帳號是否存在都回 `202`（免憑證）  |
+| `POST /api/password/reset`                 | 用重設碼換新密碼，body `{"token","password"}`；用過即失效（免憑證） |
 | `GET /api/users/{id}/notifications`        | 列出通知訂閱（本人或 admin）                                       |
 | `PUT /api/users/{id}/notifications/{notificationId}` | 訂閱通知範本（本人或 admin）                              |
 | `DELETE /api/users/{id}/notifications/{notificationId}` | 取消訂閱（本人或 admin）                               |
@@ -462,10 +468,25 @@ token 的列出與撤銷對帳號本人開放，但本人手上那組 token 必�
 ### 密碼登入
 
 `POST /api/login` 收 `{"email","password"}`，換一組新的 token（回應格式同發 token，
-`token` 只在這個回應出現一次）。除了 `/api/health`，這是唯一不用帶憑證的路由，
-否則一個還沒有 token 的呼叫者拿不到第一組。
+`token` 只在這個回應出現一次）。除了 `/api/health` 與兩支密碼自助路由，其他路由都要帶憑證；
+登入是拿到第一組憑證的入口。
 
-- 密碼由 admin 用 `PUT /api/users/{id}` 的 `password` 欄位設定；帳號本人目前不能改自己的密碼。
+- 密碼由 admin 用 `PUT /api/users/{id}` 的 `password` 欄位設定。帳號本人**不能**替沒有密碼的帳號
+  建立第一組密碼，否則任何一支被偷的窄 scope token 都能把自己升級成密碼登入；第一組密碼只能由
+  admin 設定，或走忘記密碼流程（擁有信箱就等於擁有帳號）。admin 設密碼會同時解除登入鎖定並作廢
+  未使用的重設碼，所以那也是帳號被鎖住時的救援路徑。
+- 本人改密碼用 `PUT /api/users/me/password`，要帶使用者 token 與目前的密碼；成功後其他 token
+  全部撤銷（這次請求用的那一支保留）、登入失敗次數歸零、未使用的重設碼作廢。共用 `-api-key`
+  沒有對應帳號，回 `403`。
+- 忘記密碼：`POST /api/password/forgot` 寄出一次性的 `prt_` 重設碼到帳號 email，30 分鐘內有效，
+  用 `POST /api/password/reset` 換新密碼。回應一律是 `202`，查無帳號、帳號停用、同一分鐘內重複
+  要求都不會改變回應或延遲太多，不能用來探測帳號。重設成功會撤銷該帳號所有 token。
+- 重設碼只存 SHA-256，且只能用一次；同一帳號一分鐘內只寄一封。email 走既有的 SMTP 設定
+  （`-notify-email-smtp` / `-notify-email-from` 等）；沒有設 SMTP 時 `forgot` 回 `501`，
+  其他密碼功能不受影響。
+- 連續 5 次密碼錯誤會鎖帳號 15 分鐘，鎖住期間連正確密碼也回 `429`（帶 `Retry-After` 秒數）。
+  可用 `-login-max-failures`（0 關閉）與 `-login-lock-duration` 調整。登入成功會把次數歸零，
+  鎖到期後從零開始，不會一次失敗就再鎖。
 - 沒設密碼（`password_hash` 是 NULL）和密碼打錯都回 `401`，連花的時間也一樣（沒設密碼仍跑一次 bcrypt），
   所以回應碼與延遲都不會洩漏哪些帳號存在、哪些還沒有密碼。
 - 停用帳號在密碼正確時回 `403`；密碼打錯時仍是 `401`，狀態碼不能用來探測哪些帳號存在。
@@ -475,7 +496,8 @@ token 的列出與撤銷對帳號本人開放，但本人手上那組 token 必�
   admin 能做，所以帶 `*` 的 token 提不了權。
 - 密碼長度上限 72 bytes（bcrypt 的輸入上限），空字串與超長都在 `PUT` 回 `400`，不會靜默截短。
 - 密碼以 bcrypt cost 12 儲存，一次登入就是一次 bcrypt：本機 i5-4200U 量到 p50 594 ms、
-  p95 740 ms。登入（和設密碼的 `PUT`）要當成慢端點看待，前面不要放太短的 timeout。
+  p95 740 ms。登入、admin 設密碼的 `PUT` 與本人改密碼（驗舊密碼再雜湊新密碼，共兩次 bcrypt）
+  都要當成慢端點看待，前面不要放太短的 timeout。
 
 ```bash
 # 設定密碼（admin）
@@ -489,6 +511,27 @@ curl -X POST localhost:8082/api/login \
 
 # 之後就能拿它列出 / 撤銷自己的 token
 curl -H "Authorization: Bearer $TOKEN" localhost:8082/api/users/2/tokens
+```
+
+下面這些密碼自助動作都用一般使用者 token（或登入換到的 token）：
+
+```bash
+TOKEN='trc_...'
+
+# 本人改密碼：要帶目前的密碼；成功後其他 token 全部失效
+curl -X PUT localhost:8082/api/users/me/password \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"currentPassword":"s3cret","newPassword":"n3w-s3cret"}'
+
+# 忘記密碼：寄出 30 分鐘有效的 prt_ 重設碼（一律 202）
+curl -X POST localhost:8082/api/password/forgot \
+  -H 'Content-Type: application/json' -d '{"email":"bob@example.com"}'
+# {"status":"if the address has an account, a reset code has been sent"}
+
+# 用信裡的重設碼換新密碼；成功後該帳號所有 token 失效
+curl -X POST localhost:8082/api/password/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"prt_...","password":"n3w-s3cret"}'
 ```
 
 第一次使用（資料庫還沒有任何帳號）先用共用 key 引導：
@@ -833,11 +876,14 @@ scrape_configs:
 ## 已知限制
 
 - 接了 `-dsn` 之後 REST 預設是**全關**的：沒設 `-api-key` 又沒有有效 token 時，除了
-  `/api/health` 以外的請求都會回 401。第一次使用先帶 `-api-key` 啟動，用 `POST /api/users`
-  建立管理員並發 token（見「帳號管理 API」），或直接用 `-issue-token`；`-allow-anonymous`
-  只適合本機。對外仍建議加 TLS / 反代。
-- 帳號 API 只有分頁，沒有搜尋／排序；email 建立後不可修改。密碼只能由 admin 設定，本人沒有
-  改密碼或忘記密碼的流程，也沒有登入失敗次數限制；bcrypt cost 12 讓一次登入約 0.6 秒（見「密碼登入」）。
+  `/api/health`、`/api/login` 與密碼自助路由以外的請求都會回 401。第一次使用先帶 `-api-key` 啟動，
+  用 `POST /api/users` 建立管理員並發 token（見「帳號管理 API」），或直接用 `-issue-token`；
+  `-allow-anonymous` 只適合本機。對外仍建議加 TLS / 反代。
+- 帳號 API 只有分頁，沒有搜尋／排序；email 建立後不可修改。第一組密碼只能由 admin 設定；
+  本人改密碼、忘記密碼（email 重設碼）與登入失敗鎖定見「密碼登入」。
+  鎖定是 per-account：知道 email 的人可以故意打錯密碼把該帳號鎖 15 分鐘，這是防暴力破解換來的
+  拒絕服務面。忘記密碼端點沒有 IP 速率限制，只有每帳號一分鐘的節流；重設信能不能寄出取決於
+  SMTP，寄失敗只留在 log。bcrypt cost 12 讓一次登入約 0.6 秒（見「密碼登入」）。
   每個請求都會查一次 token 與裝置清單，撤銷立即生效但也多一次 DB round trip。
 - 裝置的 `attributes` 只能以 SQL 維護；`PUT` 只改 `name` / `model`，`protocol` 建立後不可改。
   裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
@@ -857,7 +903,6 @@ scrape_configs:
 
 ## 下一步
 
-1. 密碼自助：本人改密碼、忘記密碼流程、登入失敗次數限制；目前只有 admin 能設密碼。
-2. 命令的可靠性：重送與派送佇列、以 JT808 流水號配對（encoder 要改成每筆一個號碼）、
+1. 命令的可靠性：重送與派送佇列、以 JT808 流水號配對（encoder 要改成每筆一個號碼）、
    `commands` 的保留期限與清理。
-3. GT06 `NT_MODELS` 的 LBS2 / DRIVER 版面差異（Java 的 `modelNT`），計畫附錄 C 記錄了為什麼延後。
+2. GT06 `NT_MODELS` 的 LBS2 / DRIVER 版面差異（Java 的 `modelNT`），計畫附錄 C 記錄了為什麼延後。

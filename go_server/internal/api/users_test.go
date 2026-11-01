@@ -25,10 +25,23 @@ type fakeUsers struct {
 	grants    map[int64][]int64
 	tokens    map[int64][]model.APIToken
 	passwords map[int64]string
-	nextID    int64
-	nextTok   int64
-	err       error
-	lastList  model.UserFilter
+	// failed counts consecutive wrong passwords; locks holds an active lock
+	// deadline. resets keeps the hashed reset codes by hash.
+	failed   map[int64]int
+	locks    map[int64]time.Time
+	resets   map[string]*fakeReset
+	nextID   int64
+	nextTok  int64
+	err      error
+	lastList model.UserFilter
+}
+
+// fakeReset is one row of the in-memory password_resets table.
+type fakeReset struct {
+	userID    int64
+	expiresAt time.Time
+	createdAt time.Time
+	used      bool
 }
 
 func newFakeUsers(users ...*model.User) *fakeUsers {
@@ -37,6 +50,9 @@ func newFakeUsers(users ...*model.User) *fakeUsers {
 		grants:    make(map[int64][]int64),
 		tokens:    make(map[int64][]model.APIToken),
 		passwords: make(map[int64]string),
+		failed:    make(map[int64]int),
+		locks:     make(map[int64]time.Time),
+		resets:    make(map[string]*fakeReset),
 		nextID:    int64(len(users)),
 		nextTok:   1,
 	}
@@ -161,14 +177,157 @@ func (f *fakeUsers) CredentialByEmail(_ context.Context, email string) (*auth.Cr
 	}
 	for _, user := range f.users {
 		if user.Email == email {
-			return &auth.Credential{
-				UserID:       user.ID,
-				PasswordHash: f.passwords[user.ID],
-				Disabled:     user.Disabled,
-			}, nil
+			return f.credentialOf(user), nil
 		}
 	}
 	return nil, model.ErrUserNotFound
+}
+
+func (f *fakeUsers) CredentialByID(_ context.Context, userID int64) (*auth.Credential, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return nil, err
+	}
+	user, ok := f.users[userID]
+	if !ok {
+		return nil, model.ErrUserNotFound
+	}
+	return f.credentialOf(user), nil
+}
+
+// credentialOf renders the password login view of a user. The caller holds the
+// lock.
+func (f *fakeUsers) credentialOf(user *model.User) *auth.Credential {
+	credential := &auth.Credential{
+		UserID:       user.ID,
+		PasswordHash: f.passwords[user.ID],
+		Disabled:     user.Disabled,
+	}
+	if lockedUntil, ok := f.locks[user.ID]; ok {
+		lock := lockedUntil
+		credential.LockedUntil = &lock
+	}
+	return credential
+}
+
+func (f *fakeUsers) RecordLoginFailure(_ context.Context, userID int64, threshold int, lockFor time.Duration) (*time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return nil, err
+	}
+	if _, ok := f.users[userID]; !ok {
+		return nil, model.ErrUserNotFound
+	}
+	attempts := f.failed[userID]
+	if lockedUntil, ok := f.locks[userID]; ok && !lockedUntil.After(time.Now()) {
+		// An expired lock starts the window over, like the stored query.
+		attempts = 0
+		delete(f.locks, userID)
+	}
+	attempts++
+	f.failed[userID] = attempts
+	if attempts < threshold {
+		return nil, nil
+	}
+	lockedUntil := time.Now().Add(lockFor)
+	f.locks[userID] = lockedUntil
+	return &lockedUntil, nil
+}
+
+func (f *fakeUsers) ResetLoginFailures(_ context.Context, userID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return err
+	}
+	if _, ok := f.users[userID]; !ok {
+		return model.ErrUserNotFound
+	}
+	delete(f.failed, userID)
+	delete(f.locks, userID)
+	return nil
+}
+
+func (f *fakeUsers) CreatePasswordReset(_ context.Context, userID int64, tokenHash string, expiresAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return err
+	}
+	if _, ok := f.users[userID]; !ok {
+		return model.ErrUserNotFound
+	}
+	for _, reset := range f.resets {
+		if reset.userID == userID && !reset.used && time.Since(reset.createdAt) < time.Minute {
+			return model.ErrResetTooSoon
+		}
+	}
+	f.DeletePasswordResetsLocked(userID)
+	f.resets[tokenHash] = &fakeReset{userID: userID, expiresAt: expiresAt, createdAt: time.Now()}
+	return nil
+}
+
+func (f *fakeUsers) ConsumePasswordReset(_ context.Context, tokenHash string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return 0, err
+	}
+	reset, ok := f.resets[tokenHash]
+	if !ok || reset.used || !reset.expiresAt.After(time.Now()) {
+		return 0, model.ErrResetTokenInvalid
+	}
+	reset.used = true
+	return reset.userID, nil
+}
+
+func (f *fakeUsers) DeletePasswordResets(_ context.Context, userID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return err
+	}
+	f.DeletePasswordResetsLocked(userID)
+	return nil
+}
+
+func (f *fakeUsers) DeletePasswordReset(_ context.Context, tokenHash string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return err
+	}
+	delete(f.resets, tokenHash)
+	return nil
+}
+
+// DeletePasswordResetsLocked drops the account's codes. The caller holds the
+// lock.
+func (f *fakeUsers) DeletePasswordResetsLocked(userID int64) {
+	for hash, reset := range f.resets {
+		if reset.userID == userID {
+			delete(f.resets, hash)
+		}
+	}
+}
+
+func (f *fakeUsers) RevokeTokensExcept(_ context.Context, userID, keepTokenID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return err
+	}
+	tokens := f.tokens[userID][:0]
+	for _, token := range f.tokens[userID] {
+		if token.ID != keepTokenID {
+			continue
+		}
+		tokens = append(tokens, token)
+	}
+	f.tokens[userID] = tokens
+	return nil
 }
 
 func (f *fakeUsers) SetPassword(_ context.Context, userID int64, passwordHash string) error {

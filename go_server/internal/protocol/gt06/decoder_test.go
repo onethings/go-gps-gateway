@@ -273,3 +273,151 @@ func TestDecodeCommandReply(t *testing.T) {
 		}
 	}
 }
+
+// ntSession is a session whose device row carries a model. The NT layout is
+// selected by that model, so a test that wants the branch has to name one.
+func ntSession(model string) *codec.DeviceSession {
+	session := testSession()
+	session.Model = model
+	return session
+}
+
+// decodeNT runs one frame through a decoder whose session carries the model.
+func decodeNT(t *testing.T, model, frame string) *model.Position {
+	t.Helper()
+	result, err := NewDecoder(Base()).DecodeWithSession(mustHex(t, frame), ntSession(model))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+	return result.Positions[0]
+}
+
+// ntLocation is MSG_GPS_LBS_2 from an NT20; the same bytes appear in the Java
+// suite under NT20 and again under XT40, where they differ only in which
+// attribute the expectation names.
+const ntLocation = "78783c22010357789648774484180c06142038180c06142038cb03313ee4061fe98300185e" +
+	"090000000000000000460984284c000200000000017101d6f35d0d0a"
+
+// TestDecodeNTLocation pins the layout an NT model uses for MSG_GPS_LBS_2: a
+// location prefix, the ordinary location block, a status block with the
+// voltage in front, then odometer and engine hours. The Java suite reads the
+// same frame with and without the model and only the model branch finds the
+// hours.
+func TestDecodeNTLocation(t *testing.T) {
+	position := decodeNT(t, "NT20", ntLocation)
+
+	// The device clock is 2024-12-06 20:32:56 and the flag word reports the fix
+	// as south and west, so the coordinates come out negative.
+	want := time.Date(2024, 12, 6, 20, 32, 56, 0, time.UTC)
+	if !position.Time.Equal(want) {
+		t.Errorf("time = %s, want %s", position.Time.UTC(), want)
+	}
+	if diff := position.Latitude + 29.75500667; diff > 1e-5 || diff < -1e-5 {
+		t.Errorf("latitude = %.8f", position.Latitude)
+	}
+	if diff := position.Longitude + 57.08593944; diff > 1e-5 || diff < -1e-5 {
+		t.Errorf("longitude = %.8f", position.Longitude)
+	}
+	if satellites, _ := position.Get(model.KeySatellites); satellites != 11 {
+		t.Errorf("satellites = %v, want 11", satellites)
+	}
+
+	checks := map[string]any{
+		model.KeyHours:        int64(22140000),
+		model.KeyOdometer:     0,
+		model.KeyPower:        24.36,
+		model.KeyBattery:      4.0,
+		model.KeyRSSI:         76,
+		model.KeyBatteryLevel: nil,
+	}
+	for key, want := range checks {
+		got, ok := position.Get(key)
+		if want == nil {
+			if ok {
+				t.Errorf("attribute %q = %v, want the NT branch not to set it", key, got)
+			}
+			continue
+		}
+		if !ok || got != want {
+			t.Errorf("attribute %q = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+// TestDecodeNTLocationIsModelDriven decodes the same bytes without an NT model.
+// Java keeps hasStatus false there, so no status block, no voltage and no
+// hours: the frame is a plain GPS plus cell tower report.
+func TestDecodeNTLocationIsModelDriven(t *testing.T) {
+	position := decodeNT(t, "GT06N", ntLocation)
+
+	for _, key := range []string{
+		model.KeyHours, model.KeyOdometer, model.KeyPower, model.KeyBattery,
+	} {
+		if got, ok := position.Get(key); ok {
+			t.Errorf("attribute %q = %v, want none without an NT model", key, got)
+		}
+	}
+	if position.Time.IsZero() {
+		t.Error("time is zero: the frame still has to produce a position")
+	}
+}
+
+// TestDecodeNTLocationXT40 is the second NT vector in the Java suite: the
+// voltage of a device that reports 12.51 V while moving.
+func TestDecodeNTLocationXT40(t *testing.T) {
+	frame := "78783c220109999999999999991a04171433101a041714310fb00288a5a8050754500008000800" +
+		"000000000000000604e32933000200468b000025008d87ce0d0a"
+	position := decodeNT(t, "XT40", frame)
+
+	checks := map[string]any{
+		model.KeyPower:    12.51,
+		model.KeyBattery:  4.1,
+		model.KeyRSSI:     51,
+		model.KeyOdometer: 18059,
+		model.KeyHours:    int64(2220000),
+	}
+	for key, want := range checks {
+		if got, ok := position.Get(key); !ok || got != want {
+			t.Errorf("attribute %q = %#v, want %#v", key, got, want)
+		}
+	}
+	if position.Valid {
+		t.Error("valid = true, want false: the vector carries no fix")
+	}
+}
+
+// TestDecodeNTDriver covers MSG_GPS_LBS_DRIVER from an XT40, where the cell id
+// is four bytes wide and the frame ends with the driver card.
+func TestDecodeNTDriver(t *testing.T) {
+	frame := "78784e25010356354871186947190909100e0f190909100e0fbf02846fe805078c900018000a" +
+		"02d410c80b0c352c17044605112a4700020000000005840f0102353130303635383036424446" +
+		"030113ed780d0a"
+	position := decodeNT(t, "XT40", frame)
+
+	checks := map[string]any{
+		model.KeyDriverID: "0235313030363538303642444603",
+		model.KeyPower:    12.97,
+		model.KeyBattery:  4.2,
+		model.KeyRSSI:     71,
+		model.KeyHours:    int64(84720000),
+	}
+	for key, want := range checks {
+		if got, ok := position.Get(key); !ok || got != want {
+			t.Errorf("attribute %q = %#v, want %#v", key, got, want)
+		}
+	}
+
+	// The cell id of this message type is four bytes wide. A three byte read
+	// would shift every field after it, so the tower is the cheap proof.
+	if position.Network == nil || len(position.Network.CellTowers) != 1 {
+		t.Fatalf("network = %+v, want one cell tower", position.Network)
+	}
+	tower := position.Network.CellTowers[0]
+	if tower.MobileCountryCode != 724 || tower.MobileNetworkCode != 16 ||
+		tower.LocationAreaCode != 0xc80b || tower.CellID != 0x0c352c17 {
+		t.Errorf("cell tower = %+v, want 724/16/c80b/0c352c17", tower)
+	}
+}

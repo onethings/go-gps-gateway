@@ -432,7 +432,7 @@ PR-4 風險是 ACK 對不上請求，JT808 的回應沒有序號可以配對，�
 這個風險落地成事實：JT808 encoder 一律送流水號 0，GT06 回應裡的是該幀自己的序號，兩邊都沒有能對回請求的
 識別碼，所以配對規則是「該裝置最新一列 `sent`」。它只會動一列，但當前一筆一直沒回應時，被回應的會是
 後送的那筆（見 README「已知限制」與「下一步」第 2 條）。
-PR-2 刻意不搬 GT06 的 `modelNT` 分支。它改的是 `MSG_GPS_LBS_2` 與 `MSG_GPS_LBS_DRIVER` 的欄位佈局，散在 Java 的 LBS 解碼段裡，混進告警名稱的 PR 會讓兩件事的驗證糾在一起。它需要自己的 PR 與自己的 lane。
+PR-2 刻意不搬 GT06 的 `modelNT` 分支。它改的是 `MSG_GPS_LBS_2` 與 `MSG_GPS_LBS_DRIVER` 的欄位佈局，散在 Java 的 LBS 解碼段裡，混進告警名稱的 PR 會讓兩件事的驗證糾在一起。它需要自己的 PR 與自己的 lane。這一段後來獨立落地，見附錄 F。
 
 偏差一，lane 的產物是 `.log` 與 SQL 輸出，不是 `.png`，因為這個服務沒有 GUI。偏差二，`git show origin/main:` 的讀法在 repo 尚未 vendor pstack 前不成立。偏差三，PR-1 執行時所在的沙箱禁止 bind TCP port，gateway 起不來，所以 unit 與 perf 兩格有實測值，live 十格改在 operator 的機器上跑。
 偏差四，PR-3 動了 `go_server/internal/api/server.go` 的一行路由註冊。`Handler()` 是唯一掛路由的地方，
@@ -488,3 +488,30 @@ session 時用選配介面 `DeviceConnectHook` 通知派送器，儲存層沒實
 **仍未驗證。** live lane 與真實 PostgreSQL 兩項照舊：這個沙箱禁止 bind TCP port，`initdb` 也被
 禁止（`shmget` 不准），所以 `TestCommandStoreIntegration` 只跑到 skip，十條 lane 一列都沒跑。
 「重送一次等於執行兩次」對 `rebootDevice` 這種命令是真實代價，已寫進 README 的已知限制。
+
+## Appendix F. GT06 NT_MODELS 的 LBS2 / DRIVER 版面（README「下一步」第 2 條，原附錄 C 的延後項）
+
+附錄 C 把這段延後的理由是「它改的是整段訊息佈局，不是只換告警名稱」。獨立成一支之後，驗證只剩
+一件事：同一份位元組在 `modelNT` 與非 `modelNT` 下必須解出 Java 期望的欄位。
+
+**改動。** `modelFlags` 多一個 `nt`，來源是 `ntModels`（`NT11` `NT20` `NT26` `NT40` `NT46` `VL100`
+`XT40`）。`hasStatus` 改成吃 model：`0x22` / `0x25` 只有在 NT model 下才有狀態區。NT 分支依序
+讀幀首的定位來源＋IMEI＋裝置時鐘（`decodeNTPrefix`）、一般 GPS 區塊、LBS 區塊、狀態位元組、
+`decodeNTPower`（電壓 2 bytes、電池 1 byte ÷10、RSSI、告警、語言），最後 `decodeNTTrailer`
+（里程 3 bytes、引擎時數 3 bytes ×60000、`0x25` 再讀駕駛卡長度＋類型＋卡號）。另外 `0x25` 的
+cell id 是 4 bytes，其他訊息是 3 bytes。
+
+**偏離 Java 的一點。** Java 的 `position.setDeviceTime(...)` 寫進 `devicetime` 欄位，Go 的
+`positions` 表沒有這一欄，所以幀首那 6 個 BCD bytes 讀掉就丟。GPS 區塊本身的時間仍然是定位時間，
+這一項不影響位置正確性，只是少了一個「裝置自己認為的時間」。
+
+**已驗證。** `go test ./internal/protocol/gt06`，`go test -race` 同套也乾淨。四條測試用 Java
+`Gt06ProtocolDecoderTest` 的原向量：NT20 的 `0x22`（`hours` 22140000、電池 4.0、電壓 24.36）、
+XT40 的 `0x22`（電壓 12.51、里程 18059、時數 2220000）、同一份 NT20 位元組在 XT40 下（電池 4.0，
+證明選路看 model 不看幀）、XT40 的 `0x25`（駕駛卡 `0235313030363538303642444603`、電壓 12.97、
+cell tower 724/16/0xc80b/0x0c352c17，最後一項同時證明 4 bytes 的 cid 沒有位移）。
+`TestDecodeNTLocationIsModelDriven` 用同一份位元組配非 NT model，斷言 `hours` / `odometer` /
+`power` / `battery` 全部不存在 — 這是 `modelNT` 的核心行為。
+
+**仍未驗證。** 真機。四條向量都來自 Java 測試套件，沒有 NT 裝置的實機封包；lane 也照舊跑不了
+（沙箱禁止 bind port），所以「NT 裝置設了 model 之後線上解出來的欄位」只有單元層級的證據。

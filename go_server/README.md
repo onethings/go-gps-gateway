@@ -119,8 +119,13 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 - 已支援：`0x01` 登入（含時區偏移）、`0x23` 心跳、GPS/LBS/狀態主線
   （`0x10/0x11/0x12/0x16/0x1A/0x1E/0x22/0x25/0x26/0x27/0x31/0x32/0x37/0x39/0xA0/0xA4`）、
   `0x2A` 位址查詢、`0x8A` 對時、`0x94` 電壓、所有訊息回 `CRC16/X25` ACK。
-- 待補：`0x94` 子類型（ADC/告警字串）、WiFi 掃描（`0x17/0x2C/0x33/0xA2`）、
-  odometer/driver 的車型分支、`0xA3` variant 判定、ADAS/DMS。
+- `NT_MODELS`（`NT11` / `NT20` / `NT26` / `NT40` / `NT46` / `VL100` / `XT40`）在 `0x22` 與 `0x25`
+  走自己的版面：幀首多一段定位來源＋IMEI＋裝置時鐘，狀態區先讀電壓（伏特）再讀電池（十分之一），
+  之後是里程（3 bytes）與引擎時數（3 bytes，毫秒），`0x25` 最後再帶一張駕駛卡。`0x25` 的
+  cell id 也比其他訊息寬（4 bytes）。同一幀在沒有 NT model 時不會走這條路 — 這是 Java `modelNT`
+  的行為，靠 `devices.model` 選路，改名後要重連才生效。
+- 待補：`0x94` 子類型（ADC/告警字串）、WiFi 掃描（`0x17/0x2C/0x33/0xA2`）、`0xA3` variant 判定、
+  ADAS/DMS。
 
 ### JT808
 
@@ -941,13 +946,18 @@ scrape_configs:
   類型與管道：email 收件者是帳號 email，webhook 仍共用 `-notify-webhook` 的 URL。門檻可用
   裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
 - 圍欄只能以 SQL 維護，且對所有裝置生效；`alerts.position_id` 目前是 NULL（見上節）。
-- `devices.model` 會被讀取，但只在解讀告警碼時。GT06 的 `LW*` / `SEEWORLD` / `VL103` `LL303` `VL512` `G18` 與 JT808 的 `G-360P` `G-508P` `AL300` `GL100` `VL300` 各走自己的分支，其餘照通用規則；比對前統一轉大寫。
-  model 在裝置登入解析 session 時讀出並跟著連線走，所以改 model 要重連才生效。GT06 `NT_MODELS` 的 LBS2 / DRIVER 版面差異（Java 的 `modelNT`）還沒開，它改的是整段訊息佈局，不是只換告警名稱。
+- `devices.model` 會被讀取，而且決定解碼路徑。GT06 的 `LW*` / `SEEWORLD` / `VL103` `LL303` `VL512` `G18`
+  換掉告警碼的意義，`NT_MODELS`（`NT11` `NT20` `NT26` `NT40` `NT46` `VL100` `XT40`）換掉 `0x22` /
+  `0x25` 整段欄位佈局；JT808 的 `G-360P` `G-508P` `AL300` `GL100` `VL300` 各走自己的報警字串分支，
+  其餘照通用規則；比對前統一轉大寫。model 在裝置登入解析 session 時讀出並跟著連線走，所以改 model
+  要重連才生效。沒有 model 的舊資料列一律走通用規則，NT 裝置未設 model 時會把幀首當成位置讀，
+  位置會是垃圾值 — 這是 Java 也有的行為。
 - 報表等其餘業務層仍是 Java 版負責。
 - 記憶體目錄僅適合開發；正式環境請用 `-dsn`。
 
 ## 下一步
 
-1. GT06 `NT_MODELS` 的 LBS2 / DRIVER 版面差異（Java 的 `modelNT`），計畫附錄 C 記錄了為什麼延後。
-2. GT06 / H02 / Teltonika 的命令回應沒有識別碼，配對仍是「該裝置最新一列 `sent`」。要精確配對得先
+1. GT06 / H02 / Teltonika 的命令回應沒有識別碼，配對仍是「該裝置最新一列 `sent`」。要精確配對得先
    在 encoder 端找出各協議回應裡的等價欄位，那是另一支 PR（見「回應配對」）。
+2. GT06 的 `0xA3` variant 判定、WiFi 掃描與 `0x94` 子類型；Java 用幀長度推 variant，Go 目前只覆蓋
+   `NT_MODELS` 與 alarm 分支（見「協議支援矩陣」）。

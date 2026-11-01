@@ -130,6 +130,7 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 
 	position := model.NewPosition(ProtocolName)
 	position.DeviceID = session.DeviceID
+	flags := modelFlagsOf(session.Model)
 
 	switch {
 	case messageType == msgHeartbeat:
@@ -168,8 +169,15 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		position.Set(model.KeyPower, float64(buf.ReadShort())/100)
 		result.AddPosition(position)
 
-	case d.isSupported(messageType):
+	case d.isSupported(messageType, flags):
 		position.Set(model.KeyType, messageType)
+
+		// The NT models prefix their location message with the source, the IMEI
+		// and the device clock, which the generic layout does not have.
+		nt := flags.nt && isNTLocation(messageType)
+		if nt {
+			d.decodeNTPrefix(position, buf)
+		}
 
 		if d.hasGPS(messageType) {
 			if buf.ReadableBytes() < minGPSBytes {
@@ -182,12 +190,20 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		}
 
 		if d.hasLBS(messageType) && buf.ReadableBytes() > 6 {
-			d.decodeLBS(position, buf, messageType)
+			d.decodeLBS(position, buf, messageType, flags)
 		}
 
-		if d.hasStatus(messageType) {
+		if d.hasStatus(messageType, flags) {
 			d.decodeStatus(position, buf)
-			d.decodePower(position, buf, modelFlagsOf(session.Model))
+			if nt {
+				d.decodeNTPower(position, buf, flags)
+			} else {
+				d.decodePower(position, buf, flags)
+			}
+		}
+
+		if nt {
+			d.decodeNTTrailer(position, buf, messageType)
 		}
 
 		result.AddPosition(position)
@@ -203,8 +219,13 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 	return result, nil
 }
 
-func (d *Decoder) isSupported(messageType int) bool {
-	return d.hasGPS(messageType) || d.hasLBS(messageType) || d.hasStatus(messageType)
+func (d *Decoder) isSupported(messageType int, flags modelFlags) bool {
+	return d.hasGPS(messageType) || d.hasLBS(messageType) || d.hasStatus(messageType, flags)
+}
+
+// isNTLocation reports the two message types the NT models lay out differently.
+func isNTLocation(messageType int) bool {
+	return messageType == msgGPSLBS2 || messageType == msgGPSLBSDriver
 }
 
 func (d *Decoder) hasGPS(messageType int) bool {
@@ -228,11 +249,16 @@ func (d *Decoder) hasLBS(messageType int) bool {
 	return false
 }
 
-func (d *Decoder) hasStatus(messageType int) bool {
+// hasStatus reports whether the frame carries a status block. The two location
+// types only do on the NT models, which is what makes their layout different:
+// the status byte, the voltage and the battery follow the cell tower block.
+func (d *Decoder) hasStatus(messageType int, flags modelFlags) bool {
 	switch messageType {
 	case msgStatus, msgGPSLBSStatus1, msgGPSLBSStatus2, msgGPSLBSStatus3,
 		msgGPSLBSStatus4, msgGPSLBSStatus5, msgFenceMulti, msgAlarmModule:
 		return true
+	case msgGPSLBS2, msgGPSLBSDriver:
+		return flags.nt
 	}
 	return false
 }
@@ -277,9 +303,11 @@ func (d *Decoder) decodeGPS(position *model.Position, buf *helper.Buffer, locati
 
 // decodeLBS reads the cell tower block. Status messages prefix it with a length
 // byte; the rest of the layout depends on the message type and the device.
-func (d *Decoder) decodeLBS(position *model.Position, buf *helper.Buffer, messageType int) bool {
+func (d *Decoder) decodeLBS(
+	position *model.Position, buf *helper.Buffer, messageType int, flags modelFlags,
+) bool {
 	length := 0
-	if d.hasStatus(messageType) && messageType != msgLBSStatus && messageType != msgGPSLBSStatus5 {
+	if d.hasStatus(messageType, flags) && messageType != msgLBSStatus && messageType != msgGPSLBSStatus5 {
 		length = buf.ReadUnsignedByte()
 		if length == 0 {
 			if zeroed(buf, 9, 45) {
@@ -297,7 +325,13 @@ func (d *Decoder) decodeLBS(position *model.Position, buf *helper.Buffer, messag
 		mnc = buf.ReadUnsignedByte()
 	}
 	lac := buf.ReadUnsignedShort()
-	cid := int64(buf.ReadUnsignedMedium())
+	var cid int64
+	if messageType == msgGPSLBSDriver {
+		// The driver model reports a four byte cell id, the rest three.
+		cid = int64(buf.ReadUnsignedInt())
+	} else {
+		cid = int64(buf.ReadUnsignedMedium())
+	}
 
 	position.SetNetwork(model.NewNetworkWith(
 		model.NewCellTower(int(helper.BitsTo(int32(mcc), 15)), mnc, lac, cid)))
@@ -306,6 +340,51 @@ func (d *Decoder) decodeLBS(position *model.Position, buf *helper.Buffer, messag
 		buf.SkipBytes(length - 9)
 	}
 	return true
+}
+
+// decodeNTPrefix reads what an NT model puts in front of the location block of
+// MSG_GPS_LBS_2 and MSG_GPS_LBS_DRIVER: the location source, the IMEI and the
+// device clock. The Go model has no field for the device clock, so those six
+// bytes are consumed and dropped; the GPS block carries the fix time anyway.
+func (d *Decoder) decodeNTPrefix(position *model.Position, buf *helper.Buffer) {
+	buf.ReadUnsignedByte() // location source type
+	buf.SkipBytes(8)       // imei
+	buf.SkipBytes(6)       // device clock, packed BCD
+}
+
+// decodeNTPower reads the block an NT model reports after the status byte: the
+// supply voltage in hundredths of a volt, the battery in tenths, the signal, the
+// alarm byte and the language. It is a different layout from decodePower, which
+// is why the same frame means something else without an NT model.
+func (d *Decoder) decodeNTPower(position *model.Position, buf *helper.Buffer, flags modelFlags) {
+	position.Set(model.KeyPower, float64(buf.ReadUnsignedShort())/100)
+	position.Set(model.KeyBattery, float64(buf.ReadUnsignedByte())/10)
+	position.Set(model.KeyRSSI, buf.ReadUnsignedByte())
+	if alarm := d.decodeAlarm(buf.ReadUnsignedByte(), flags); alarm != "" {
+		position.AddAlarm(alarm)
+	}
+	buf.ReadUnsignedByte() // language
+}
+
+// decodeNTTrailer reads the odometer, the engine hours and, for the driver
+// model, the driver card that an NT model puts after the status block.
+func (d *Decoder) decodeNTTrailer(position *model.Position, buf *helper.Buffer, messageType int) {
+	if buf.ReadableBytes() < 6 {
+		return
+	}
+	position.Set(model.KeyOdometer, buf.ReadUnsignedMedium())
+	position.Set(model.KeyHours, int64(buf.ReadUnsignedMedium())*60*1000)
+
+	if messageType != msgGPSLBSDriver {
+		return
+	}
+
+	length := buf.ReadUnsignedByte()
+	if length == 0 || buf.ReadableBytes() < length {
+		return
+	}
+	buf.ReadUnsignedByte() // driver identifier type
+	position.Set(model.KeyDriverID, hex.EncodeToString(buf.ReadSlice(length-1)))
 }
 
 // decodeStatus reads the one byte status block shared by all status messages.
@@ -354,12 +433,26 @@ func (d *Decoder) decodePower(position *model.Position, buf *helper.Buffer, flag
 	}
 }
 
-// modelFlags are the per model branches Gt06ProtocolDecoder switches on. They
-// change what the same alarm byte means, not how the frame is laid out.
+// modelFlags are the per model branches Gt06ProtocolDecoder switches on. Most of
+// them change what the same alarm byte means; nt changes how two message types
+// are laid out at all.
 type modelFlags struct {
 	lw bool // model starts with LW
 	sw bool // model is SEEWORLD
 	vl bool // model is in vlModels
+	nt bool // model is in ntModels
+}
+
+// ntModels lay MSG_GPS_LBS_2 and MSG_GPS_LBS_DRIVER out differently: a location
+// prefix, a status block, and odometer and engine hours after it.
+var ntModels = map[string]bool{
+	"NT11":  true,
+	"NT20":  true,
+	"NT26":  true,
+	"NT40":  true,
+	"NT46":  true,
+	"VL100": true,
+	"XT40":  true,
 }
 
 // vlModels are the models that repurpose several alarm bytes.
@@ -378,6 +471,7 @@ func modelFlagsOf(model string) modelFlags {
 		lw: strings.HasPrefix(upper, "LW"),
 		sw: upper == "SEEWORLD",
 		vl: vlModels[upper],
+		nt: ntModels[upper],
 	}
 }
 

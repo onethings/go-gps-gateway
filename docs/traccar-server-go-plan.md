@@ -482,7 +482,8 @@ session 時用選配介面 `DeviceConnectHook` 通知派送器，儲存層沒實
 復原、佇列滿回錯、協議沒在聽時直接失敗、一台裝置的佇列不擋另一台。`commands_test.go` 另加
 `TestAcknowledgeQuery`（無資料庫）與整合測試的流水號、`attempts`、`PendingCommands`、
 `DeleteCommandsBefore` 四段。`jt808` 的 `TestEncodeCommandCarriesItsOwnSerial` 蓋住編號、沿用與
-`custom` 不編號。`api` 的 `TestCommandQueuedWhenTheDeviceIsAway` 與 `TestCommandQueueFullIsRefused`
+`custom` 不編號。`server_test.go` 的 `TestQueuedCommandReachesAReconnectingDevice` 把三段接起來：
+沒連線時下命令 → 排隊，GT06 登入 → `Relay,1#` 出現在登入 ACK 之後，裝置回 `0x80` → 佇列清空。`api` 的 `TestCommandQueuedWhenTheDeviceIsAway` 與 `TestCommandQueueFullIsRefused`
 蓋住 202 `queued:true` 與 429。
 
 **仍未驗證。** live lane 與真實 PostgreSQL 兩項照舊：這個沙箱禁止 bind TCP port，`initdb` 也被

@@ -24,10 +24,24 @@ var exemptPaths = map[string]struct{}{
 	"/api/login":           {},
 	"/api/password/forgot": {},
 	"/api/password/reset":  {},
+	// The login form posts here without a credential and the web interface
+	// asks for the settings before it has one; both handlers do their own
+	// checks.
+	"/api/session": {},
+	"/api/server":  {},
 	// A browser cannot set headers on a WebSocket, so /api/socket reads its
 	// token from the query string and authenticates itself.
 	"/api/socket": {},
 }
+
+// SessionCookieName carries the browser session token. The Java server uses a
+// JSESSIONID cookie; this one holds a bearer token so both kinds of client
+// share one authentication path.
+const SessionCookieName = "traccar_session"
+
+// sessionCookieTTL is how long a browser stays logged in. The token in the
+// cookie is revoked on logout, so the value only bounds a forgotten session.
+const sessionCookieTTL = 24 * time.Hour
 
 // TokenLookup resolves a hashed bearer token to a principal. The postgres store
 // implements it; tests use a map.
@@ -49,12 +63,17 @@ func RequireAuth(apiKey string, tokens TokenLookup, logf func(string, ...any), n
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, exempt := exemptPaths[r.URL.Path]; exempt {
+		_, exempt := exemptPaths[r.URL.Path]
+
+		// An exempt route does not need a credential, but one that is supplied
+		// still authenticates: GET /api/server is anonymous while PUT on the
+		// same path is admin only, and GET /api/session reads the cookie.
+		if exempt && requestCredential(r) == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		credential := requestToken(r)
+		credential := requestCredential(r)
 		if credential == "" {
 			writeUnauthorized(w)
 			return
@@ -79,6 +98,12 @@ func RequireAuth(apiKey string, tokens TokenLookup, logf func(string, ...any), n
 			}
 		}
 
+		if exempt {
+			// A bad credential on an anonymous route is not an error: the
+			// handler decides what an unauthenticated caller may see.
+			next.ServeHTTP(w, r)
+			return
+		}
 		writeUnauthorized(w)
 	})
 }
@@ -119,40 +144,60 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
+	token, plaintext, ok := s.passwordLogin(ctx, w, r, email, request.Password)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, tokenIssueResponse{
+		tokenResponse: newTokenResponse(*token),
+		Token:         plaintext,
+	})
+}
+
+// passwordLogin verifies one email and password pair and issues a session token.
+// It writes the failure response itself and reports false when the login must
+// not proceed. A successful login is recorded in the audit trail.
+func (s *Server) passwordLogin(
+	ctx context.Context, w http.ResponseWriter, r *http.Request, email, password string,
+) (*model.APIToken, string, bool) {
 	credential, err := s.users.CredentialByEmail(ctx, email)
 	if errors.Is(err, model.ErrUserNotFound) {
 		// An empty hash costs the same as a real one, so an unknown address and
 		// a wrong password take the same time to answer.
-		auth.VerifyPassword("", request.Password)
+		auth.VerifyPassword("", password)
+		s.audit(r, model.ActionDenied, "", 0)
 		writeError(w, http.StatusUnauthorized, errors.New("invalid email or password"))
-		return
+		return nil, "", false
 	}
 	if err != nil {
 		s.logf("api: lookup credential of %q: %v", email, err)
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
-		return
+		return nil, "", false
 	}
 	// A locked account is refused before the password is checked. The status
 	// code already tells the caller that this address has a locked account, so
 	// spending a bcrypt here would only make a brute force cheaper to serve.
 	if credential.LockedUntil != nil && s.now().Before(*credential.LockedUntil) {
+		s.audit(r, model.ActionDenied, "", 0)
 		writeLockedOut(w, credential.LockedUntil.Sub(s.now()))
-		return
+		return nil, "", false
 	}
 	// An account that never had a password has an empty hash, which VerifyPassword
 	// charges one bcrypt for, so it answers like a wrong password.
-	if !auth.VerifyPassword(credential.PasswordHash, request.Password) {
+	if !auth.VerifyPassword(credential.PasswordHash, password) {
+		s.audit(r, model.ActionDenied, "", 0)
 		if s.recordLoginFailure(ctx, w, credential) {
-			return
+			return nil, "", false
 		}
 		writeError(w, http.StatusUnauthorized, errors.New("invalid email or password"))
-		return
+		return nil, "", false
 	}
 	// Checked after the password so an unauthenticated caller cannot use the
 	// status code to learn which addresses have a disabled account.
 	if credential.Disabled {
+		s.audit(r, model.ActionDenied, "", 0)
 		writeError(w, http.StatusForbidden, errors.New("account is disabled"))
-		return
+		return nil, "", false
 	}
 
 	// The password was right, so the failure window starts over.
@@ -164,13 +209,23 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logf("api: issue login token for user %d: %v", credential.UserID, err)
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
-		return
+		return nil, "", false
 	}
 
-	writeJSON(w, http.StatusOK, tokenIssueResponse{
-		tokenResponse: newTokenResponse(*token),
-		Token:         plaintext,
-	})
+	// The audit row needs the user id, which only the credential knows before a
+	// principal exists.
+	if s.auditStore != nil {
+		action := &model.Action{
+			ActionTime: s.now(),
+			Address:    requestAddress(r),
+			UserID:     credential.UserID,
+			ActionType: model.ActionLogin,
+		}
+		if err := s.auditStore.RecordAction(ctx, action); err != nil {
+			s.logf("api: record login action: %v", err)
+		}
+	}
+	return token, plaintext, true
 }
 
 // recordLoginFailure counts one wrong password and reports whether it locked
@@ -212,4 +267,49 @@ func requestToken(r *http.Request) string {
 		return strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
 	}
 	return ""
+}
+
+// requestCredential is requestToken with the browser session cookie as the last
+// place to look, so a page loaded without an explicit header still authenticates.
+func requestCredential(r *http.Request) string {
+	if credential := requestToken(r); credential != "" {
+		return credential
+	}
+	if cookie, err := r.Cookie(SessionCookieName); err == nil {
+		return cookie.Value
+	}
+	return ""
+}
+
+// setSessionCookie stores the plaintext token in the browser session cookie. A
+// zero expiration makes it a session cookie the browser drops on close.
+func setSessionCookie(w http.ResponseWriter, token string, expires time.Time) {
+	cookie := &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	if !expires.IsZero() {
+		cookie.Expires = expires
+		cookie.MaxAge = int(time.Until(expires).Seconds())
+		if cookie.MaxAge < 1 {
+			cookie.MaxAge = 1
+		}
+	}
+	http.SetCookie(w, cookie)
+}
+
+// clearSessionCookie asks the browser to forget the session.
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+	})
 }

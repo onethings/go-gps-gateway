@@ -36,6 +36,9 @@ type User struct {
 	// and cannot be used to share anything itself.
 	Temporary bool
 	CreatedAt time.Time
+	// Attributes holds the free form account settings the web interface
+	// stores, matching users.attributes in the Java server.
+	Attributes Attributes
 	// DeviceCount and TokenCount are computed by the list query so an admin
 	// does not need one request per user.
 	DeviceCount int
@@ -69,6 +72,10 @@ type UserUpdate struct {
 	Name     *string
 	Admin    *bool
 	Disabled *bool
+	// Attributes replaces the whole map when it is non-nil. The web interface
+	// stores per-user preferences here (terms acceptance, notification
+	// overrides).
+	Attributes *Attributes
 }
 
 // APIToken is one row of api_tokens without the hash: the plaintext token is

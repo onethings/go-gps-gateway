@@ -22,6 +22,9 @@ type ProtocolSettings struct {
 	// AutoRegister creates a device row the first time an unknown identifier
 	// appears.
 	AutoRegister bool
+	// Transport is tcp (the default), udp or tls. The protocol settings table
+	// overrides it at startup and while the server runs.
+	Transport string
 }
 
 // Settings is the gateway configuration with the values parsed. Every field is
@@ -39,6 +42,9 @@ type Settings struct {
 	BatchInterval time.Duration
 
 	WebAddress string
+	// WebPath is the web root POST /api/server/file/{path} writes into. Empty
+	// disables the upload route.
+	WebPath string
 
 	// ServerTimeout is how long a device may stay silent before its session is
 	// expired and the device declared offline.
@@ -108,6 +114,7 @@ type rawFlags struct {
 	batchInterval string
 
 	http           string
+	webPath        string
 	apiKey         string
 	allowAnonymous string
 	issueToken     string
@@ -183,6 +190,8 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 
 	binder.text(&binder.raw.http, "http", cfg.String(WebAddress),
 		"REST listen address; empty disables the API")
+	binder.text(&binder.raw.webPath, "web-path", cfg.String(WebPath),
+		"web root an admin may upload files into; empty disables POST /api/server/file")
 	binder.text(&binder.raw.apiKey, "api-key", cfg.String(APIKey),
 		"REST API key (defaults to TRACCAR_API_KEY); empty means database tokens only")
 	binder.text(&binder.raw.allowAnonymous, "allow-anonymous", cfg.String(APIAllowAnonymous),
@@ -319,6 +328,7 @@ func (b *Binder) Settings() (Settings, error) {
 	settings.BatchInterval = toDuration("batch-interval", raw.batchInterval)
 
 	settings.WebAddress = raw.http
+	settings.WebPath = raw.webPath
 
 	timeout, err := b.cfg.Duration(ServerTimeout)
 	if err != nil {
@@ -403,11 +413,17 @@ func (b *Binder) protocols(raw rawFlags, settings Settings) ([]ProtocolSettings,
 			errs = append(errs, fmt.Errorf("protocol.%s.%s: %w", name, ProtocolTimeout, err))
 		}
 
+		transport := strings.ToLower(strings.TrimSpace(protocol.String(ProtocolTransport)))
+		if transport == "" {
+			transport = "tcp"
+		}
+
 		resolved = append(resolved, ProtocolSettings{
 			Name:         name,
 			Address:      addresses[name],
 			ReadTimeout:  timeout,
 			AutoRegister: autoRegister,
+			Transport:    transport,
 		})
 	}
 	return resolved, errs

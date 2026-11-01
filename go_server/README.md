@@ -1523,7 +1523,37 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
   - 偏差：沒有 log 串流（母本 `logs` 選項只解析不送）、沒有 multi-node `BaseBroadcastService`、
     hijack 出來的連線不受 `http.Server.Shutdown` 管。REST 改裝置不會推（母本也只在狀態轉換時推）。
   - 風險：token 在 query string 會進 proxy / 瀏覽器紀錄，和母本相同，對外請走 TLS。
-- [ ] **M3-4 其餘資源**：`/api/protocols`、`/api/server`、`/api/session`、`/api/statistics`、`/api/audit`、`/api/commands/send|bulk`、`/api/notificators`。
+- [x] **M3-4 其餘資源**：`/api/protocols`、`/api/server`、`/api/session`、`/api/statistics`、`/api/audit`、`/api/commands/send|bulk`、`/api/notificators`。
+  - 落地：新增 `protocol_settings`、`server_settings`、`actions` 三張表與 `users.attributes`（`0014_admin.sql`）。
+    `GET/PUT /api/protocols` 讀寫每個協議的 port / transport；`PUT` 由 `listenerSet`
+    即時停掉舊 listener、改綁新 port，綁不起來會把舊地址接回去，重啟後也以資料表為準。
+    `GET /api/server` 免認證（登入頁要用），回傳 `server_settings` 加 `emailEnabled` /
+    `geocoderEnabled` / `textEnabled` / `newServer` / `version`；`PUT` 是 admin 且為部分更新。
+    另有 `/api/server/timezones`（讀系統 tz 表，沒有就回內建清單）、`/api/server/geocode`（M6-3
+    沒接就 501）、`/api/server/gc`、`/api/server/reboot`（呼叫 process 的 cancel）、
+    `POST /api/server/file/{path...}`（`web.path` 底下的路徑，逃出根目錄回 400）。
+  - Session：`POST /api/session` 收 form 或 JSON，成功後把 bearer token 寫進 `traccar_session`
+    cookie（HttpOnly / SameSite=Lax，24h），`GET /api/session` 讀 cookie 或 `?token=`（QR / native
+    登入）回目前帳號，`DELETE` 撤銷該 token 並清 cookie，`GET /api/session/{id}` 讓 admin 切換帳號、
+    `POST /api/session/token`（回純文字 token）與 `POST /api/session/token/revoke`。
+    `RequireAuth` 現在也會讀 cookie；免認證路徑若帶了憑證仍會驗，所以 `PUT /api/server` 在同一個
+    路徑上還是 admin-only。
+  - Commands：`GET /api/commands/types?deviceId&textChannel` 由協議 encoder 支援清單過濾
+    （`gateway.Protocol.TextCommands/DataCommands`），`POST /api/commands/send` 支援 `groupId`
+    一次送群組（回 `{commands,count,failed}`），`POST /api/commands/bulk` 收 `commands[]` 或
+    `deviceIds[]` + `type`。`GET /api/commands/send` 回空陣列：這裡的 `commands` 表是歷史，沒有
+    母本的 tc_commands 範本表。
+  - 統計 / 稽核：`GET /api/statistics`（admin，`from`/`to`）與 `/api/statistics/devices`（admin，
+    區間上限 24h，逐裝置數 `positions`）；`GET /api/audit`（admin）回 `actions` 並帶上 email。
+    M3-4 起登入 / 登出 / 失敗登入、devices、users、tokens、notifications、資源 CRUD、
+    permissions link/unlink、command 都會寫一列 action。
+  - Notificator：`GET /api/notificators` 與 `/api/notifications/notificators` 回可用的通道
+    （命令列配置的 + 內建 mail/webhook），`/api/notifications/types` 回事件型別加 `all`。
+  - 測試：`internal/api/admin_test.go` 覆蓋 protocols CRUD 與非 admin 403、server 匿名讀 /
+    部分更新 / admin 寫、statistics 與 24h 上限、audit 權限、cookie 登入 / 登出 / `?token=`、
+    token 發行、`commands/types` 與群組下發、notificators。
+  - 偏差：沒有 tc_commands 範本（只存歷史）、`storageSpace` 未回報、reboot 走 process 取消而非
+    `System.exit`、`/api/session` 不回 JSESSIONID（cookie 內是 bearer token）。
 - [ ] 驗收：`traccar-web` 的請求逐條打過（母本 81 個端點的清單當對照表），缺的列在 `docs/`。
 
 ### M4 事件與通知補齊（M）

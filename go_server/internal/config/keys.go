@@ -15,6 +15,7 @@ const (
 
 	// REST layer.
 	WebAddress          = "web.address"
+	WebPath             = "web.path"
 	APIKey              = "api.key"              // Go only
 	APIAllowAnonymous   = "api.allowAnonymous"   // Go only
 	APIIssueToken       = "api.issueToken"       // Go only: one shot command
@@ -72,6 +73,7 @@ var KnownKeys = []string{
 	ServerTimeout,
 
 	WebAddress,
+	WebPath,
 	APIKey,
 	APIAllowAnonymous,
 	APIIssueToken,
@@ -122,11 +124,15 @@ const (
 	// ProtocolRegisterUnknown turns the auto-register default on or off for one
 	// protocol.
 	ProtocolRegisterUnknown = "registerUnknown"
+	// ProtocolTransport is the listen transport: tcp (the default), udp or tls.
+	ProtocolTransport = "transport"
 )
 
 // ProtocolKeys is the set of keys Protocol resolves. Only these can be set per
 // protocol, which keeps the resolution order documented and testable.
-var ProtocolKeys = []string{ProtocolAddress, ProtocolPort, ProtocolTimeout, ProtocolRegisterUnknown}
+var ProtocolKeys = []string{
+	ProtocolAddress, ProtocolPort, ProtocolTimeout, ProtocolRegisterUnknown, ProtocolTransport,
+}
 
 // Protocols are the sections the gateway ships protocol servers for.
 var Protocols = []string{"h02", "gt06", "jt808", "teltonika"}

@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // Command types, matching org.traccar.model.Command.TYPE_*.
 const (
@@ -120,6 +123,27 @@ type CommandFilter struct {
 	DeviceIDs []int64
 	Limit     int
 	Offset    int
+}
+
+// AllCommandTypes returns every command type the model defines, sorted. It is
+// what /api/commands/types answers without a device to narrow the list.
+func AllCommandTypes() []string {
+	types := []string{
+		CommandCustom, CommandIdentification, CommandPositionSingle, CommandPositionPeriodic,
+		CommandPositionStop, CommandEngineStop, CommandEngineResume, CommandAlarmArm,
+		CommandAlarmDisarm, CommandAlarmDismiss, CommandSetTimezone, CommandRequestPhoto,
+		CommandPowerOff, CommandRebootDevice, CommandFactoryReset, CommandSendSMS,
+		CommandSendUSSD, CommandSOSNumber, CommandSilenceTime, CommandSetPhonebook,
+		CommandMessage, CommandVoiceMessage, CommandOutputControl, CommandVoiceMonitoring,
+		CommandSetAGPS, CommandSetIndicator, CommandConfiguration, CommandGetVersion,
+		CommandFirmwareUpdate, CommandSetConnection, CommandSetOdometer, CommandGetModemStatus,
+		CommandGetDeviceStatus, CommandSetSpeedLimit, CommandModePowerSaving, CommandModeDeepSleep,
+		CommandVideoStart, CommandVideoStop, CommandAlarmGeofence, CommandAlarmBattery,
+		CommandAlarmSOS, CommandAlarmRemove, CommandAlarmClock, CommandAlarmSpeed,
+		CommandAlarmFall, CommandAlarmVibration,
+	}
+	sort.Strings(types)
+	return types
 }
 
 // NewCommand creates a command with an initialised attribute map.

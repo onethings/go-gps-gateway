@@ -153,6 +153,9 @@ func (f *fakeUsers) UpdateUser(_ context.Context, userID int64, update model.Use
 	if update.Disabled != nil {
 		user.Disabled = *update.Disabled
 	}
+	if update.Attributes != nil {
+		user.Attributes = *update.Attributes
+	}
 	copied := *user
 	return &copied, nil
 }

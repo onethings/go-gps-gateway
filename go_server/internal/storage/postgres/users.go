@@ -27,7 +27,8 @@ const (
 	userSelectColumns = `u.id, u.email, u.name, u.admin, u.disabled, u.temporary, u.created_at,
 		(SELECT count(*) FROM permissions p
 		  WHERE p.owner_type = 'user' AND p.owner_id = u.id AND p.property_type = 'device'),
-		(SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id)`
+		(SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id),
+		u.attributes`
 
 	// tokenColumns is the SELECT list shared by every token query. The scopes
 	// column is rendered as JSON so the driver never has to deal with a
@@ -180,10 +181,13 @@ func (s *Store) User(ctx context.Context, userID int64) (*model.User, error) {
 
 // scanUser reads one row in userSelectColumns order.
 func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
-	var user model.User
+	var (
+		user       model.User
+		attributes []byte
+	)
 	if err := row.Scan(
 		&user.ID, &user.Email, &user.Name, &user.Admin, &user.Disabled, &user.Temporary,
-		&user.CreatedAt, &user.DeviceCount, &user.TokenCount,
+		&user.CreatedAt, &user.DeviceCount, &user.TokenCount, &attributes,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// QueryRow hands sql.ErrNoRows straight to Scan; callers map it to
@@ -192,6 +196,11 @@ func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 		}
 		return nil, fmt.Errorf("postgres: scan user: %w", err)
 	}
+	decoded, err := decodeAttributes(attributes)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: user %d: %w", user.ID, err)
+	}
+	user.Attributes = decoded
 	return &user, nil
 }
 
@@ -334,15 +343,25 @@ func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model
 
 // UpdateUser replaces the non-nil fields of an account.
 func (s *Store) UpdateUser(ctx context.Context, userID int64, update model.UserUpdate) (*model.User, error) {
+	var attributes any
+	if update.Attributes != nil {
+		encoded, err := encodeAttributes(*update.Attributes)
+		if err != nil {
+			return nil, err
+		}
+		attributes = encoded
+	}
+
 	var updatedID int64
 	err := s.db.QueryRowContext(ctx,
 		`UPDATE users
 		 SET name = COALESCE($2, name),
 		     admin = COALESCE($3, admin),
-		     disabled = COALESCE($4, disabled)
+		     disabled = COALESCE($4, disabled),
+		     attributes = COALESCE($5::jsonb, attributes)
 		 WHERE id = $1
 		 RETURNING id`,
-		userID, update.Name, update.Admin, update.Disabled,
+		userID, update.Name, update.Admin, update.Disabled, attributes,
 	).Scan(&updatedID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrUserNotFound

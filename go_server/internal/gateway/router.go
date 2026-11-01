@@ -36,7 +36,7 @@ func NewRouter(registry *Registry, directory DeviceDirectory) *Router {
 	}
 }
 
-// Register attaches a running protocol server.
+// register attaches a running protocol server.
 func (r *Router) Register(protocol string, server *Server) {
 	if server == nil {
 		return
@@ -46,6 +46,15 @@ func (r *Router) Register(protocol string, server *Server) {
 	defer r.mu.Unlock()
 
 	r.servers[protocol] = server
+}
+
+// Unregister detaches a protocol server that stopped listening, so commands
+// report the protocol as offline instead of writing into a dead server.
+func (r *Router) Unregister(protocol string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.servers, protocol)
 }
 
 // EncodeCommand turns a command into the payload the device expects.
@@ -81,6 +90,12 @@ func (r *Router) Send(protocol string, deviceID int64, payload []byte) error {
 		return fmt.Errorf("%w: %s is not listening", ErrUnknownProtocol, protocol)
 	}
 	return server.Send(deviceID, payload)
+}
+
+// SupportedCommands lists the command types the router can encode for a
+// protocol on one channel. It backs GET /api/commands/types.
+func (r *Router) SupportedCommands(protocol string, textChannel bool) ([]string, bool) {
+	return r.registry.CommandTypes(protocol, textChannel)
 }
 
 // Disconnect closes the connection of a device on the protocol it connected

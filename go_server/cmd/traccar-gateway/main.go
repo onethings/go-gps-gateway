@@ -14,8 +14,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +31,9 @@ import (
 	"traccar-server_go/go_server/internal/session"
 	"traccar-server_go/go_server/internal/storage/postgres"
 )
+
+// version is what /api/server reports; -ldflags can override it at build time.
+var version = "dev"
 
 func main() {
 	flags := flag.NewFlagSet("traccar-gateway", flag.ContinueOnError)
@@ -262,51 +265,37 @@ func main() {
 		}
 	}
 
-	var servers sync.WaitGroup
-	for _, protocol := range settings.Protocols {
-		name, address := protocol.Name, protocol.Address
-		if address == "" {
-			continue
-		}
-
-		listener, err := net.Listen("tcp", address)
-		if err != nil {
-			log.Fatalf("%s: listen %s: %v", name, address, err)
-		}
-
-		options := []gateway.Option{
-			gateway.WithReadTimeout(protocol.ReadTimeout),
-			gateway.WithMetrics(meters),
-		}
-		if protocol.AutoRegister {
-			options = append(options, gateway.WithAutoRegister())
-		}
-		if store != nil {
-			// Device acknowledgements close the command rows the REST layer
-			// wrote, and a device that reconnects gets what was queued for it,
-			// so the gateway needs the same dispatcher.
-			options = append(options, gateway.WithCommandTracker(commands))
-			options = append(options, gateway.WithSessionTracker(sessions))
-		}
-
-		server, err := gateway.NewServer(registry, name, directory, sink, options...)
-		if err != nil {
-			log.Fatalf("%s: %v", name, err)
-		}
-
-		// Commands are routed by protocol, so every listener has to be
-		// reachable from the REST layer.
-		router.Register(name, server)
-
-		log.Printf("%s: listening on %s", name, listener.Addr())
-
-		servers.Add(1)
-		go func(name string, server *gateway.Server, listener net.Listener) {
-			defer servers.Done()
-			if err := server.Serve(ctx, listener); err != nil {
-				log.Printf("%s: %v", name, err)
+	// The protocol settings table starts from the configured listeners, so an
+	// administrator sees one editable row per shipped protocol, and a row edited
+	// earlier wins over the configuration file.
+	if store != nil {
+		defaults := make([]model.ProtocolSettings, 0, len(settings.Protocols))
+		for _, protocol := range settings.Protocols {
+			transport := protocol.Transport
+			if transport == "" {
+				transport = model.TransportTCP
 			}
-		}(name, server, listener)
+			defaults = append(defaults, model.ProtocolSettings{
+				Protocol:  protocol.Name,
+				Port:      portOf(protocol.Address),
+				Transport: transport,
+			})
+		}
+		if err := store.EnsureProtocolSettings(ctx, defaults); err != nil {
+			log.Printf("api: seed protocol settings: %v", err)
+		}
+		if stored, err := store.ProtocolSettings(ctx); err != nil {
+			log.Printf("api: load protocol settings: %v", err)
+		} else {
+			applyStoredProtocolSettings(settings.Protocols, stored)
+		}
+	}
+
+	listeners := newListenerSet(ctx, registry, directory, sink, router, meters, commands, sessions, log.Printf)
+	for _, protocol := range settings.Protocols {
+		if err := listeners.start(protocol); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	// The API is created after the listeners so that every protocol server is
@@ -333,6 +322,14 @@ func main() {
 				api.WithPermissions(store),
 				api.WithResources(store),
 				api.WithShareDisabled(settings.DisableShare),
+				api.WithProtocolSettings(store, listeners),
+				api.WithServerSettings(store),
+				api.WithStatistics(store),
+				api.WithAudit(store),
+				api.WithNotificators(notifyChannelList(channels)),
+				api.WithVersion(version),
+				api.WithWebPath(settings.WebPath),
+				api.WithReboot(stop),
 			}
 			if mailer != nil {
 				options = append(options, api.WithPasswordReset(notify.NewPasswordResetMail(mailer)))
@@ -368,7 +365,7 @@ func main() {
 	<-ctx.Done()
 	log.Print("shutting down")
 
-	servers.Wait()
+	listeners.waitAll()
 
 	// The session manager writes the offline transitions of the connections
 	// that just ended, so it drains after the servers are done.
@@ -606,9 +603,29 @@ func notifyTypeFilter(types []string) ([]string, error) {
 }
 
 func notifyChannelNames(channels []notify.Channel) string {
+	return strings.Join(notifyChannelList(channels), ", ")
+}
+
+// notifyChannelList lists the delivery channels, which is what
+// /api/notificators reports to the web interface.
+func notifyChannelList(channels []notify.Channel) []string {
 	names := make([]string, 0, len(channels))
 	for _, channel := range channels {
 		names = append(names, channel.Notifier.Name())
 	}
-	return strings.Join(names, ", ")
+	return names
+}
+
+// portOf extracts the port of a listen address; a malformed address reports
+// zero, which disables the protocol row in the settings table.
+func portOf(address string) int {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return 0
+	}
+	value, err := strconv.Atoi(port)
+	if err != nil {
+		return 0
+	}
+	return value
 }

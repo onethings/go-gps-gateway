@@ -61,14 +61,21 @@ type UserStore interface {
 }
 
 type userResponse struct {
-	ID          int64     `json:"id"`
-	Email       string    `json:"email"`
-	Name        string    `json:"name"`
-	Admin       bool      `json:"admin"`
-	Disabled    bool      `json:"disabled"`
-	DeviceCount int       `json:"deviceCount"`
-	TokenCount  int       `json:"tokenCount"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID             int64          `json:"id"`
+	Email          string         `json:"email"`
+	Name           string         `json:"name"`
+	Admin          bool           `json:"admin"`
+	Disabled       bool           `json:"disabled"`
+	Readonly       bool           `json:"readonly"`
+	DeviceReadonly bool           `json:"deviceReadonly"`
+	LimitCommands  bool           `json:"limitCommands"`
+	DisableReports bool           `json:"disableReports"`
+	FixedEmail     bool           `json:"fixedEmail"`
+	Temporary      bool           `json:"temporary"`
+	Attributes     map[string]any `json:"attributes"`
+	DeviceCount    int            `json:"deviceCount"`
+	TokenCount     int            `json:"tokenCount"`
+	CreatedAt      time.Time      `json:"createdAt"`
 }
 
 type usersResponse struct {
@@ -106,6 +113,9 @@ type userUpdateRequest struct {
 	Name     *string `json:"name"`
 	Admin    *bool   `json:"admin"`
 	Disabled *bool   `json:"disabled"`
+	// Attributes replaces the account attribute map, which is where the web
+	// interface keeps per-user preferences.
+	Attributes *map[string]any `json:"attributes"`
 	// Password is written straight to users.password_hash; it is never echoed
 	// back and an empty string is rejected rather than stored.
 	Password *string `json:"password"`
@@ -118,12 +128,18 @@ type tokenIssueRequest struct {
 }
 
 func newUserResponse(user model.User) userResponse {
+	attributes := map[string]any(user.Attributes)
+	if attributes == nil {
+		attributes = map[string]any{}
+	}
 	return userResponse{
 		ID:          user.ID,
 		Email:       user.Email,
 		Name:        user.Name,
 		Admin:       user.Admin,
 		Disabled:    user.Disabled,
+		Temporary:   user.Temporary,
+		Attributes:  attributes,
 		DeviceCount: user.DeviceCount,
 		TokenCount:  user.TokenCount,
 		CreatedAt:   user.CreatedAt.UTC(),
@@ -272,6 +288,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.audit(r, model.ActionCreate, "user", user.ID)
 	writeJSON(w, http.StatusCreated, newUserResponse(*user))
 }
 
@@ -304,6 +321,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if request.Name != nil {
 		name := strings.TrimSpace(*request.Name)
 		update.Name = &name
+	}
+	if request.Attributes != nil {
+		attributes := model.Attributes(*request.Attributes)
+		update.Attributes = &attributes
 	}
 
 	// Hashed before the row is touched: bcrypt takes a noticeable moment, and a
@@ -353,6 +374,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.audit(r, model.ActionEdit, "user", user.ID)
 	writeJSON(w, http.StatusOK, newUserResponse(*user))
 }
 
@@ -383,6 +405,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	s.audit(r, model.ActionRemove, "user", userID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -468,6 +491,8 @@ func (s *Server) handleAssignDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	s.auditWithAttributes(r, model.ActionLink, "device", deviceID,
+		model.Attributes{"ownerType": "user", "ownerId": userID})
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -500,6 +525,8 @@ func (s *Server) handleUnassignDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	s.auditWithAttributes(r, model.ActionUnlink, "device", deviceID,
+		model.Attributes{"ownerType": "user", "ownerId": userID})
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -593,6 +620,7 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.audit(r, model.ActionToken, "token", token.ID)
 	writeJSON(w, http.StatusCreated, tokenIssueResponse{
 		tokenResponse: newTokenResponse(*token),
 		Token:         plaintext,
@@ -630,6 +658,7 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	s.audit(r, model.ActionRemove, "token", tokenID)
 
 	w.WriteHeader(http.StatusNoContent)
 }

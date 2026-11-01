@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"traccar-server_go/go_server/internal/codec"
+	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/protocol/gt06"
 	"traccar-server_go/go_server/internal/protocol/h02"
 	"traccar-server_go/go_server/internal/protocol/jt808"
@@ -23,6 +24,11 @@ type Protocol struct {
 	NewFrameDecoder func() codec.FrameDecoder
 	NewDecoder      func() codec.Decoder
 	NewEncoder      func() codec.Encoder
+	// TextCommands and DataCommands list the command types the encoder can
+	// build. The text channel is the one a device reads as a plain string
+	// (SMS-like); the data channel is the protocol's own binary framing.
+	TextCommands []string
+	DataCommands []string
 }
 
 // Factory creates the protocol handlers bound to the shared dependencies.
@@ -52,6 +58,23 @@ func (r *Registry) Get(name string) (Factory, error) {
 	return factory, nil
 }
 
+// CommandTypes reports the command types a protocol's encoder accepts on the
+// chosen channel. ok is false for a protocol that has no server.
+func (r *Registry) CommandTypes(protocol string, textChannel bool) ([]string, bool) {
+	factory, ok := r.factories[protocol]
+	if !ok {
+		return nil, false
+	}
+	built := factory(codec.Base{})
+	if built == nil {
+		return nil, true
+	}
+	if textChannel {
+		return append([]string(nil), built.TextCommands...), true
+	}
+	return append([]string(nil), built.DataCommands...), true
+}
+
 // Names lists the registered protocol names in alphabetical order.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.factories))
@@ -72,6 +95,11 @@ func DefaultRegistry() *Registry {
 			NewFrameDecoder: func() codec.FrameDecoder { return h02.NewFrameDecoder(0) },
 			NewDecoder:      func() codec.Decoder { return h02.NewDecoder(base) },
 			NewEncoder:      func() codec.Encoder { return h02.NewEncoder(base) },
+			TextCommands: []string{
+				model.CommandAlarmArm, model.CommandAlarmDisarm,
+				model.CommandEngineStop, model.CommandEngineResume,
+				model.CommandPositionPeriodic,
+			},
 		}
 	})
 
@@ -81,6 +109,9 @@ func DefaultRegistry() *Registry {
 			NewFrameDecoder: func() codec.FrameDecoder { return gt06.NewFrameDecoder() },
 			NewDecoder:      func() codec.Decoder { return gt06.NewDecoder(base) },
 			NewEncoder:      func() codec.Encoder { return gt06.NewEncoder(base) },
+			TextCommands: []string{
+				model.CommandEngineStop, model.CommandEngineResume, model.CommandCustom,
+			},
 		}
 	})
 
@@ -90,6 +121,12 @@ func DefaultRegistry() *Registry {
 			NewFrameDecoder: func() codec.FrameDecoder { return jt808.NewFrameDecoder() },
 			NewDecoder:      func() codec.Decoder { return jt808.NewDecoder(base) },
 			NewEncoder:      func() codec.Encoder { return jt808.NewEncoder(base) },
+			DataCommands: []string{
+				model.CommandPositionSingle, model.CommandPositionStop,
+				model.CommandRebootDevice, model.CommandPositionPeriodic,
+				model.CommandAlarmArm, model.CommandAlarmDisarm, model.CommandAlarmDismiss,
+				model.CommandEngineStop, model.CommandEngineResume, model.CommandCustom,
+			},
 		}
 	})
 
@@ -99,6 +136,9 @@ func DefaultRegistry() *Registry {
 			NewFrameDecoder: func() codec.FrameDecoder { return teltonika.NewFrameDecoder() },
 			NewDecoder:      func() codec.Decoder { return teltonika.NewDecoder(base) },
 			NewEncoder:      func() codec.Encoder { return teltonika.NewEncoder(base) },
+			DataCommands: []string{
+				model.CommandEngineStop, model.CommandEngineResume, model.CommandCustom,
+			},
 		}
 	})
 

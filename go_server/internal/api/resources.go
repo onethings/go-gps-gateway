@@ -536,6 +536,7 @@ func createResource[T any](s *Server, res *resource[T]) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 			return
 		}
+		s.audit(r, model.ActionCreate, string(res.object), res.id(value))
 		writeJSON(w, http.StatusCreated, res.render(value, true))
 	}
 }
@@ -583,6 +584,7 @@ func updateResource[T any](s *Server, res *resource[T]) http.HandlerFunc {
 			s.writeResourceError(w, err)
 			return
 		}
+		s.audit(r, model.ActionEdit, string(res.object), res.id(value))
 		writeJSON(w, http.StatusOK, res.render(value, true))
 	}
 }
@@ -617,6 +619,7 @@ func removeResource[T any](s *Server, res *resource[T]) http.HandlerFunc {
 			s.writeResourceError(w, err)
 			return
 		}
+		s.audit(r, model.ActionRemove, string(res.object), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

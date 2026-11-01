@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"traccar-server_go/go_server/internal/model"
@@ -88,6 +89,82 @@ func (s *Store) DeleteStatistics(ctx context.Context, statisticsID int64) error 
 // Statistics returns the snapshots matching the filter, oldest id first.
 func (s *Store) Statistics(ctx context.Context, filter model.ResourceFilter) ([]*model.Statistics, error) {
 	return listResources(ctx, s.db, statisticsSpec, filter)
+}
+
+// QueryStatistics returns the snapshots captured between from and to, oldest
+// first. It backs GET /api/statistics, which the Java server orders by capture
+// time. A zero bound leaves that side unrestricted.
+func (s *Store) QueryStatistics(
+	ctx context.Context, from, to time.Time,
+) ([]*model.Statistics, error) {
+	columns := "id, " + strings.Join(statisticsSpec.columns, ", ")
+	query := "SELECT " + columns + " FROM statistics"
+	args := make([]any, 0, 2)
+	switch {
+	case !from.IsZero() && !to.IsZero():
+		args = append(args, from, to)
+		query += " WHERE capture_time BETWEEN $1 AND $2"
+	case !from.IsZero():
+		args = append(args, from)
+		query += " WHERE capture_time >= $1"
+	case !to.IsZero():
+		args = append(args, to)
+		query += " WHERE capture_time <= $1"
+	}
+	query += " ORDER BY capture_time, id"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query statistics: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []*model.Statistics
+	for rows.Next() {
+		snapshot, err := statisticsSpec.scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: query statistics: %w", err)
+	}
+	return snapshots, nil
+}
+
+// PositionCounts counts the positions of every given device in one time range.
+// Device ids without a position are absent from the result, which the caller
+// renders as zero.
+func (s *Store) PositionCounts(
+	ctx context.Context, deviceIDs []int64, from, to time.Time,
+) (map[int64]int64, error) {
+	counts := make(map[int64]int64, len(deviceIDs))
+	if len(deviceIDs) == 0 {
+		return counts, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT device_id, count(*) FROM positions
+		 WHERE device_id = ANY($1) AND device_time BETWEEN $2 AND $3
+		 GROUP BY device_id`,
+		deviceIDs, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: count positions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var deviceID, count int64
+		if err := rows.Scan(&deviceID, &count); err != nil {
+			return nil, fmt.Errorf("postgres: scan position count: %w", err)
+		}
+		counts[deviceID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: count positions: %w", err)
+	}
+	return counts, nil
 }
 
 func encodeProtocols(protocols map[string]int) (string, error) {

@@ -141,6 +141,15 @@ func (s *Server) changePermissions(w http.ResponseWriter, r *http.Request, add b
 			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 			return
 		}
+		action := model.ActionLink
+		if !add {
+			action = model.ActionUnlink
+		}
+		s.auditWithAttributes(r, action, string(pair.Property), pair.PropertyID,
+			model.Attributes{
+				"ownerType": string(pair.Owner),
+				"ownerId":   pair.OwnerID,
+			})
 	}
 
 	w.WriteHeader(http.StatusNoContent)

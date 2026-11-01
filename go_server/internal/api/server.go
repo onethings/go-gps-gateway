@@ -126,6 +126,20 @@ type Server struct {
 	// resources backs the configuration routes (groups, geofences, calendars,
 	// drivers, maintenances, orders, reports, computed attributes).
 	resources ResourceStore
+	// Administrative resources: protocol settings, the server settings row,
+	// statistics, the audit trail, reverse geocoding and the optional reboot
+	// hook.
+	protocolSettings ProtocolSettingsStore
+	protocolApplier  ProtocolApplier
+	serverSettings   ServerSettingsStore
+	statistics       StatisticsStore
+	auditStore       AuditStore
+	geocoder         Geocoder
+	reboot           func()
+	notificators     []string
+	version          string
+	webPath          string
+	textEnabled      bool
 	// socketHub and latestPositions back GET /api/socket.
 	socketHub       *SocketHub
 	latestPositions LatestPositionQuerier
@@ -312,6 +326,8 @@ func (s *Server) Handler() http.Handler {
 	// Configuration resources, the Go counterpart of the Java
 	// SimpleObjectResource / ExtendedObjectResource routes.
 	s.registerResourceRoutes(mux)
+
+	s.registerAdminRoutes(mux)
 
 	if s.apiKey == "" && s.tokens == nil {
 		return mux
@@ -979,6 +995,7 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.audit(r, model.ActionCreate, "device", device.ID)
 	writeJSON(w, http.StatusCreated, newDeviceResponse(*device, true))
 }
 
@@ -1025,6 +1042,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.audit(r, model.ActionEdit, "device", device.ID)
 	writeJSON(w, http.StatusOK, newDeviceResponse(*device, true))
 }
 
@@ -1059,6 +1077,7 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	s.audit(r, model.ActionRemove, "device", deviceID)
 
 	w.WriteHeader(http.StatusNoContent)
 }

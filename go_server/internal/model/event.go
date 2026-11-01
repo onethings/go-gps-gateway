@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // Event type values. They match the Java server's Event.TYPE_* strings, so
 // reports and clients written for it keep working.
@@ -15,6 +18,18 @@ const (
 	EventPowerCut        = "powerCut"
 	EventPowerRestored   = "powerRestored"
 )
+
+// EventTypes returns every event type the gateway itself can raise, sorted. It
+// backs /api/notifications/types and the subscription validation.
+func EventTypes() []string {
+	types := []string{
+		EventDeviceOnline, EventDeviceOffline, EventDeviceMoving, EventDeviceStopped,
+		EventDeviceOverspeed, EventGeofenceEnter, EventGeofenceExit,
+		EventPowerCut, EventPowerRestored,
+	}
+	sort.Strings(types)
+	return types
+}
 
 // IsEventType reports whether value is one of the types the gateway raises
 // itself. Device reported alarms arrive as their own strings, so a value that is

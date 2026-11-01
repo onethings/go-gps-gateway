@@ -162,6 +162,7 @@ func (s *Server) handleCreateNotification(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	s.audit(r, model.ActionCreate, "notification", notification.ID)
 	writeJSON(w, http.StatusCreated, newNotificationResponse(*notification))
 }
 
@@ -218,6 +219,7 @@ func (s *Server) handleUpdateNotification(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	s.audit(r, model.ActionEdit, "notification", notification.ID)
 	writeJSON(w, http.StatusOK, newNotificationResponse(*notification))
 }
 
@@ -244,6 +246,7 @@ func (s *Server) handleDeleteNotification(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	s.audit(r, model.ActionRemove, "notification", notificationID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -343,6 +346,12 @@ func (s *Server) handleNotificationSubscription(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
+	action := model.ActionLink
+	if !assign {
+		action = model.ActionUnlink
+	}
+	s.auditWithAttributes(r, action, "notification", notificationID,
+		model.Attributes{"ownerType": "user", "ownerId": userID})
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -13,6 +13,10 @@ import (
 const (
 	defaultPositionLimit = 100
 	maxPositionLimit     = 1000
+
+	// positionSelectColumns keeps the SELECT list and the scan order in sync.
+	positionSelectColumns = `id, device_id, protocol, device_time, server_time, valid,
+		latitude, longitude, altitude, speed, course, accuracy, attributes`
 )
 
 // QueryPositions returns the positions matching the filter, newest first.
@@ -28,44 +32,91 @@ func (s *Store) QueryPositions(ctx context.Context, filter model.PositionFilter)
 
 	var positions []model.Position
 	for rows.Next() {
-		var (
-			position   model.Position
-			latitude   sql.NullFloat64
-			longitude  sql.NullFloat64
-			altitude   sql.NullFloat64
-			speed      sql.NullFloat64
-			course     sql.NullFloat64
-			accuracy   sql.NullFloat64
-			attributes []byte
-		)
-		if err := rows.Scan(
-			&position.ID, &position.DeviceID, &position.Protocol, &position.Time,
-			&position.ServerTime, &position.Valid, &latitude, &longitude,
-			&altitude, &speed, &course, &accuracy, &attributes,
-		); err != nil {
-			return nil, fmt.Errorf("postgres: scan position: %w", err)
+		position, err := scanPosition(rows)
+		if err != nil {
+			return nil, err
 		}
-
-		position.Latitude = latitude.Float64
-		position.Longitude = longitude.Float64
-		position.Altitude = altitude.Float64
-		position.Speed = speed.Float64
-		position.Course = course.Float64
-		position.Accuracy = accuracy.Float64
-
-		// A nil map would serialise as null; an empty object is friendlier.
-		position.Attributes = map[string]any{}
-		if len(attributes) > 0 {
-			if err := json.Unmarshal(attributes, &position.Attributes); err != nil {
-				return nil, fmt.Errorf("postgres: decode position attributes: %w", err)
-			}
-		}
-		positions = append(positions, position)
+		positions = append(positions, *position)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("postgres: query positions: %w", err)
 	}
 	return positions, nil
+}
+
+// LatestPositions returns the newest position of every device in deviceIDs,
+// ordered by device id. A nil list means every device, which is how an admin
+// connection seeds itself. This backs GET /api/socket.
+func (s *Store) LatestPositions(ctx context.Context, deviceIDs []int64) ([]model.Position, error) {
+	query, args := latestPositionsQuery(deviceIDs)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query latest positions: %w", err)
+	}
+	defer rows.Close()
+
+	var positions []model.Position
+	for rows.Next() {
+		position, err := scanPosition(rows)
+		if err != nil {
+			return nil, err
+		}
+		positions = append(positions, *position)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: query latest positions: %w", err)
+	}
+	return positions, nil
+}
+
+// latestPositionsQuery builds the DISTINCT ON statement. A nil list means every
+// device; an empty non-nil list matches nothing, like every other scope clause.
+func latestPositionsQuery(deviceIDs []int64) (string, []any) {
+	args := make([]any, 0, len(deviceIDs))
+	query := `SELECT DISTINCT ON (device_id) ` + positionSelectColumns + ` FROM positions`
+	if deviceIDs != nil {
+		query += " WHERE " + deviceIDsClause(&args, "device_id", deviceIDs)
+	}
+	query += " ORDER BY device_id, device_time DESC, id DESC"
+	return query, args
+}
+
+// scanPosition reads one row in positionColumns order.
+func scanPosition(row interface{ Scan(dest ...any) error }) (*model.Position, error) {
+	var (
+		position   model.Position
+		latitude   sql.NullFloat64
+		longitude  sql.NullFloat64
+		altitude   sql.NullFloat64
+		speed      sql.NullFloat64
+		course     sql.NullFloat64
+		accuracy   sql.NullFloat64
+		attributes []byte
+	)
+	if err := row.Scan(
+		&position.ID, &position.DeviceID, &position.Protocol, &position.Time,
+		&position.ServerTime, &position.Valid, &latitude, &longitude,
+		&altitude, &speed, &course, &accuracy, &attributes,
+	); err != nil {
+		return nil, fmt.Errorf("postgres: scan position: %w", err)
+	}
+
+	position.Latitude = latitude.Float64
+	position.Longitude = longitude.Float64
+	position.Altitude = altitude.Float64
+	position.Speed = speed.Float64
+	position.Course = course.Float64
+	position.Accuracy = accuracy.Float64
+
+	// A nil map would serialise as null; an empty object is friendlier.
+	position.Attributes = map[string]any{}
+	if len(attributes) > 0 {
+		if err := json.Unmarshal(attributes, &position.Attributes); err != nil {
+			return nil, fmt.Errorf("postgres: decode position attributes: %w", err)
+		}
+	}
+	return &position, nil
 }
 
 // positionQuery builds the statement and its arguments. The time bounds are
@@ -105,9 +156,7 @@ func positionQuery(filter model.PositionFilter) (string, []any) {
 	}
 
 	var builder strings.Builder
-	builder.WriteString(`SELECT id, device_id, protocol, device_time, server_time, valid,
-		latitude, longitude, altitude, speed, course, accuracy, attributes
-		FROM positions`)
+	builder.WriteString("SELECT " + positionSelectColumns + " FROM positions")
 	if len(clauses) > 0 {
 		builder.WriteString(" WHERE ")
 		builder.WriteString(strings.Join(clauses, " AND "))

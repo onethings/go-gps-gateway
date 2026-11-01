@@ -43,8 +43,9 @@ client ──HTTP──▶ api.Server (RequireAuth)
                    ├─ GET /api/commands  ──▶ commands 查詢（自動加裝置條件）
                    ├─ /api/users/*       ──▶ 帳號 / token / 裝置授權 / 通知訂閱（admin 或本人）
                    ├─ /api/notifications ──▶ 通知範本（admin 維護，任何帳號可讀）
-                   └─ /api/{groups,geofences,calendars,drivers,maintenance,orders,reports}、/api/attributes/computed
-                                          ──▶ 設定型資源 CRUD（參數照母本 Simple / ExtendedObjectResource）
+                   ├─ /api/{groups,geofences,calendars,drivers,maintenance,orders,reports}、/api/attributes/computed
+                   │                      ──▶ 設定型資源 CRUD（參數照母本 Simple / ExtendedObjectResource）
+                   └─ /api/socket        ──▶ WebSocket：位置 / 事件 / 裝置狀態（token 走 query string）
 ```
 
 ## 目錄
@@ -66,7 +67,8 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/handler`               | 位置處理鏈：母本 `ProcessingHandler` 的 14 個階段順序、`PositionHandler` 介面、`BusinessHandler`（一次跑一個 `Processor`）與 terminal store                                                                                                                                  |
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
-| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）；認證 / scope / 裝置擁有權 |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）、`GET /api/socket`（WebSocket 推播）；認證 / scope / 裝置擁有權 |
+| `internal/websocket`             | RFC 6455 伺服器端子集：握手、文字 / 二進位訊息與 fragmentation、ping / pong、close（無 extension）  |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                                                                                                                                              |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                                                                                                                                                           |
 | `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                                                                                                                                                           |
@@ -492,8 +494,8 @@ Webhook 的 body 固定為一份 JSON：
 
 ## 認證與權限
 
-除了 `/api/health`、`POST /api/login` 與兩支密碼自助路由（`POST /api/password/forgot`、
-`POST /api/password/reset`），REST 每個請求都要帶憑證，放在 `X-Api-Key` 或
+除了 `/api/health`、`POST /api/login`、兩支密碼自助路由（`POST /api/password/forgot`、
+`POST /api/password/reset`）與自己驗 `?token=` 的 `/api/socket`，REST 每個請求都要帶憑證，放在 `X-Api-Key` 或
 `Authorization: Bearer <token>`（兩者等價）：
 
 | 憑證         | 來源                                  | 權限                         |
@@ -947,6 +949,39 @@ CSV 欄位順序是 `id,deviceId,protocol,serverTime,deviceTime,valid,latitude,l
 speed,course,accuracy`，後面接區間內出現過的 attribute（依名稱排序）；開頭是 `= + - @` 的文字
 會留空，避免試算表當成公式執行（母本 `CsvExportProvider` 的做法）。時間一律 UTC。
 
+## 即時推播（WebSocket）
+
+`GET /api/socket?token=<token>` 是母本 `AsyncSocket` 的對應實作：瀏覽器建立一條 WebSocket，
+之後收到位置、事件與裝置狀態的增量。**憑證走 query string**（瀏覽器不能對 WebSocket 設 header），
+所以這條路徑不受 `RequireAuth` 管，改由 handler 自己用 `-api-key` 或 `api_tokens` 驗，驗證語義
+與 header 版相同。
+
+```js
+const socket = new WebSocket(`ws://localhost:8082/api/socket?token=${token}`);
+socket.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  // 每次只有一個鍵：data.positions / data.events / data.devices
+};
+```
+
+連上後第一則固定是 `{"positions":[...]}`（該帳號看得到的每台裝置的最新一筆，`DISTINCT ON
+(device_id)`），之後每次變更送一則，形狀與 REST 相同：
+
+| 訊息        | 何時                                               |
+| ----------- | -------------------------------------------------- |
+| `positions` | 每筆處理過的定位（`alert.Pipeline` 的位置 hook）    |
+| `events`    | 規則產生的每一個事件（含寫入佇列漏掉的）            |
+| `devices`   | 裝置上線 / 離線（`session.Manager` 的狀態轉換）     |
+
+每 30 秒送一次 `{}` 當 keepalive（母本 `onKeepalive` 的行為）。用戶端送 `{"logs":true}` 會被
+接受但忽略：這裡沒有 log 串流。訊息依 token 的 scope 分流——`read:positions` / `read:alerts` /
+`read:devices` 分別決定收不收得到該類訊息，三者都沒有回 403；裝置範圍沿用 token 的授權
+（含群組展開），admin 收全部。
+
+推播是非阻塞的：每個連線有 64 則的佇列，跟不上就丟掉新的那則，不讓裝置的讀取迴圈等瀏覽器；
+沒有連線時 publisher 連 JSON 都不編。連線本身是 hijack 出來的，`http.Server.Shutdown` 不會關它，
+行程結束時才一起收掉。
+
 ## 命令下發
 
 `POST /api/commands` 把命令編碼成該協議的位元組，先落一列 `commands`，再交給派送器寫進裝置目前
@@ -1222,7 +1257,7 @@ scrape_configs:
 ## 已知限制
 
 - 接了 `-dsn` 之後 REST 預設是**全關**的：沒設 `-api-key` 又沒有有效 token 時，除了
-  `/api/health`、`/api/login` 與密碼自助路由以外的請求都會回 401。第一次使用先帶 `-api-key` 啟動，
+  `/api/health`、`/api/login`、密碼自助路由與 `/api/socket`（自己驗 query token）以外的請求都會回 401。第一次使用先帶 `-api-key` 啟動，
   用 `POST /api/users` 建立管理員並發 token（見「帳號管理 API」），或直接用 `-issue-token`；
   `-allow-anonymous` 只適合本機。對外仍建議加 TLS / 反代。
 - 帳號 API 只有分頁，沒有搜尋／排序；email 建立後不可修改。第一組密碼只能由 admin 設定；
@@ -1254,6 +1289,9 @@ scrape_configs:
   裝置生效，只有帶 `floor` / `ceiling` 的圍欄才會過濾高度。`/api/maintenance` 與
   `/api/maintenances` 是同一組 handler；母本還有 `/api/attributes/computed/test`（拿最新位置
   試算）還沒做，計算屬性目前只有 CRUD。
+- `/api/socket` 的 token 放在 query string（瀏覽器不能對 WebSocket 設 header），所以它會出現在
+  proxy 與瀏覽器的存取紀錄裡；對外請用 TLS。連線是 hijack 出來的，`http.Server.Shutdown` 不會關它。
+  `{"logs":true}` 只被解析、不會有 log 串流；REST 修改裝置不會即時推給前端（母本也只在狀態轉換時推）。
 - 資源清單固定依 `id` 排序（母本依 `name` / `description`），因為 storage 的共用查詢只保證
   這個順序。`statistics` 的 CRUD 在儲存層，但 REST 端點屬 M3-4。
 - Calendar 只存 iCalendar 原文，VEVENT / RRULE 的重複規則還沒評估，所以 `calendarId` 目前
@@ -1306,7 +1344,7 @@ scrape_configs:
 | 排程     | `schedule/` 8 個 task                                                                               | 無                                                           | 全部                                                                                                                   |
 | 地理加值 | 28 個 geocoder 檔、`speedlimit/`、`mapmatcher/`、`geolocation/`                                     | 無                                                           | 全部                                                                                                                   |
 | 設定     | `Config` + 267 個 `Keys`，支援 `protocol.<name>.<key>`                                              | 38 個 command line flag                                      | 無設定檔、無 per-protocol、無動態重載                                                                                  |
-| 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | 無                                                           | 全部                                                                                                                   |
+| 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | `internal/websocket` + `/api/socket`：位置 / 事件 / 裝置狀態  | 沒有 log 串流與 multi-node broadcast（母本 `BaseBroadcastService`）                                                    |
 | 安全     | token、OIDC、LDAP、`api/signature`                                                                  | token、密碼登入                                              | OIDC / LDAP / 簽章                                                                                                     |
 | 媒體     | `media/`、`MediaEventHandler`、`VideoStreamResource`                                                | 無                                                           | 全部                                                                                                                   |
 | 歷史統計 | `tc_statistics` + `StatisticsManager`                                                               | 只有 `/metrics`（即時）                                      | 全部                                                                                                                   |
@@ -1465,7 +1503,26 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
   - 偏差：母本 `PositionResource` 的 `id`（多筆位置）、`DELETE /api/positions/{id}` 與整段刪除
     沒做；`geofenceId` 指到不存在的圍欄回 404（母本默默忽略）。CSV 沒有 address / fixTime 欄位，
     因為這裡的 model 只有一個 `deviceTime`；時間固定 UTC，沒有使用者時區。
-- [ ] **M3-3 WebSocket**：`/api/socket`，推送 position / event / device 變更（母本 `api/AsyncSocket`）。
+- [x] **M3-3 WebSocket**：`/api/socket`，推送 position / event / device 變更（母本 `api/AsyncSocket`）。
+  - 落地：新增 `internal/websocket`，自己實作 RFC 6455 的伺服器端子集（握手、文字 / 二進位訊息與
+    fragmentation、ping / pong、close handshake、控制幀規則、client 必須遮罩、1 MiB 訊息上限、
+    非 UTF-8 文字拒絕），沒有新增任何外部依賴。`/api/socket` 因為瀏覽器不能設 header 而列進
+    `exemptPaths`，由 handler 自己用 `?token=` 驗 `-api-key` 或 `api_tokens`，驗證失敗一樣回 401。
+    連上先送 `{"positions":[...]}`（`Store.LatestPositions` 的 `DISTINCT ON (device_id)`），
+    之後由三個 publisher 推：`alert.WithPositionHook`（每筆處理過的定位）、alert hook（事件，
+    與通知 dispatcher 串在一起）、`session.Config.OnStatus`（上線 / 離線，回查整列裝置）。
+    每個連線只收 token scope 允許的訊息種類（`read:positions` / `read:alerts` / `read:devices`），
+    裝置範圍沿用 `user_devices` 展開；每 30 秒送 `{}` keepalive。扇出是非阻塞的（64 則佇列、
+    滿了就丟新的），沒有連線時 publisher 直接跳過 JSON 編碼。
+  - 測試：`internal/websocket` 10 個（RFC 範例 accept key、拒絕壞握手、文字往返、fragmentation、
+    ping→pong、close echo、未遮罩拒絕、過大訊息、非 UTF-8、重複 Close）；`internal/api` 6 個
+    （未配置 501、缺 token / 未知 token 401、沒有讀取 scope 403、seed、依裝置範圍與 scope 過濾、
+    忽略 `{"logs":true}` 與斷線後移除連線）；`internal/alert` 的
+    `TestPipelinePositionHookSeesEveryPosition`、`internal/session` 的
+    `TestStatusHookSeesEveryTransition`、storage 的 `TestLatestPositionsQuery`。
+  - 偏差：沒有 log 串流（母本 `logs` 選項只解析不送）、沒有 multi-node `BaseBroadcastService`、
+    hijack 出來的連線不受 `http.Server.Shutdown` 管。REST 改裝置不會推（母本也只在狀態轉換時推）。
+  - 風險：token 在 query string 會進 proxy / 瀏覽器紀錄，和母本相同，對外請走 TLS。
 - [ ] **M3-4 其餘資源**：`/api/protocols`、`/api/server`、`/api/session`、`/api/statistics`、`/api/audit`、`/api/commands/send|bulk`、`/api/notificators`。
 - [ ] 驗收：`traccar-web` 的請求逐條打過（母本 81 個端點的清單當對照表），缺的列在 `docs/`。
 

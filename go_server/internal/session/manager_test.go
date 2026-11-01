@@ -318,3 +318,39 @@ func TestSessionsReturnsCopies(t *testing.T) {
 		t.Error("mutating the returned slice changed the manager")
 	}
 }
+
+// TestStatusHookSeesEveryTransition pins the socket feed: online and offline are
+// both reported, so a connected client can refresh the device row.
+func TestStatusHookSeesEveryTransition(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+
+	manager := New(Config{
+		Store:  &statusRecorder{},
+		Events: &eventRecorder{},
+		OnStatus: func(_ context.Context, deviceID int64, status string) {
+			if deviceID != 7 {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, status)
+		},
+	})
+	runManager(t, manager)
+
+	manager.Connect("gt06", 7, "")
+	manager.Disconnect(7)
+
+	waitFor(t, "both transitions", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(seen) == 2
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if seen[0] != StatusOnline || seen[1] != StatusOffline {
+		t.Errorf("hook saw %v, want online then offline", seen)
+	}
+}

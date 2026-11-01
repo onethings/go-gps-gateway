@@ -126,6 +126,9 @@ type Server struct {
 	// resources backs the configuration routes (groups, geofences, calendars,
 	// drivers, maintenances, orders, reports, computed attributes).
 	resources ResourceStore
+	// socketHub and latestPositions back GET /api/socket.
+	socketHub       *SocketHub
+	latestPositions LatestPositionQuerier
 	// loginMaxFailures counts consecutive wrong passwords per account; zero
 	// disables the lockout.
 	loginMaxFailures  int
@@ -269,6 +272,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/positions/csv", s.handlePositionExport(exportCSV))
 	mux.HandleFunc("GET /api/positions/gpx", s.handlePositionExport(exportGPX))
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	mux.HandleFunc("GET /api/socket", s.handleSocket)
 	mux.HandleFunc("GET /api/commands", s.handleCommands)
 	mux.HandleFunc("POST /api/commands", s.handleCommand)
 
@@ -656,27 +660,33 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		Count:     len(positions),
 	}
 	for _, position := range positions {
-		attributes := position.Attributes
-		if attributes == nil {
-			attributes = map[string]any{}
-		}
-		response.Positions = append(response.Positions, positionResponse{
-			ID:         position.ID,
-			DeviceID:   position.DeviceID,
-			Protocol:   position.Protocol,
-			DeviceTime: position.Time.UTC(),
-			ServerTime: position.ServerTime.UTC(),
-			Valid:      position.Valid,
-			Latitude:   position.Latitude,
-			Longitude:  position.Longitude,
-			Altitude:   position.Altitude,
-			Speed:      position.Speed,
-			Course:     position.Course,
-			Accuracy:   position.Accuracy,
-			Attributes: attributes,
-		})
+		response.Positions = append(response.Positions, newPositionResponse(position))
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// newPositionResponse renders one position, the shape the list and the socket
+// both use.
+func newPositionResponse(position model.Position) positionResponse {
+	attributes := position.Attributes
+	if attributes == nil {
+		attributes = map[string]any{}
+	}
+	return positionResponse{
+		ID:         position.ID,
+		DeviceID:   position.DeviceID,
+		Protocol:   position.Protocol,
+		DeviceTime: position.Time.UTC(),
+		ServerTime: position.ServerTime.UTC(),
+		Valid:      position.Valid,
+		Latitude:   position.Latitude,
+		Longitude:  position.Longitude,
+		Altitude:   position.Altitude,
+		Speed:      position.Speed,
+		Course:     position.Course,
+		Accuracy:   position.Accuracy,
+		Attributes: attributes,
+	}
 }
 
 // geofenceFilter loads the geofence named by geofenceId. A zero id means "no

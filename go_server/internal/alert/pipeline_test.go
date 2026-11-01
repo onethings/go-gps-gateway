@@ -197,3 +197,42 @@ func TestPipelineWithoutEngineStillForwards(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 }
+
+// TestPipelinePositionHookSeesEveryPosition pins the socket feed: the hook runs
+// for a quiet position and for one that raises an event, which takes the report
+// queue instead of the next sink.
+func TestPipelinePositionHookSeesEveryPosition(t *testing.T) {
+	engine := New(Config{OverspeedKnots: 30}, nil)
+	var mu sync.Mutex
+	var seen []int64
+	pipeline := NewPipeline(engine, &recordingSink{}, &recordingWriter{},
+		WithBatchSize(10), WithBatchInterval(time.Hour),
+		WithPositionHook(func(position *model.Position) {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, position.ID)
+		}))
+
+	quiet := speed(1)
+	quiet.ID = 1
+	loud := speed(40)
+	loud.ID = 2
+	for _, position := range []*model.Position{quiet, loud} {
+		if err := pipeline.Handle(position); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+	}
+
+	mu.Lock()
+	got := append([]int64(nil), seen...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("hook saw %v, want both positions in order", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Close(ctx); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}

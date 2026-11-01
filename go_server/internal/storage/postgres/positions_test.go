@@ -101,3 +101,32 @@ func TestPositionQueryAscending(t *testing.T) {
 		t.Errorf("query = %s", descending)
 	}
 }
+
+func TestLatestPositionsQuery(t *testing.T) {
+	query, args := latestPositionsQuery(nil)
+	if !strings.Contains(query, "SELECT DISTINCT ON (device_id)") {
+		t.Errorf("query = %s", query)
+	}
+	if strings.Contains(query, "WHERE") {
+		t.Errorf("query has a WHERE clause without devices: %s", query)
+	}
+	if !strings.HasSuffix(query, "ORDER BY device_id, device_time DESC, id DESC") {
+		t.Errorf("query = %s", query)
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v", args)
+	}
+
+	query, args = latestPositionsQuery([]int64{7, 8})
+	if !strings.Contains(query, "WHERE device_id IN ($1, $2)") {
+		t.Errorf("query = %s", query)
+	}
+	if len(args) != 2 || args[0] != int64(7) || args[1] != int64(8) {
+		t.Errorf("args = %v", args)
+	}
+
+	query, _ = latestPositionsQuery([]int64{})
+	if !strings.Contains(query, "WHERE false") {
+		t.Errorf("query = %s, want an empty scope to match nothing", query)
+	}
+}

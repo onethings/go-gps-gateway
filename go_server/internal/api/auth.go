@@ -24,6 +24,9 @@ var exemptPaths = map[string]struct{}{
 	"/api/login":           {},
 	"/api/password/forgot": {},
 	"/api/password/reset":  {},
+	// A browser cannot set headers on a WebSocket, so /api/socket reads its
+	// token from the query string and authenticates itself.
+	"/api/socket": {},
 }
 
 // TokenLookup resolves a hashed bearer token to a principal. The postgres store

@@ -84,6 +84,9 @@ func main() {
 
 	registry := gateway.DefaultRegistry()
 	meters := metrics.New()
+	// The socket hub exists before the sinks so the pipeline can publish while
+	// the API server is still being assembled.
+	socketHub := api.NewSocketHub()
 
 	var (
 		directory  gateway.DeviceDirectory
@@ -136,10 +139,21 @@ func main() {
 			log.Printf("notify: %s enabled", notifyChannelNames(channels))
 		}
 
+		// Every event reaches the sockets; the notification queue only when an
+		// operator configured a channel.
+		alertHook := socketHub.PublishEvent
+		if hook != nil {
+			alertHook = func(event *model.Event) {
+				socketHub.PublishEvent(event)
+				hook(event)
+			}
+		}
+
 		pipeline = alert.NewPipeline(engine, nil, store,
 			alert.WithLogger(log.Printf),
 			alert.WithMetrics(meters),
-			alert.WithAlertHook(hook))
+			alert.WithAlertHook(alertHook),
+			alert.WithPositionHook(socketHub.PublishPosition))
 
 		// The motion state machine records deviceMoving / deviceStopped, so it
 		// needs somewhere to write them.
@@ -210,6 +224,14 @@ func main() {
 				if err := router.Disconnect(protocol, deviceID); err != nil {
 					log.Printf("session: close device %d: %v", deviceID, err)
 				}
+			},
+			// The socket shows the new state, so it needs the full row.
+			OnStatus: func(ctx context.Context, deviceID int64, status string) {
+				device, err := store.Device(ctx, deviceID)
+				if err != nil {
+					return
+				}
+				socketHub.PublishDevice(device)
 			},
 			Logger: log.Printf,
 		})
@@ -297,6 +319,7 @@ func main() {
 			options := []api.Option{
 				api.WithPositions(store),
 				api.WithGeofenceLookup(store),
+				api.WithSocket(socketHub, store),
 				api.WithDevices(store),
 				api.WithUsers(store),
 				api.WithNotifications(store),

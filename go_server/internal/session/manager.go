@@ -58,6 +58,10 @@ type Config struct {
 	Close func(protocol string, deviceID int64)
 	// Now overrides the clock, for tests.
 	Now func() time.Time
+	// OnStatus observes every transition the manager records, so the API can
+	// push the new device state to the open sockets. It runs on the writer
+	// goroutine and must not block.
+	OnStatus func(ctx context.Context, deviceID int64, status string)
 	// Logger reports dropped transitions and failed writes.
 	Logger func(format string, args ...any)
 }
@@ -88,13 +92,14 @@ type transition struct {
 // Manager tracks the device sessions. Every method is safe for concurrent use
 // and none of them waits for the database.
 type Manager struct {
-	store   Store
-	events  Events
-	timeout time.Duration
-	sweep   time.Duration
-	closeFn func(protocol string, deviceID int64)
-	now     func() time.Time
-	logf    func(format string, args ...any)
+	store    Store
+	events   Events
+	timeout  time.Duration
+	sweep    time.Duration
+	closeFn  func(protocol string, deviceID int64)
+	now      func() time.Time
+	onStatus func(ctx context.Context, deviceID int64, status string)
+	logf     func(format string, args ...any)
 
 	mu       sync.RWMutex
 	sessions map[int64]*Session
@@ -117,6 +122,7 @@ func New(config Config) *Manager {
 		sweep:    config.Sweep,
 		closeFn:  config.Close,
 		now:      config.Now,
+		onStatus: config.OnStatus,
 		logf:     config.Logger,
 		sessions: make(map[int64]*Session),
 		queue:    make(chan transition, transitionQueue),
@@ -342,6 +348,9 @@ func (m *Manager) write(change transition) {
 		if err := m.events.InsertEvents(ctx, []*model.Event{change.event}); err != nil {
 			m.logf("session: event for device %d: %v", change.deviceID, err)
 		}
+	}
+	if m.onStatus != nil {
+		m.onStatus(ctx, change.deviceID, change.status)
 	}
 }
 

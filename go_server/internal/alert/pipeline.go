@@ -49,6 +49,8 @@ type Pipeline struct {
 	logf     func(format string, args ...any)
 	meters   *metrics.Set
 	hook     func(*model.Event)
+	// positionHook observes every position, whatever the rules decide.
+	positionHook func(*model.Position)
 
 	queue chan *model.PositionReport
 
@@ -116,6 +118,18 @@ func WithAlertHook(hook func(*model.Event)) Option {
 	}
 }
 
+// WithPositionHook observes every position the pipeline processes, including
+// the ones that raise an event and are written by the report queue instead of
+// the next sink. The hook runs on the device goroutine, so it must not block;
+// the socket hub only enqueues.
+func WithPositionHook(hook func(*model.Position)) Option {
+	return func(p *Pipeline) {
+		if hook != nil {
+			p.positionHook = hook
+		}
+	}
+}
+
 // NewPipeline starts the background writer. next may be nil, which makes the
 // pipeline a terminal sink.
 func NewPipeline(engine *Engine, next Sink, writer Writer, options ...Option) *Pipeline {
@@ -147,6 +161,9 @@ func NewPipeline(engine *Engine, next Sink, writer Writer, options ...Option) *P
 // Handle implements the position sink contract: evaluate, and either queue a
 // report or forward the position untouched.
 func (p *Pipeline) Handle(position *model.Position) error {
+	if p.positionHook != nil {
+		p.positionHook(position)
+	}
 	if events := p.evaluate(position); len(events) > 0 {
 		p.enqueue(&model.PositionReport{Position: position, Events: events})
 		return nil

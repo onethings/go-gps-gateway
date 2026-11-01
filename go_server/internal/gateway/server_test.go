@@ -445,3 +445,74 @@ func TestConnectHookFiresAfterLogin(t *testing.T) {
 		t.Fatalf("connect = %+v, want device 1 on gt06", connects[0])
 	}
 }
+
+// TestQueuedCommandReachesAReconnectingDevice is the whole reliability path over
+// one connection: the command is queued while no device is connected, the login
+// wakes the dispatcher, the payload arrives, and the 0x80 answer retires it.
+func TestQueuedCommandReachesAReconnectingDevice(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	deviceID, err := directory.Register("864717003283581", "gt06")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	log := &dispatchLog{}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory)
+	dispatcher := gateway.NewDispatcher(router, log, gateway.WithCommandQueueTTL(time.Minute))
+
+	server, err := gateway.NewServer(
+		gateway.DefaultRegistry(), "gt06", directory, nil,
+		gateway.WithLogger(newTestLogger(t)),
+		gateway.WithCommandTracker(dispatcher),
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	router.Register("gt06", server)
+
+	command := model.NewCommand(deviceID, model.CommandEngineStop)
+	command.ID = 1
+	command.Status = model.CommandStatusPending
+	payload, err := router.EncodeCommand("gt06", command)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	delivered, err := dispatcher.Deliver(context.Background(), "gt06", command, payload)
+	if err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	if delivered {
+		t.Fatal("delivered = true before any device connected")
+	}
+
+	conn := startConn(t, server)
+	write(t, conn, mustHex(t, "78780d01086471700328358100093f040d0a"))
+	if ack := readN(t, conn, 10); ack[3] != 0x01 {
+		t.Fatalf("login ack = %x", ack)
+	}
+
+	// The login flushes the queue, so the command frame follows the ack.
+	frame := readChunk(t, conn)
+	if !strings.Contains(string(frame), "Relay,1#") {
+		t.Fatalf("queued command frame = %x", frame)
+	}
+
+	// 7878 | length | 0x80 | command length | "Relay,1#" | english | serial |
+	// crc | 0d0a
+	write(t, conn, mustHex(t, "787810800b52656c61792c312300020001cb480d0a"))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(dispatcher.QueueFor(deviceID)) != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if left := dispatcher.QueueFor(deviceID); len(left) != 0 {
+		t.Fatalf("queue after the answer = %v, want empty", left)
+	}
+	if sent := log.sentIDs(); len(sent) != 1 || sent[0] != 1 {
+		t.Errorf("sent = %v, want [1]", sent)
+	}
+	if len(log.ackIDs()) != 1 {
+		t.Errorf("acks = %v, want one", log.ackIDs())
+	}
+}

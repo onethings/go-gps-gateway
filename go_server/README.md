@@ -98,6 +98,11 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 `-api-key`（預設讀 `TRACCAR_API_KEY`；空 = 只用資料庫 token 認證）、
 `-issue-token` / `-token-scopes` / `-token-ttl`（發 token 後結束，需要 `-dsn`）、
 `-login-max-failures`（預設 5，0 = 關閉登入失敗鎖定）與 `-login-lock-duration`（預設 15m）、
+`-command-retry`（預設 30s：寫進連線後等回應多久才重送）、
+`-command-attempts`（預設 3：同一筆命令最多寫幾次）、
+`-command-queue`（預設 32：每台裝置最多排幾筆未送出的命令）、
+`-command-queue-ttl`（預設 5m：命令最多等裝置重連多久）、
+`-command-retention`（預設 168h：命令歷史保留多久，0 = 永久保留；見「命令保留期限」）、
 `-allow-anonymous`（關閉 REST 認證，只給本機開發用）、
 `-notify-webhook` / `-notify-email-smtp` 等通知 flag（見「通知管道」）。
 
@@ -665,8 +670,9 @@ curl 'localhost:8082/api/positions?deviceId=7&limit=2'
 
 ## 命令下發
 
-`POST /api/commands` 把命令編碼成該協議的位元組，先落一列 `commands`，再寫進裝置目前那條 TCP
-連線（需要 `-dsn`，因為要靠 `devices.protocol` 選 encoder 與寫紀錄）：
+`POST /api/commands` 把命令編碼成該協議的位元組，先落一列 `commands`，再交給派送器寫進裝置目前
+那條 TCP 連線（需要 `-dsn`，因為要靠 `devices.protocol` 選 encoder 與寫紀錄）。裝置不在線上時
+命令留在佇列裡，等它重連再送出：
 
 ```bash
 curl -i -X POST localhost:8082/api/commands \
@@ -674,16 +680,20 @@ curl -i -X POST localhost:8082/api/commands \
   -d '{"deviceId":7,"type":"engineStop","attributes":{}}'
 
 # HTTP/1.1 202 Accepted
-# {"id":41,"deviceId":7,"type":"engineStop","protocol":"gt06","queued":true}
+# {"id":41,"deviceId":7,"type":"engineStop","protocol":"gt06","queued":false}
 ```
+
+`queued` 是這筆命令當下有沒有等到裝置：`false` 表示位元組已寫進連線，`true` 表示還在佇列裡，
+裝置重連後會送出。
 
 | 狀態  | 意義                                                                 |
 | ----- | -------------------------------------------------------------------- |
-| `202` | 已記錄並寫入設備連線                                                 |
+| `202` | 已記錄，且已寫入連線（`queued:false`）或已排入派送佇列（`queued:true`） |
 | `400` | body 不合法，或該協議不支援這個命令（都不會留下 `commands` 列）      |
 | `403` | 缺少 `write:commands`，或該裝置不在 `user_devices` 內                 |
 | `404` | 裝置不存在                                                           |
-| `409` | 裝置離線，或 `devices.protocol` 還是 NULL（讓設備重連一次）          |
+| `409` | `devices.protocol` 還是 NULL（讓設備重連一次），或沒有可用的協議伺服器 |
+| `429` | 該裝置的派送佇列已滿（`-command-queue`），這筆直接記成 `failed`      |
 | `501` | 沒有配置命令路由                                                     |
 
 各協議支援的命令以 encoder 為準：H02 `alarmArm` / `alarmDisarm` / `engineStop` / `engineResume` /
@@ -697,7 +707,7 @@ curl -i -X POST localhost:8082/api/commands \
 
 裝置與連線的綁定時機：GT06 / JT808 / Teltonika 在握手（登入 / IMEI 封包）時綁定；
 H02 沒有握手，第一筆能解析出裝置的訊息就會綁定。因此對「從未上報過」或「尚未登入」的裝置
-下命令會得到 `409`。
+下命令會排在派送佇列裡，第一次握手成功後送出。
 
 ### 命令狀態
 
@@ -705,24 +715,44 @@ H02 沒有握手，第一筆能解析出裝置的訊息就會綁定。因此對�
 
 | status    | 何時                                                        | `result_code` |
 | --------- | ----------------------------------------------------------- | ------------- |
-| `pending` | 已記錄，還沒寫進連線                                        | NULL          |
+| `pending` | 已記錄，還沒寫進連線（在派送佇列裡等裝置）                  | NULL          |
 | `sent`    | 已寫進連線，等裝置回應                                      | NULL          |
 | `done`    | 裝置回應且結果是 0（GT06 只要有回應就算）                   | 0             |
-| `failed`  | 離線 / 寫入失敗，或裝置回報非 0                             | 失敗時是 NULL；裝置拒絕時是它回的值 |
+| `failed`  | 佇列已滿、排隊逾時、重送次數用完，或裝置回報非 0            | 沒送到是 NULL；裝置拒絕時是它回的值 |
+
+`attempts` 這欄是**位元組實際寫進連線的次數**：1 表示只送過一次，大於 1 表示重送過。
 
 `GET /api/commands` 列出命令，參數是 `deviceId`、`limit`（1–1000，預設 100）與 `offset`，
 排序是 `id DESC`。需要 `read:commands`；非 admin 只看得到自己授權裝置的命令：
 
 ```bash
-curl -s 'localhost:8082/api/commands?deviceId=7&limit=2' -H 'Authorization: Bearer trc_...'
+curl -s 'localhost:8082/api/commands?deviceId=7&limit=2' -H 'Authorization: ******'
 # {"commands":[{"id":41,"deviceId":7,"type":"engineStop","attributes":{},"status":"done",
-#               "resultCode":0,"createdAt":"2026-11-01T01:02:03.123Z",
+#               "resultCode":0,"serial":7,"attempts":1,
+#               "createdAt":"2026-11-01T01:02:03.123Z",
 #               "sentAt":"2026-11-01T01:02:03.130Z","doneAt":"2026-11-01T01:02:05.402Z"}],
 #  "count":1}
 ```
 
-`resultCode` / `sentAt` / `doneAt` 沒有值時不會出現。用 `psql -c 'select * from commands'`
-看到的內容與這個端點一致。
+`resultCode` / `sentAt` / `doneAt` / `serial` 沒有值時不會出現。用
+`psql -c 'select * from commands'` 看到的內容與這個端點一致。
+
+### 派送佇列與重送
+
+派送器（`internal/gateway/dispatch.go`）是命令唯一的狀態寫入者，規則有三條：
+
+- **寫不進去就排隊。** 裝置沒有連線時命令留在佇列（狀態 `pending`），裝置一握手就照 `id` 順序
+  送出。佇列是每台裝置一份，一台裝置離線不會擋住別台；同時最多 `-command-queue` 筆，
+  滿了回 `429` 並把該筆記成 `failed`。
+- **等不到回應就重送。** 寫進連線後等 `-command-retry`，沒有回應就再寫一次同一份位元組，
+  最多寫 `-command-attempts` 次，用完記成 `failed`。重送只重寫同一份 payload，不重新編碼，
+  所以 JT808 的流水號在重送之間不變。
+- **排隊有期限。** 從沒送出去的命令最多等 `-command-queue-ttl`，逾時記成 `failed` 並離開佇列。
+  已經送出的命令只受重送次數限制，因為回應隨時可能到。
+
+gateway 重啟時記憶體佇列是空的，但**裝置重連**會把 `pending` 的列重新編碼再送一次。代價是
+`MarkCommandSent` 寫失敗時那列會停在 `pending`，重啟後可能重送一次，裝置會看到重複的命令。
+這是刻意的取捨：寧可重複，不要遺失。
 
 ### 回應配對
 
@@ -730,10 +760,23 @@ JT808 終端用 `0x0001` 終端一般回應回答下行訊息，payload 是「�
 結果碼」；GT06 用 `0x80` / `0x81` / `0x82` 命令回應回答，沒有結果碼，有回應就算成功。這兩個
 回應都不會被回覆，否則裝置會收到「回應的回應」。
 
-兩者都沒有可以對回請求的識別碼 — JT808 encoder 一律送流水號 0，GT06 回應裡的是該幀自己的序號 —
-所以 gateway 收到回應時，把**該裝置最新一列 `sent`** 收成 `done` 或 `failed`。連續送出時同一個
-裝置可能有好幾列在等回應，一次回應只收掉最新那列；若前一筆一直沒回應，後送的那筆被回應時，
-被蓋掉的是後送的那列（見「已知限制」）。
+JT808 的 encoder 給**每一筆命令一個流水號**（`codec.SerialSource`，1–0xffff），號碼記在
+`commands.serial`，終端回應裡的流水號就對回那一列，多筆在等回應時不會張冠李戴。重新編碼同一筆
+命令（例如重連後從 `pending` 復原）沿用原本的號碼，所以那一列仍然對得上。
+
+GT06 / H02 / Teltonika 的回應沒有等價欄位，`serial` 是 NULL，gateway 收到回應時把**該裝置最新
+一列 `sent`** 收成 `done` 或 `failed`。連續送出時同一個裝置可能有好幾列在等回應，一次回應只
+收掉最新那列；若前一筆一直沒回應，後送的那筆被回應時，被蓋掉的是後送的那列。
+
+### 命令保留期限
+
+`commands` 會長大，所以 gateway 每小時清一次：`done` / `failed` 的列以 `done_at` 為準，
+從未結束的列以 `created_at` 為準，超過 `-command-retention`（預設 168 小時 = 7 天）就刪掉。
+`-command-retention 0` 關閉清理，歷史永久保留。清理是一次 `DELETE`，刪掉幾列才寫一行 log：
+
+```text
+commands: purged 42 rows older than 168h0m0s
+```
 
 ## 開發
 
@@ -808,6 +851,7 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | 來源                     | 內容                                                                                                                                                                 |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`、`<protocol>: acknowledge command: <err>`（裝置回應已到但 `commands` 寫不回去，連線不受影響） |
+| `gateway.Dispatcher` log    | `dispatch: give up on command <id> of device <id> after <n> attempts`、`dispatch: load pending commands of device <id>: <err>`、`dispatch: re-encode command <id> of device <id>: <err>`、`dispatch: mark command <id> sent/failed: <err>` |
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                       |
 | `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                              |
 | `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...` |
@@ -887,11 +931,12 @@ scrape_configs:
   每個請求都會查一次 token 與裝置清單，撤銷立即生效但也多一次 DB round trip。
 - 裝置的 `attributes` 只能以 SQL 維護；`PUT` 只改 `name` / `model`，`protocol` 建立後不可改。
   裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
-- 命令會落地（`commands` 表）並依裝置回應收尾，但配對規則是「該裝置最新一列 `sent`」：
-  JT808 的終端一般回應與 GT06 的 0x80 都沒有能對回請求的識別碼，連續送出多筆時，回應只會收掉
-  最新那一列，沒被回應的留在 `sent`。沒有重送、沒有派送佇列：`pending` 卡住代表
-  gateway 在寫進連線前就掛了，`sent` 卡住代表裝置沒回，兩者都只能人工判讀。`devices.protocol`
-  為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
+- 命令會落地（`commands` 表）、排隊、重送並依裝置回應收尾。JT808 已經用流水號精確配對；
+  GT06 / H02 / Teltonika 的回應沒有識別碼，配對仍是「該裝置最新一列 `sent`」，連續送出多筆時
+  回應只收掉最新那列。重送是同一份位元組，所以對「重送一次就會執行兩次」的命令（例如
+  `rebootDevice`）來說，沒有回應就重送的代價是多做一次，而不是伺服器端的去重。佇列在記憶體裡，
+  gateway 重啟後靠裝置重連時的 `pending` 復原補送。`devices.protocol` 為 NULL 的舊裝置會回
+  `409`，讓它重連一次即可。
 - 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知只有 webhook 與 email 兩種。使用者訂閱只決定
   類型與管道：email 收件者是帳號 email，webhook 仍共用 `-notify-webhook` 的 URL。門檻可用
   裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
@@ -903,6 +948,6 @@ scrape_configs:
 
 ## 下一步
 
-1. 命令的可靠性：重送與派送佇列、以 JT808 流水號配對（encoder 要改成每筆一個號碼）、
-   `commands` 的保留期限與清理。
-2. GT06 `NT_MODELS` 的 LBS2 / DRIVER 版面差異（Java 的 `modelNT`），計畫附錄 C 記錄了為什麼延後。
+1. GT06 `NT_MODELS` 的 LBS2 / DRIVER 版面差異（Java 的 `modelNT`），計畫附錄 C 記錄了為什麼延後。
+2. GT06 / H02 / Teltonika 的命令回應沒有識別碼，配對仍是「該裝置最新一列 `sent`」。要精確配對得先
+   在 encoder 端找出各協議回應裡的等價欄位，那是另一支 PR（見「回應配對」）。

@@ -60,6 +60,16 @@ func main() {
 		"device attribute reload interval for per-device thresholds; 0 loads them once")
 	autoRegister := flag.Bool("auto-register", true,
 		"create a device row when an unknown identifier logs in; false drops the connection")
+	commandRetry := flag.Duration("command-retry", gateway.DefaultCommandRetry,
+		"how long a written command waits for the device answer before it is sent again")
+	commandAttempts := flag.Int("command-attempts", gateway.DefaultCommandAttempts,
+		"how often a command payload may be written before it is marked failed")
+	commandQueue := flag.Int("command-queue", gateway.DefaultCommandQueue,
+		"undelivered commands one device may hold; 0 falls back to the default")
+	commandQueueTTL := flag.Duration("command-queue-ttl", gateway.DefaultCommandQueueTTL,
+		"how long a command may wait for its device to reconnect")
+	commandRetention := flag.Duration("command-retention", 7*24*time.Hour,
+		"delete command history older than this; 0 keeps it forever")
 	notifyWebhook := flag.String("notify-webhook", "",
 		"webhook URL that receives alert JSON; empty disables the webhook channel")
 	notifyWebhookAuthorization := flag.String("notify-webhook-authorization", "",
@@ -200,6 +210,26 @@ func main() {
 
 	router := gateway.NewRouter(registry, directory)
 
+	// One dispatcher serves the REST layer and the protocol servers: the REST
+	// side queues a command, the answer path closes it, and the reconnect of a
+	// device flushes what was waiting for it.
+	var commands *gateway.Dispatcher
+	if store != nil {
+		commands = gateway.NewDispatcher(router, store,
+			gateway.WithCommandRetry(*commandRetry),
+			gateway.WithCommandAttempts(*commandAttempts),
+			gateway.WithCommandQueue(*commandQueue),
+			gateway.WithCommandQueueTTL(*commandQueueTTL),
+			gateway.WithDispatcherLogger(log.Printf),
+			gateway.WithDispatcherMetrics(meters),
+		)
+		go commands.Run(ctx)
+
+		if *commandRetention > 0 {
+			go purgeCommandHistory(ctx, store, *commandRetention)
+		}
+	}
+
 	var servers sync.WaitGroup
 	for _, name := range registry.Names() {
 		address := addresses[name]
@@ -221,8 +251,9 @@ func main() {
 		}
 		if store != nil {
 			// Device acknowledgements close the command rows the REST layer
-			// wrote, so the gateway needs the same store.
-			options = append(options, gateway.WithCommandTracker(store))
+			// wrote, and a device that reconnects gets what was queued for it,
+			// so the gateway needs the same dispatcher.
+			options = append(options, gateway.WithCommandTracker(commands))
 		}
 
 		server, err := gateway.NewServer(registry, name, directory, sink, options...)
@@ -259,6 +290,7 @@ func main() {
 				api.WithNotifications(store),
 				api.WithCommands(router, store),
 				api.WithCommandStore(store),
+				api.WithCommandDeliverer(commands),
 				api.WithMetrics(meters),
 				api.WithHealthPinger(store),
 				api.WithLogger(log.Printf),
@@ -417,6 +449,36 @@ func refreshDeviceAttributes(ctx context.Context, store *postgres.Store, engine 
 		case <-ticker.C:
 			if err := reloadDeviceAttributes(ctx, store, engine); err != nil {
 				log.Printf("alerts: reload device attributes: %v", err)
+			}
+		}
+	}
+}
+
+// commandPurgeInterval is how often the retention sweep runs. It is fixed
+// because a command history that grows for an hour longer than asked is not
+// worth another flag.
+const commandPurgeInterval = time.Hour
+
+// purgeCommandHistory deletes finished commands older than retention, so the
+// table stays bounded without an operator remembering to run a query. The first
+// sweep runs after one interval: a gateway that restarts often never spends its
+// startup deleting rows.
+func purgeCommandHistory(ctx context.Context, store *postgres.Store, retention time.Duration) {
+	ticker := time.NewTicker(commandPurgeInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			deleted, err := store.DeleteCommandsBefore(ctx, retention)
+			if err != nil {
+				log.Printf("commands: purge history: %v", err)
+				continue
+			}
+			if deleted > 0 {
+				log.Printf("commands: purged %d rows older than %s", deleted, retention)
 			}
 		}
 	}

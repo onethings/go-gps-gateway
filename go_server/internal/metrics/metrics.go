@@ -268,6 +268,10 @@ type Set struct {
 	Notifications        *CounterVec
 	NotificationErrors   *CounterVec
 	NotificationsDropped *Counter
+	CommandsSent         *Counter
+	CommandRetries       *Counter
+	CommandsDropped      *Counter
+	CommandsQueued       *Gauge
 }
 
 // New creates the metric set with the documented names.
@@ -297,6 +301,14 @@ func New() *Set {
 			"Failed alert notification sends.", "channel"),
 		NotificationsDropped: NewCounter("traccar_notification_dropped_total",
 			"Notifications dropped because the send queue was full."),
+		CommandsSent: NewCounter("traccar_commands_sent_total",
+			"Commands written to a device socket."),
+		CommandRetries: NewCounter("traccar_command_retry_total",
+			"Command writes repeated after a missing answer."),
+		CommandsDropped: NewCounter("traccar_command_dropped_total",
+			"Commands that ended without reaching the device."),
+		CommandsQueued: NewGauge("traccar_commands_queued",
+			"Commands waiting for their device."),
 	}
 }
 
@@ -329,6 +341,10 @@ func (s *Set) collectors() []collector {
 		s.Notifications,
 		s.NotificationErrors,
 		s.NotificationsDropped,
+		s.CommandsSent,
+		s.CommandRetries,
+		s.CommandsDropped,
+		s.CommandsQueued,
 	}
 }
 

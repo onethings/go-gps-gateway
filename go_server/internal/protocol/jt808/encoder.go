@@ -37,17 +37,31 @@ func (e *Encoder) EncodeCommand(command *model.Command) ([]byte, error) {
 	}
 	h := &header{delimiter: 0x7e, id: id}
 
+	// Every frame this encoder builds carries its own serial, recorded on the
+	// command so the terminal's answer can be paired with it. A command that
+	// already carries one keeps it: a queued command that is encoded again
+	// after a restart must still match the answer to its first frame. A raw
+	// custom payload is already a whole frame, so it keeps whatever serial the
+	// caller embedded and stays outside the pairing path.
+	build := func(messageType int, payload []byte) []byte {
+		if command.Serial == 0 {
+			command.Serial = e.NextSerial()
+		}
+		h.serial = command.Serial
+		return buildMessage(h, messageType, payload)
+	}
+
 	switch command.Type {
 	case model.CommandPositionSingle:
-		return buildMessage(h, msgLocationQuery, nil), nil
+		return build(msgLocationQuery, nil), nil
 
 	case model.CommandPositionStop:
 		payload := []byte{0, 0, 0, 0, 0, 0}
-		return buildMessage(h, msgTemporaryTracking, payload), nil
+		return build(msgTemporaryTracking, payload), nil
 
 	case model.CommandRebootDevice:
 		payload := []byte{1, 0x23, 1, 0x03}
-		return buildMessage(h, msgParameterSetting, payload), nil
+		return build(msgParameterSetting, payload), nil
 
 	case model.CommandPositionPeriodic:
 		frequency, ok := command.GetAttribute(model.CmdKeyFrequency)
@@ -60,7 +74,7 @@ func (e *Encoder) EncodeCommand(command *model.Command) ([]byte, error) {
 		}
 		payload := []byte{1, 0x06, 4,
 			byte(seconds >> 24), byte(seconds >> 16), byte(seconds >> 8), byte(seconds)}
-		return buildMessage(h, msgParameterSetting, payload), nil
+		return build(msgParameterSetting, payload), nil
 
 	case model.CommandAlarmArm, model.CommandAlarmDisarm:
 		flag := byte(0x00)
@@ -68,17 +82,17 @@ func (e *Encoder) EncodeCommand(command *model.Command) ([]byte, error) {
 			flag = 0x01
 		}
 		payload := []byte{1, 0x24, 1 + 4, flag, 'u', 's', 'e', 'r'}
-		return buildMessage(h, msgParameterSetting, payload), nil
+		return build(msgParameterSetting, payload), nil
 
 	case model.CommandAlarmDismiss:
-		return buildMessage(h, msgAlarmAck, []byte{0, 0, 0, 0, 0, 0}), nil
+		return build(msgAlarmAck, []byte{0, 0, 0, 0, 0, 0}), nil
 
 	case model.CommandEngineStop, model.CommandEngineResume:
 		flag := byte(0xf1)
 		if command.Type == model.CommandEngineStop {
 			flag = 0xf0
 		}
-		return buildMessage(h, msgTerminalControl, []byte{flag}), nil
+		return build(msgTerminalControl, []byte{flag}), nil
 
 	case model.CommandCustom:
 		data, ok := command.GetAttribute(model.CmdKeyData)

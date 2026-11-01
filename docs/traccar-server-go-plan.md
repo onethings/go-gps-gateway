@@ -455,3 +455,36 @@ scope，借用 `read:devices` 會讓「只看命令」的 token 順便看到整�
 PR-4 的設計有爭議時讀 `pstack/skills/interrogate/SKILL.md`，讓第二個模型挑戰 ACK 配對方案。
 整段期間的決策軌跡照 `pstack/skills/show-me-your-work/SKILL.md`，檔案放 repo 根的 `decisions.tsv`，預設不進 git。
 Java 母本在 `traccar-master/src/main/java/org/traccar/protocol/`，GT06 與 JT808 的 model 分支都在那裡。
+
+## Appendix E. 命令的可靠性（README「下一步」第 1 條）
+
+附錄 B 把「用流水號配對 ACK」延後的理由是 encoder 不在 PR-4 的檔案邊界內，而且當時 GT06 / H02 /
+Teltonika 沒有等價欄位。這一支獨立 PR 把三件事一起收掉。
+
+**流水號。** `codec.SerialSource` 發 1–0xffff 的號碼，`codec.Base.Serials` 讓測試能固定它，正式路徑
+用行程層級的 `codec.DefaultSerials`。JT808 encoder 每建一個幀就拿一個號碼寫進 header，並抄在
+`model.Command.Serial`；`commands.serial` 記住它，終端 `0x0001` 回應的「被回應流水號」就對回那一列。
+重新編碼同一筆命令沿用原本的號碼，所以重連後的復原仍然對得上。`custom` 是呼叫端自己組好的整幀，
+不編號，也不參與配對。
+
+**派送佇列與重送。** `gateway.Dispatcher` 是 `CommandTracker` 的實作，也是 REST 與 gateway 共用的
+唯一狀態寫入者：寫不進去就排隊（每台裝置一份，上限 `-command-queue`），裝置握手時 flush 並把
+`pending` 的列重新編碼補送，寫進連線後 `-command-retry` 內沒有回應就重寫同一份位元組，最多
+`-command-attempts` 次。從沒送出去的命令另有 `-command-queue-ttl` 期限。`gateway.Server` 在綁定
+session 時用選配介面 `DeviceConnectHook` 通知派送器，儲存層沒實作它就完全不受影響。
+
+**保留期限。** `0009_commands_delivery.sql` 加 `serial` 與 `attempts`，`Store.DeleteCommandsBefore`
+每小時跑一次（`-command-retention`，0 = 不清理）：結束的列看 `done_at`，沒結束的看 `created_at`。
+
+**已驗證。** `go vet ./...`、`go build ./...`、`go test ./...` 全綠，`go test -race` 在 `gateway`、
+`storage/postgres`、`jt808` 與 `metrics` 也乾淨。`dispatch_test.go` 十條：在線直送、離線排隊後
+重連補送、重送到次數用完、排隊逾時、以流水號配對、無流水號時收最新一列、重啟後從 `pending`
+復原、佇列滿回錯、協議沒在聽時直接失敗、一台裝置的佇列不擋另一台。`commands_test.go` 另加
+`TestAcknowledgeQuery`（無資料庫）與整合測試的流水號、`attempts`、`PendingCommands`、
+`DeleteCommandsBefore` 四段。`jt808` 的 `TestEncodeCommandCarriesItsOwnSerial` 蓋住編號、沿用與
+`custom` 不編號。`api` 的 `TestCommandQueuedWhenTheDeviceIsAway` 與 `TestCommandQueueFullIsRefused`
+蓋住 202 `queued:true` 與 429。
+
+**仍未驗證。** live lane 與真實 PostgreSQL 兩項照舊：這個沙箱禁止 bind TCP port，`initdb` 也被
+禁止（`shmget` 不准），所以 `TestCommandStoreIntegration` 只跑到 skip，十條 lane 一列都沒跑。
+「重送一次等於執行兩次」對 `rebootDevice` 這種命令是真實代價，已寫進 README 的已知限制。

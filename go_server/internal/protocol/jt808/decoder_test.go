@@ -210,6 +210,64 @@ func TestDecodeLocationExtensions(t *testing.T) {
 	}
 }
 
+// TestEncodeCommandCarriesItsOwnSerial pins the correlation rule: every
+// downlink frame gets the next serial, the command remembers it, and a second
+// command cannot reuse it.
+func TestEncodeCommandCarriesItsOwnSerial(t *testing.T) {
+	encoder := NewEncoder(codec.Base{
+		UniqueIDs: NewStubUniqueIDs(),
+		Serials:   codec.NewSerialSource(),
+	})
+
+	first := model.NewCommand(1, model.CommandEngineStop)
+	firstSerial := 1
+	frame, err := encoder.EncodeCommand(first)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if first.Serial != firstSerial {
+		t.Fatalf("serial = %d, want %d", first.Serial, firstSerial)
+	}
+	body, _ := NewFrameDecoder().DecodeFrame(frame)
+	if serial := int(binary.BigEndian.Uint16(body[1+2+2+6:])); serial != firstSerial {
+		t.Errorf("frame serial = %d, want %d", serial, firstSerial)
+	}
+
+	second := model.NewCommand(1, model.CommandEngineResume)
+	frame, err = encoder.EncodeCommand(second)
+	if err != nil {
+		t.Fatalf("encode second: %v", err)
+	}
+	if second.Serial != firstSerial+1 {
+		t.Fatalf("second serial = %d, want %d", second.Serial, firstSerial+1)
+	}
+	body, _ = NewFrameDecoder().DecodeFrame(frame)
+	if serial := int(binary.BigEndian.Uint16(body[1+2+2+6:])); serial != second.Serial {
+		t.Errorf("frame serial = %d, want %d", serial, second.Serial)
+	}
+
+	// A command that already carries a serial keeps it, which is what lets a
+	// recovered command match the answer of the frame it was queued for.
+	recovered := model.NewCommand(1, model.CommandEngineStop)
+	recovered.Serial = 4242
+	if _, err := encoder.EncodeCommand(recovered); err != nil {
+		t.Fatalf("encode recovered: %v", err)
+	}
+	if recovered.Serial != 4242 {
+		t.Errorf("recovered serial = %d, want 4242", recovered.Serial)
+	}
+
+	// A raw custom payload is already a whole frame, so it is not numbered.
+	custom := model.NewCommand(1, model.CommandCustom)
+	custom.SetAttribute(model.CmdKeyData, "7e0200000001")
+	if _, err := encoder.EncodeCommand(custom); err != nil {
+		t.Fatalf("encode custom: %v", err)
+	}
+	if custom.Serial != 0 {
+		t.Errorf("custom serial = %d, want 0: the caller owns that frame", custom.Serial)
+	}
+}
+
 func TestEncodePositionPeriodic(t *testing.T) {
 	encoder := NewEncoder(codec.Base{UniqueIDs: NewStubUniqueIDs()})
 
@@ -317,6 +375,9 @@ func TestDecodeTerminalGeneralResponse(t *testing.T) {
 			}
 			if result.CommandAck.Code != tc.code {
 				t.Errorf("code = %d, want %d", result.CommandAck.Code, tc.code)
+			}
+			if result.CommandAck.Serial == nil || *result.CommandAck.Serial != 7 {
+				t.Errorf("serial = %v, want the answered serial 7", result.CommandAck.Serial)
 			}
 			if len(result.Positions) != 0 {
 				t.Errorf("positions = %d, want 0", len(result.Positions))

@@ -83,8 +83,8 @@ func TestCommandAccepted(t *testing.T) {
 		t.Fatalf("decode: %v (body %s)", err, recorder.Body)
 	}
 	if response.DeviceID != 7 || response.Type != "engineStop" ||
-		response.Protocol != "gt06" || !response.Queued {
-		t.Fatalf("response = %+v", response)
+		response.Protocol != "gt06" || response.Queued {
+		t.Fatalf("response = %+v: without a dispatcher the payload is written before the answer", response)
 	}
 
 	sender.mu.Lock()
@@ -153,6 +153,83 @@ func TestCommandOffline(t *testing.T) {
 
 	if recorder := post(t, handler, "/api/commands", `{"deviceId":7,"type":"engineStop"}`); recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 (body %s)", recorder.Code, recorder.Body)
+	}
+}
+
+// fakeDeliverer stands in for the dispatcher: it reports whether the payload
+// reached the socket instead of writing it.
+type fakeDeliverer struct {
+	delivered bool
+	err       error
+	protocol  string
+	command   *model.Command
+	payload   []byte
+	calls     int
+}
+
+func (f *fakeDeliverer) Deliver(
+	_ context.Context, protocol string, command *model.Command, payload []byte,
+) (bool, error) {
+	f.calls++
+	f.protocol = protocol
+	f.command = command
+	f.payload = payload
+	return f.delivered, f.err
+}
+
+// TestCommandQueuedWhenTheDeviceIsAway pins the queue path: an offline device
+// no longer fails the request, it gets a queued command and a 202.
+func TestCommandQueuedWhenTheDeviceIsAway(t *testing.T) {
+	sender := &fakeSender{}
+	store := &recordingCommands{}
+	deliverer := &fakeDeliverer{}
+	handler := NewServer(nil,
+		WithCommands(sender, fakeDevices{protocol: "gt06", found: true}),
+		WithCommandStore(store),
+		WithCommandDeliverer(deliverer),
+	).Handler()
+
+	recorder := post(t, handler, "/api/commands", `{"deviceId":7,"type":"engineStop"}`)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %s)", recorder.Code, recorder.Body)
+	}
+
+	var response commandResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, recorder.Body)
+	}
+	if !response.Queued || response.ID != 1 {
+		t.Fatalf("response = %+v, want the recorded command marked as queued", response)
+	}
+	if deliverer.calls != 1 || deliverer.protocol != "gt06" || len(deliverer.payload) == 0 {
+		t.Fatalf("deliverer = %+v", deliverer)
+	}
+
+	sender.mu.Lock()
+	sent := sender.sent
+	sender.mu.Unlock()
+	if sent != 0 {
+		t.Errorf("sent = %d, want 0: the dispatcher owns the write", sent)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.sent) != 0 || len(store.failed) != 0 {
+		t.Errorf("sent = %v, failed = %v: the dispatcher records the status, not the handler",
+			store.sent, store.failed)
+	}
+}
+
+func TestCommandQueueFullIsRefused(t *testing.T) {
+	deliverer := &fakeDeliverer{err: gateway.ErrCommandQueueFull}
+	handler := NewServer(nil,
+		WithCommands(&fakeSender{}, fakeDevices{protocol: "gt06", found: true}),
+		WithCommandDeliverer(deliverer),
+	).Handler()
+
+	recorder := post(t, handler, "/api/commands", `{"deviceId":7,"type":"engineStop"}`)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (body %s)", recorder.Code, recorder.Body)
 	}
 }
 
@@ -370,6 +447,8 @@ func TestCommandList(t *testing.T) {
 			Attributes: map[string]any{"frequency": float64(30)},
 			Status:     model.CommandStatusDone,
 			ResultCode: &code,
+			Serial:     42,
+			Attempts:   3,
 			CreatedAt:  time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC),
 			SentAt:     time.Date(2026, 11, 1, 1, 0, 1, 0, time.UTC),
 			DoneAt:     time.Date(2026, 11, 1, 1, 0, 2, 0, time.UTC),
@@ -404,6 +483,9 @@ func TestCommandList(t *testing.T) {
 	}
 	if newest.ResultCode == nil || *newest.ResultCode != 1 {
 		t.Errorf("result code = %v, want 1", newest.ResultCode)
+	}
+	if newest.Serial != 42 || newest.Attempts != 3 {
+		t.Errorf("serial = %d attempts = %d, want 42/3", newest.Serial, newest.Attempts)
 	}
 	if newest.Attributes["frequency"] != float64(30) {
 		t.Errorf("attributes = %v", newest.Attributes)

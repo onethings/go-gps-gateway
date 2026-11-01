@@ -7,6 +7,7 @@
 package codec
 
 import (
+	"sync/atomic"
 	"time"
 
 	"traccar-server_go/go_server/internal/model"
@@ -46,7 +47,36 @@ type CommandAck struct {
 	// Code is the protocol result code. Zero means the device accepted the
 	// command; any other value means it refused it.
 	Code int
+	// Serial is the serial of the downlink frame the device is answering, when
+	// the protocol echoes one back. It pairs the answer with the exact command
+	// that was sent. Protocols without a usable echo leave it nil, and the
+	// answer closes the newest sent command of the device instead.
+	Serial *int
 }
+
+// SerialSource hands out the message serial that protocols with a sequence
+// number put into every downlink frame. One source per process keeps two
+// outstanding commands from sharing a serial.
+type SerialSource struct {
+	next atomic.Uint32
+}
+
+// NewSerialSource creates a source that starts handing out serials at 1.
+func NewSerialSource() *SerialSource { return &SerialSource{} }
+
+// Next returns the next serial in the range 1..0xffff. Zero is skipped because
+// model.Command reserves it for "this protocol has no serial".
+func (s *SerialSource) Next() int {
+	for {
+		if value := s.next.Add(1) & 0xffff; value != 0 {
+			return int(value)
+		}
+	}
+}
+
+// DefaultSerials is the source an encoder falls back to when its Base carries
+// none, which is the normal case outside tests.
+var DefaultSerials = NewSerialSource()
 
 // Result is the outcome of decoding a single frame.
 type Result struct {
@@ -123,11 +153,23 @@ type Base struct {
 	Resolver     DeviceResolver
 	LastLocation LastLocationProvider
 	UniqueIDs    UniqueIDProvider
+	// Serials hands out the serial of each downlink frame. Nil means the
+	// process wide DefaultSerials, which is what a running gateway wants;
+	// tests inject a fresh source to pin the serials they assert on.
+	Serials *SerialSource
 	// Now is injectable for deterministic tests; nil means time.Now.
 	Now func() time.Time
 	// Ack enables the optional acknowledgement frames that some protocols only
 	// send when explicitly enabled by configuration.
 	Ack bool
+}
+
+// NextSerial returns the serial for one downlink frame.
+func (b *Base) NextSerial() int {
+	if b.Serials != nil {
+		return b.Serials.Next()
+	}
+	return DefaultSerials.Next()
 }
 
 // Time returns the current time, honouring the injected clock.

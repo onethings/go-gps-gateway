@@ -97,8 +97,15 @@ type Command struct {
 	// It stays nil for commands that were never answered, which is why a zero
 	// code and no code are different values.
 	ResultCode *int
-	SentAt     time.Time
-	DoneAt     time.Time
+	// Serial is the downlink message serial the encoder handed to this command,
+	// or zero when the protocol has no serial. It is what the device echoes
+	// back, so a JT808 answer that carries it closes exactly this row.
+	Serial int
+	// Attempts counts how often the payload was written to the device socket:
+	// 1 for a command that went out once, more when it was retransmitted.
+	Attempts int
+	SentAt   time.Time
+	DoneAt   time.Time
 	// CreatedAt is when the row was written, before the payload was sent.
 	CreatedAt time.Time
 }

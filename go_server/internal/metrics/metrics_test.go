@@ -111,6 +111,10 @@ func TestSetRendersEveryMetric(t *testing.T) {
 		"traccar_notifications_total",
 		"traccar_notification_errors_total",
 		"traccar_notification_dropped_total",
+		"traccar_commands_sent_total",
+		"traccar_command_retry_total",
+		"traccar_command_dropped_total",
+		"traccar_commands_queued",
 	} {
 		if !strings.Contains(rendered, "# TYPE "+name) {
 			t.Errorf("rendered output is missing %q:\n%s", name, rendered)

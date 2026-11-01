@@ -55,6 +55,13 @@ type DeviceProtocols interface {
 	DeviceProtocol(ctx context.Context, deviceID int64) (protocol string, found bool, err error)
 }
 
+// CommandDeliverer hands an encoded command to the gateway, which writes it to
+// the device or keeps it queued until the device reconnects. It owns the status
+// of the row once the row exists.
+type CommandDeliverer interface {
+	Deliver(ctx context.Context, protocol string, command *model.Command, payload []byte) (bool, error)
+}
+
 // Pinger reports database reachability for the health probe.
 type Pinger interface {
 	Ping(ctx context.Context) error
@@ -89,6 +96,7 @@ type Server struct {
 	notifications NotificationStore
 	router        CommandRouter
 	commands      CommandStore
+	deliverer     CommandDeliverer
 	protocols     DeviceProtocols
 	pinger        Pinger
 	meters        *metrics.Set
@@ -139,6 +147,14 @@ func WithCommands(router CommandRouter, protocols DeviceProtocols) Option {
 // list route reports 501.
 func WithCommandStore(commands CommandStore) Option {
 	return func(s *Server) { s.commands = commands }
+}
+
+// WithCommandDeliverer hands delivery to the dispatcher, which keeps a command
+// queued while its device is away and retransmits one that goes unanswered.
+// Without it a command is written once and reported failed when the device is
+// offline.
+func WithCommandDeliverer(deliverer CommandDeliverer) Option {
+	return func(s *Server) { s.deliverer = deliverer }
 }
 
 // WithPositions enables GET /api/positions. Without it the route reports 501.
@@ -827,20 +843,36 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.router.Send(protocol, request.DeviceID, payload); err != nil {
+	delivered := true
+	if s.deliverer != nil {
+		// The dispatcher owns every status change from here: it writes the
+		// payload, retransmits it and records how the command ended.
+		delivered, err = s.deliverer.Deliver(ctx, protocol, command, payload)
+	} else if sendErr := s.router.Send(protocol, request.DeviceID, payload); sendErr != nil {
 		if s.commands != nil {
 			s.markCommand(ctx, command.ID, false)
 		}
-		if errors.Is(err, gateway.ErrDeviceOffline) {
+		err = sendErr
+	}
+
+	if err != nil {
+		switch {
+		case errors.Is(err, gateway.ErrDeviceOffline):
 			writeError(w, http.StatusConflict, fmt.Errorf("device %d is offline", request.DeviceID))
-			return
+		case errors.Is(err, gateway.ErrCommandQueueFull):
+			writeError(w, http.StatusTooManyRequests,
+				fmt.Errorf("device %d holds the maximum number of queued commands", request.DeviceID))
+		case errors.Is(err, gateway.ErrUnknownProtocol):
+			s.logf("api: command %s for device %d: %v", request.Type, request.DeviceID, err)
+			writeError(w, http.StatusConflict, err)
+		default:
+			s.logf("api: command %s for device %d: %v", request.Type, request.DeviceID, err)
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		}
-		s.logf("api: send command %s to device %d: %v", request.Type, request.DeviceID, err)
-		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
 	}
 
-	if s.commands != nil {
+	if s.deliverer == nil && s.commands != nil {
 		s.markCommand(ctx, command.ID, true)
 	}
 
@@ -849,7 +881,7 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		DeviceID: request.DeviceID,
 		Type:     request.Type,
 		Protocol: protocol,
-		Queued:   true,
+		Queued:   !delivered,
 	})
 }
 
@@ -875,6 +907,8 @@ type commandView struct {
 	Attributes map[string]any `json:"attributes"`
 	Status     string         `json:"status"`
 	ResultCode *int           `json:"resultCode,omitempty"`
+	Serial     int            `json:"serial,omitempty"`
+	Attempts   int            `json:"attempts"`
 	CreatedAt  time.Time      `json:"createdAt"`
 	SentAt     *time.Time     `json:"sentAt,omitempty"`
 	DoneAt     *time.Time     `json:"doneAt,omitempty"`
@@ -928,6 +962,8 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 			Attributes: attributes,
 			Status:     command.Status,
 			ResultCode: command.ResultCode,
+			Serial:     command.Serial,
+			Attempts:   command.Attempts,
 			CreatedAt:  command.CreatedAt.UTC(),
 		}
 		if !command.SentAt.IsZero() {

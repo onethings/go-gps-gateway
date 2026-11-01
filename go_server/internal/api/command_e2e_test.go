@@ -107,8 +107,8 @@ func TestCommandReachesDevice(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v (body %s)", err, recorder.Body)
 	}
-	if response.DeviceID != 1 || response.Protocol != "gt06" || !response.Queued {
-		t.Fatalf("response = %+v", response)
+	if response.DeviceID != 1 || response.Protocol != "gt06" || response.Queued {
+		t.Fatalf("response = %+v: an online device is delivered, not queued", response)
 	}
 
 	if !strings.Contains(string(frame), "Relay,1#") {

@@ -113,9 +113,12 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		// The terminal answers a downlink message here. There is nothing to
 		// reply with, so the frame only reports how the command ended.
 		if buf.ReadableBytes() >= 5 {
-			buf.ReadUnsignedShort() // answered serial number
-			buf.ReadUnsignedShort() // answered message type
-			result.CommandAck = &codec.CommandAck{Code: int(buf.ReadUnsignedByte())}
+			serial := buf.ReadUnsignedShort() // answered serial number
+			buf.ReadUnsignedShort()           // answered message type
+			result.CommandAck = &codec.CommandAck{
+				Code:   int(buf.ReadUnsignedByte()),
+				Serial: &serial,
+			}
 		} else {
 			result.Consumed = false
 		}

@@ -53,6 +53,10 @@ type header struct {
 	id          []byte
 	index       int
 	shortIndex  bool
+	// serial is the serial written into the frame buildMessage produces. It is
+	// set by the command encoder and stays zero for a platform response, which
+	// carries the serial it answers in its payload instead.
+	serial int
 }
 
 func parseHeader(frame []byte) (*header, *helper.Buffer, bool) {
@@ -175,7 +179,7 @@ func buildMessage(h *header, messageType int, payload []byte) []byte {
 	if h.shortIndex {
 		body = append(body, 1)
 	} else {
-		body = append(body, 0, 0)
+		body = append(body, byte(h.serial>>8), byte(h.serial))
 	}
 	body = append(body, payload...)
 

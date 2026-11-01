@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"traccar-server_go/go_server/internal/codec"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/model"
 )
@@ -302,20 +303,54 @@ func TestAutoRegister(t *testing.T) {
 // recordingTracker stands in for the storage layer, so the gateway side of the
 // acknowledgement path is checked without a database.
 type recordingTracker struct {
-	mu   sync.Mutex
-	acks []trackerAck
+	mu        sync.Mutex
+	acks      []trackerAck
+	connected []trackerConnect
+}
+
+type trackerConnect struct {
+	protocol string
+	deviceID int64
+}
+
+// DeviceConnected implements gateway.DeviceConnectHook.
+func (r *recordingTracker) DeviceConnected(protocol string, deviceID int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.connected = append(r.connected, trackerConnect{protocol: protocol, deviceID: deviceID})
+}
+
+func (r *recordingTracker) connects(t *testing.T, count int) []trackerConnect {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.mu.Lock()
+		connects := append([]trackerConnect(nil), r.connected...)
+		r.mu.Unlock()
+		if len(connects) >= count {
+			return connects
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("connects = %d, want %d", len(connects), count)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 type trackerAck struct {
 	deviceID   int64
 	resultCode int
+	serial     *int
 }
 
-func (r *recordingTracker) AcknowledgeCommand(_ context.Context, deviceID int64, resultCode int) error {
+func (r *recordingTracker) AcknowledgeCommand(
+	_ context.Context, deviceID int64, ack codec.CommandAck,
+) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.acks = append(r.acks, trackerAck{deviceID: deviceID, resultCode: resultCode})
+	r.acks = append(r.acks, trackerAck{deviceID: deviceID, resultCode: ack.Code, serial: ack.Serial})
 	return nil
 }
 
@@ -379,5 +414,34 @@ func TestGT06CommandReplyIsTracked(t *testing.T) {
 	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	if n, err := conn.Read(extra); err == nil {
 		t.Fatalf("extra response of %d bytes: %x", n, extra[:n])
+	}
+}
+
+// TestConnectHookFiresAfterLogin pins the reconnect half of the command queue:
+// the tracker learns the device and its protocol, which is what an undelivered
+// command needs to be encoded again.
+func TestConnectHookFiresAfterLogin(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("864717003283581", "gt06"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	tracker := &recordingTracker{}
+	server, err := gateway.NewServer(
+		gateway.DefaultRegistry(), "gt06", directory, nil,
+		gateway.WithLogger(newTestLogger(t)),
+		gateway.WithCommandTracker(tracker),
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	conn := startConn(t, server)
+	write(t, conn, mustHex(t, "78780d01086471700328358100093f040d0a"))
+	_ = readN(t, conn, 10)
+
+	connects := tracker.connects(t, 1)
+	if connects[0].deviceID != 1 || connects[0].protocol != "gt06" {
+		t.Fatalf("connect = %+v, want device 1 on gt06", connects[0])
 	}
 }

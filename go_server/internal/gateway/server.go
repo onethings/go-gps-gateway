@@ -20,10 +20,18 @@ const defaultMaxFrameSize = 1 << 20
 // The storage layer implements it, so the gateway never imports it. A nil
 // tracker leaves acknowledgements unrecorded.
 type CommandTracker interface {
-	// AcknowledgeCommand closes the newest command of device that is still
-	// waiting for an answer. An unknown device or an empty queue is a no-op,
-	// not an error.
-	AcknowledgeCommand(ctx context.Context, deviceID int64, resultCode int) error
+	// AcknowledgeCommand closes the command of device that the answer belongs
+	// to. An unknown device or an empty queue is a no-op, not an error.
+	AcknowledgeCommand(ctx context.Context, deviceID int64, ack codec.CommandAck) error
+}
+
+// DeviceConnectHook is implemented by a command tracker that also delivers the
+// commands queued for a device once that device holds a connection again.
+type DeviceConnectHook interface {
+	// DeviceConnected reports a freshly bound session together with the
+	// protocol it arrived on, which is what an undelivered command needs to be
+	// encoded again.
+	DeviceConnected(protocol string, deviceID int64)
 }
 
 // Server accepts connections for a single protocol.
@@ -258,6 +266,7 @@ func (s *Server) handleFrame(
 	if result.UniqueID != "" && *session == nil {
 		*session = s.bindSession(result.UniqueID)
 		s.trackConnection(conn, *session)
+		s.notifyConnected(*session)
 	}
 
 	for _, position := range result.Positions {
@@ -269,6 +278,7 @@ func (s *Server) handleFrame(
 			// frame, so the first position is what binds the connection.
 			*session = &codec.DeviceSession{DeviceID: position.DeviceID}
 			s.trackConnection(conn, *session)
+			s.notifyConnected(*session)
 		}
 		s.locations.Store(position)
 		if s.positions != nil {
@@ -291,7 +301,7 @@ func (s *Server) handleFrame(
 	// dropping the connection the device is still using for positions.
 	if result.CommandAck != nil && s.commands != nil && *session != nil {
 		if err := s.commands.AcknowledgeCommand(
-			ctx, (*session).DeviceID, result.CommandAck.Code,
+			ctx, (*session).DeviceID, *result.CommandAck,
 		); err != nil {
 			s.logf("%s: acknowledge command: %v", s.protocolName, err)
 		}
@@ -323,6 +333,20 @@ func (s *Server) trackConnection(conn *deviceConn, session *codec.DeviceSession)
 	s.logf("%s: device %d reconnected, closing previous connection",
 		s.protocolName, session.DeviceID)
 	_ = previous.conn.Close()
+}
+
+// notifyConnected tells a queue-owning tracker that the device is reachable
+// again. It runs off the read loop because it may write queued commands back
+// through the same connection, which must not delay the frame after this one.
+func (s *Server) notifyConnected(session *codec.DeviceSession) {
+	if session == nil {
+		return
+	}
+	hook, ok := s.commands.(DeviceConnectHook)
+	if !ok {
+		return
+	}
+	go hook.DeviceConnected(s.protocolName, session.DeviceID)
 }
 
 func (s *Server) bindSession(uniqueID string) *codec.DeviceSession {

@@ -81,6 +81,34 @@ func TestSplitStatements(t *testing.T) {
 	}
 }
 
+// TestSplitStatementsSemicolonsInText covers the shapes 0009 hit: a semicolon
+// in a leading comment, one in a literal, and a file that ends in a comment.
+func TestSplitStatementsSemicolonsInText(t *testing.T) {
+	content := "-- lead; comment\nALTER TABLE a ADD COLUMN b INT;\n" +
+		"INSERT INTO a VALUES ('x;y');\n/* block; comment */ CREATE INDEX c ON a (b);\n" +
+		"-- trailer; only\n"
+	statements := splitStatements(content)
+	want := []string{
+		"-- lead; comment\nALTER TABLE a ADD COLUMN b INT",
+		"INSERT INTO a VALUES ('x;y')",
+		"/* block; comment */ CREATE INDEX c ON a (b)",
+	}
+	if len(statements) != len(want) {
+		t.Fatalf("statements = %q, want %d", statements, len(want))
+	}
+	for i := range want {
+		if statements[i] != want[i] {
+			t.Errorf("statement %d = %q, want %q", i, statements[i], want[i])
+		}
+	}
+}
+
+func TestSplitStatementsCommentOnly(t *testing.T) {
+	if statements := splitStatements("-- nothing here;\n"); len(statements) != 0 {
+		t.Fatalf("statements = %q, want none", statements)
+	}
+}
+
 // TestBatchSink uses a recording writer, so batching is verified without a
 // database.
 func TestBatchSink(t *testing.T) {

@@ -73,7 +73,7 @@ func TestWebhookSendsPayload(t *testing.T) {
 	transport := &recordingTransport{}
 	webhook := webhookWith(t, transport, WebhookConfig{Authorization: "Bearer secret"})
 
-	alert := testAlert(model.AlertOverspeed, map[string]any{
+	alert := testAlert(model.EventDeviceOverspeed, map[string]any{
 		"protocol": "gt06",
 		"speed":    31.5,
 		"limit":    float64(30),
@@ -104,7 +104,7 @@ func TestWebhookSendsPayload(t *testing.T) {
 		t.Fatalf("decode payload: %v", err)
 	}
 
-	if received.Type != model.AlertOverspeed {
+	if received.Type != model.EventDeviceOverspeed {
 		t.Errorf("type = %q", received.Type)
 	}
 	if received.DeviceID != 7 {
@@ -131,7 +131,7 @@ func TestWebhookReportsNon2xx(t *testing.T) {
 	transport := &recordingTransport{status: http.StatusInternalServerError, body: "boom"}
 	webhook := webhookWith(t, transport, WebhookConfig{})
 
-	err := webhook.Send(context.Background(), Format(testAlert(model.AlertPowerCut, nil), testDevice()),
+	err := webhook.Send(context.Background(), Format(testAlert(model.EventPowerCut, nil), testDevice()),
 		[]string{"https://example.com/hook"})
 	if err == nil {
 		t.Fatal("expected an error for a 500 response")
@@ -154,7 +154,7 @@ func TestWebhookReportsTransportError(t *testing.T) {
 func TestWebhookTriesEveryRecipient(t *testing.T) {
 	transport := &recordingTransport{status: http.StatusOK}
 	webhook := webhookWith(t, transport, WebhookConfig{})
-	message := Format(testAlert(model.AlertGeofenceEnter, map[string]any{"geofence": "depot"}), testDevice())
+	message := Format(testAlert(model.EventGeofenceEnter, map[string]any{"geofence": "depot"}), testDevice())
 
 	if err := webhook.Send(context.Background(), message,
 		[]string{"https://one.example/hook", "https://two.example/hook"}); err != nil {

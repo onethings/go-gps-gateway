@@ -83,6 +83,16 @@ func (r *Router) Send(protocol string, deviceID int64, payload []byte) error {
 	return server.Send(deviceID, payload)
 }
 
+// Disconnect closes the connection of a device on the protocol it connected
+// with, which is what the session timeout needs.
+func (r *Router) Disconnect(protocol string, deviceID int64) error {
+	server := r.server(protocol)
+	if server == nil {
+		return fmt.Errorf("%w: %s is not listening", ErrUnknownProtocol, protocol)
+	}
+	return server.Disconnect(deviceID)
+}
+
 // Online reports whether the device is connected on protocol.
 func (r *Router) Online(protocol string, deviceID int64) bool {
 	server := r.server(protocol)

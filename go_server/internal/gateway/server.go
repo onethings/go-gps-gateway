@@ -25,6 +25,20 @@ type CommandTracker interface {
 	AcknowledgeCommand(ctx context.Context, deviceID int64, ack codec.CommandAck) error
 }
 
+// SessionTracker follows the device sessions: it is told when a connection binds
+// to a device, when data arrives and when the connection ends. The session
+// manager implements it; a nil tracker leaves the gateway with its own
+// connection bookkeeping only.
+type SessionTracker interface {
+	// SessionOpened reports a freshly bound session together with the protocol
+	// and the peer address.
+	SessionOpened(protocol string, deviceID int64, remote string)
+	// SessionData reports that a frame from the device arrived.
+	SessionData(deviceID int64)
+	// SessionClosed reports that the connection of the device ended.
+	SessionClosed(deviceID int64)
+}
+
 // DeviceConnectHook is implemented by a command tracker that also delivers the
 // commands queued for a device once that device holds a connection again.
 type DeviceConnectHook interface {
@@ -44,6 +58,7 @@ type Server struct {
 	locations    *LocationCache
 	conns        *connectionSet
 	commands     CommandTracker
+	sessions     SessionTracker
 	logf         func(format string, args ...any)
 	maxFrameSize int
 	readTimeout  time.Duration
@@ -93,6 +108,16 @@ func WithCommandTracker(tracker CommandTracker) Option {
 	return func(s *Server) {
 		if tracker != nil {
 			s.commands = tracker
+		}
+	}
+}
+
+// WithSessionTracker reports device sessions to a manager, so the gateway's view
+// of who is connected survives the frame that created it.
+func WithSessionTracker(tracker SessionTracker) Option {
+	return func(s *Server) {
+		if tracker != nil {
+			s.sessions = tracker
 		}
 	}
 }
@@ -213,6 +238,9 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 	defer func() {
 		if session != nil {
 			s.conns.detach(session.DeviceID, dc)
+			if s.sessions != nil {
+				s.sessions.SessionClosed(session.DeviceID)
+			}
 		}
 	}()
 
@@ -286,6 +314,10 @@ func (s *Server) handleFrame(
 		s.notifyConnected(*session)
 	}
 
+	if s.sessions != nil && *session != nil {
+		s.sessions.SessionData((*session).DeviceID)
+	}
+
 	for _, position := range result.Positions {
 		if position.DeviceID == 0 && *session != nil {
 			position.DeviceID = (*session).DeviceID
@@ -343,6 +375,9 @@ func (s *Server) trackConnection(conn *deviceConn, session *codec.DeviceSession)
 	}
 
 	previous := s.conns.attach(session.DeviceID, conn)
+	if s.sessions != nil {
+		s.sessions.SessionOpened(s.protocolName, session.DeviceID, remoteAddress(conn))
+	}
 	if previous == nil || previous == conn {
 		return
 	}
@@ -350,6 +385,14 @@ func (s *Server) trackConnection(conn *deviceConn, session *codec.DeviceSession)
 	s.logf("%s: device %d reconnected, closing previous connection",
 		s.protocolName, session.DeviceID)
 	_ = previous.conn.Close()
+}
+
+// remoteAddress renders the peer of a connection for the session log.
+func remoteAddress(conn *deviceConn) string {
+	if conn == nil || conn.conn == nil || conn.conn.RemoteAddr() == nil {
+		return ""
+	}
+	return conn.conn.RemoteAddr().String()
 }
 
 // notifyConnected tells a queue-owning tracker that the device is reachable
@@ -404,6 +447,17 @@ func (s *Server) Send(deviceID int64, payload []byte) error {
 		return ErrDeviceOffline
 	}
 	return conn.write(payload)
+}
+
+// Disconnect closes the live connection of a device. The session manager calls
+// it when a device has been silent for too long: the read loop then returns and
+// the usual cleanup - detach, offline transition - runs as for a real close.
+func (s *Server) Disconnect(deviceID int64) error {
+	conn := s.conns.get(deviceID)
+	if conn == nil || conn.conn == nil {
+		return ErrDeviceOffline
+	}
+	return conn.conn.Close()
 }
 
 // Online reports whether the device currently holds a connection.

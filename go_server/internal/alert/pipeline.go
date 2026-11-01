@@ -15,15 +15,17 @@ const (
 	defaultWriteTimeout = 10 * time.Second
 )
 
-// Writer stores a batch of alerts.
+// Writer stores a batch of reports. A report carries the position together with
+// the events the rules raised for it, which is what lets the writer store the
+// two in one transaction and put the position id on every event.
 type Writer interface {
-	InsertAlerts(ctx context.Context, alerts []*model.Alert) error
+	InsertReports(ctx context.Context, reports []*model.Report) error
 }
 
-type writerFunc func(ctx context.Context, alerts []*model.Alert) error
+type writerFunc func(ctx context.Context, reports []*model.Report) error
 
-func (f writerFunc) InsertAlerts(ctx context.Context, alerts []*model.Alert) error {
-	return f(ctx, alerts)
+func (f writerFunc) InsertReports(ctx context.Context, reports []*model.Report) error {
+	return f(ctx, reports)
 }
 
 // Sink is the position sink the pipeline forwards to. It matches
@@ -32,8 +34,10 @@ type Sink interface {
 	Handle(position *model.Position) error
 }
 
-// Pipeline evaluates every position, buffers the alerts and writes them in
-// batches. Handle never blocks the device connection.
+// Pipeline evaluates every position and writes the events it raised together
+// with the position. A position that raises nothing - the common case - goes
+// straight on to the next sink; one that raises something is queued as a report,
+// so the device connection still never waits for the database.
 type Pipeline struct {
 	engine *Engine
 	next   Sink
@@ -44,9 +48,9 @@ type Pipeline struct {
 	timeout  time.Duration
 	logf     func(format string, args ...any)
 	meters   *metrics.Set
-	hook     func(*model.Alert)
+	hook     func(*model.Event)
 
-	queue chan *model.Alert
+	queue chan *model.Report
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -101,10 +105,10 @@ func WithMetrics(set *metrics.Set) Option {
 	return func(p *Pipeline) { p.meters = set }
 }
 
-// WithAlertHook observes every alert the engine raises, including the ones the
+// WithAlertHook observes every event the engine raises, including the ones the
 // write queue drops. The hook runs on the device goroutine, so it must not
 // block; the notify dispatcher only enqueues.
-func WithAlertHook(hook func(*model.Alert)) Option {
+func WithAlertHook(hook func(*model.Event)) Option {
 	return func(p *Pipeline) {
 		if hook != nil {
 			p.hook = hook
@@ -131,24 +135,21 @@ func NewPipeline(engine *Engine, next Sink, writer Writer, options ...Option) *P
 		pipeline.size = defaultBatchSize
 	}
 	if pipeline.writer == nil {
-		pipeline.writer = writerFunc(func(context.Context, []*model.Alert) error { return nil })
+		pipeline.writer = writerFunc(func(context.Context, []*model.Report) error { return nil })
 	}
-	pipeline.queue = make(chan *model.Alert, pipeline.size*4)
+	pipeline.queue = make(chan *model.Report, pipeline.size*4)
 
 	pipeline.wg.Add(1)
 	go pipeline.run()
 	return pipeline
 }
 
-// Handle implements the position sink contract: evaluate, enqueue, forward.
+// Handle implements the position sink contract: evaluate, and either queue a
+// report or forward the position untouched.
 func (p *Pipeline) Handle(position *model.Position) error {
-	if p.engine != nil {
-		for _, alert := range p.engine.Evaluate(position) {
-			p.enqueue(alert)
-			if p.hook != nil {
-				p.hook(alert)
-			}
-		}
+	if events := p.evaluate(position); len(events) > 0 {
+		p.enqueue(&model.Report{Position: position, Events: events})
+		return nil
 	}
 	if p.next == nil {
 		return nil
@@ -156,7 +157,27 @@ func (p *Pipeline) Handle(position *model.Position) error {
 	return p.next.Handle(position)
 }
 
-func (p *Pipeline) enqueue(alert *model.Alert) {
+// evaluate runs the rules and reports every event to the hook, including the
+// ones the queue may drop: a notification is worth sending even when the history
+// row is lost.
+func (p *Pipeline) evaluate(position *model.Position) []*model.Event {
+	if p.engine == nil {
+		return nil
+	}
+
+	events := p.engine.Evaluate(position)
+	for _, event := range events {
+		if p.meters != nil {
+			p.meters.Alerts.With(event.Type).Inc()
+		}
+		if p.hook != nil {
+			p.hook(event)
+		}
+	}
+	return events
+}
+
+func (p *Pipeline) enqueue(report *model.Report) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -169,21 +190,20 @@ func (p *Pipeline) enqueue(alert *model.Alert) {
 	}
 
 	select {
-	case p.queue <- alert:
-		if p.meters != nil {
-			p.meters.Alerts.With(alert.Type).Inc()
-		}
+	case p.queue <- report:
 	default:
 		p.dropped++
 		if p.meters != nil {
 			p.meters.AlertsDropped.Inc()
 		}
-		p.logf("alert: queue full, dropped %s for device %d", alert.Type, alert.DeviceID)
+		p.logf("alert: queue full, dropped %d events for device %d",
+			len(report.Events), report.Position.DeviceID)
 	}
 }
 
-// Dropped reports how many alerts were discarded: the queue was full or the
-// pipeline had already been closed.
+// Dropped reports how many reports were discarded: the queue was full or the
+// pipeline had already been closed. A dropped report is a lost position and its
+// events, so the counter is the one to watch.
 func (p *Pipeline) Dropped() int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -217,7 +237,7 @@ func (p *Pipeline) Close(ctx context.Context) error {
 func (p *Pipeline) run() {
 	defer p.wg.Done()
 
-	batch := make([]*model.Alert, 0, p.size)
+	batch := make([]*model.Report, 0, p.size)
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
@@ -228,22 +248,22 @@ func (p *Pipeline) run() {
 		ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 		defer cancel()
 
-		if err := p.writer.InsertAlerts(ctx, batch); err != nil {
-			p.logf("alert: write (%d alerts): %v", len(batch), err)
+		if err := p.writer.InsertReports(ctx, batch); err != nil {
+			p.logf("alert: write %d reports: %v", len(batch), err)
 		}
 		batch = batch[:0]
 	}
 
 	for {
 		select {
-		case alert, ok := <-p.queue:
+		case report, ok := <-p.queue:
 			if !ok {
 				// Reading a closed channel drains the buffer first, so this is
 				// the moment to flush and stop.
 				write()
 				return
 			}
-			batch = append(batch, alert)
+			batch = append(batch, report)
 			if len(batch) >= p.size {
 				write()
 			}

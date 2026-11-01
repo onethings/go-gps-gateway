@@ -78,8 +78,8 @@ type repeatKey struct {
 // repeatable lists the alert types that NotRepeat applies to. Geofence
 // transitions and the power recovery are edge triggered and never suppressed.
 var repeatable = map[string]struct{}{
-	model.AlertOverspeed: {},
-	model.AlertPowerCut:  {},
+	model.EventDeviceOverspeed: {},
+	model.EventPowerCut:        {},
 }
 
 // New creates an engine with the given thresholds and geofences.
@@ -153,7 +153,7 @@ func (e *Engine) SetDeviceAttributes(attributes map[int64]map[string]any) {
 
 // Evaluate returns the alerts raised by one position. It never blocks and
 // never touches the database.
-func (e *Engine) Evaluate(position *model.Position) []*model.Alert {
+func (e *Engine) Evaluate(position *model.Position) []*model.Event {
 	if position == nil || position.DeviceID == 0 {
 		return nil
 	}
@@ -161,7 +161,7 @@ func (e *Engine) Evaluate(position *model.Position) []*model.Alert {
 		return nil
 	}
 
-	alerts := make([]*model.Alert, 0, 2)
+	alerts := make([]*model.Event, 0, 2)
 	alerts = append(alerts, e.overspeed(position)...)
 	alerts = append(alerts, e.powerCut(position)...)
 	alerts = append(alerts, e.geofenceTransitions(position)...)
@@ -170,7 +170,7 @@ func (e *Engine) Evaluate(position *model.Position) []*model.Alert {
 
 // applyNotRepeat drops a repeat of a repeatable alert type for the same device
 // when the previous one fired within the configured window.
-func (e *Engine) applyNotRepeat(alerts []*model.Alert) []*model.Alert {
+func (e *Engine) applyNotRepeat(alerts []*model.Event) []*model.Event {
 	window := e.config.NotRepeat
 	if window <= 0 || len(alerts) == 0 {
 		return alerts
@@ -222,7 +222,7 @@ func (e *Engine) idle() bool {
 	return true
 }
 
-func (e *Engine) overspeed(position *model.Position) []*model.Alert {
+func (e *Engine) overspeed(position *model.Position) []*model.Event {
 	if !position.Valid {
 		return nil
 	}
@@ -232,10 +232,10 @@ func (e *Engine) overspeed(position *model.Position) []*model.Alert {
 		return nil
 	}
 
-	alert := e.newAlert(model.AlertOverspeed, position)
+	alert := e.newAlert(model.EventDeviceOverspeed, position)
 	alert.Set("speed", position.Speed)
 	alert.Set("limit", limit)
-	return []*model.Alert{alert}
+	return []*model.Event{alert}
 }
 
 // speedLimit resolves the overspeed threshold for one position. The order
@@ -281,7 +281,7 @@ func (e *Engine) speedLimit(position *model.Position) float64 {
 	return limit
 }
 
-func (e *Engine) powerCut(position *model.Position) []*model.Alert {
+func (e *Engine) powerCut(position *model.Position) []*model.Event {
 	threshold := e.powerCutThreshold(position.DeviceID)
 	if threshold <= 0 {
 		return nil
@@ -306,19 +306,19 @@ func (e *Engine) powerCut(position *model.Position) []*model.Alert {
 	e.mu.Unlock()
 
 	if low {
-		alert := e.newAlert(model.AlertPowerCut, position)
+		alert := e.newAlert(model.EventPowerCut, position)
 		alert.Set("power", power)
 		alert.Set("threshold", threshold)
-		return []*model.Alert{alert}
+		return []*model.Event{alert}
 	}
 	if !seen || !wasLow {
 		return nil
 	}
 
-	alert := e.newAlert(model.AlertPowerRestored, position)
+	alert := e.newAlert(model.EventPowerRestored, position)
 	alert.Set("power", power)
 	alert.Set("threshold", threshold)
-	return []*model.Alert{alert}
+	return []*model.Event{alert}
 }
 
 // powerCutThreshold resolves the power cut threshold for one device. A device
@@ -335,7 +335,7 @@ func (e *Engine) powerCutThreshold(deviceID int64) float64 {
 	return threshold
 }
 
-func (e *Engine) geofenceTransitions(position *model.Position) []*model.Alert {
+func (e *Engine) geofenceTransitions(position *model.Position) []*model.Event {
 	if !position.IsLocated() {
 		return nil
 	}
@@ -347,7 +347,7 @@ func (e *Engine) geofenceTransitions(position *model.Position) []*model.Alert {
 		return nil
 	}
 
-	var alerts []*model.Alert
+	var alerts []*model.Event
 	for _, fence := range e.geofences {
 		if fence == nil || fence.Area == nil {
 			continue
@@ -367,9 +367,9 @@ func (e *Engine) geofenceTransitions(position *model.Position) []*model.Alert {
 		}
 		e.members[key] = inside
 
-		alertType := model.AlertGeofenceExit
+		alertType := model.EventGeofenceExit
 		if inside {
-			alertType = model.AlertGeofenceEnter
+			alertType = model.EventGeofenceEnter
 		}
 		alert := e.newAlert(alertType, position)
 		alert.GeofenceID = fence.ID
@@ -381,13 +381,13 @@ func (e *Engine) geofenceTransitions(position *model.Position) []*model.Alert {
 
 // newAlert snapshots the coordinates into the attributes: the alerts table has
 // no position id yet, so a query alone has to be self contained.
-func (e *Engine) newAlert(alertType string, position *model.Position) *model.Alert {
+func (e *Engine) newAlert(alertType string, position *model.Position) *model.Event {
 	eventTime := position.Time
 	if eventTime.IsZero() {
 		eventTime = e.now()
 	}
 
-	alert := &model.Alert{
+	alert := &model.Event{
 		DeviceID: position.DeviceID,
 		Type:     alertType,
 		Time:     eventTime,

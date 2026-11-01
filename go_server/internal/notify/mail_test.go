@@ -150,7 +150,7 @@ func TestMailSend(t *testing.T) {
 	}
 	mailer.dialTCP = dial
 
-	message := Format(testAlert(model.AlertOverspeed, map[string]any{
+	message := Format(testAlert(model.EventDeviceOverspeed, map[string]any{
 		"speed": 31.5,
 		"limit": float64(30),
 	}), testDevice())

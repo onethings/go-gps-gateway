@@ -5,8 +5,8 @@ PREFIX   ?= $(HOME)/.local
 BINARIES := traccar-gateway device-sim
 
 .DEFAULT_GOAL := help
-.PHONY: help build test race vet fmt smoke run run-db install uninstall \
-	db-up db-down docker-build compose-up compose-down clean
+.PHONY: help build test race vet fmt smoke rest-e2e run run-db install uninstall \
+	docker-check db-up db-down docker-build compose-up compose-down clean
 
 help: ## list the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -31,6 +31,9 @@ fmt: ## go fmt
 smoke: build ## replay the four protocol scenes against a throwaway gateway
 	BIN_DIR=$(BIN_DIR) SMOKE_NO_BUILD=1 ./scripts/smoke.sh
 
+rest-e2e: build ## replay the scenes with PostgreSQL and check positions, alerts and commands
+	BIN_DIR=$(BIN_DIR) REST_E2E_NO_BUILD=1 ./scripts/rest-e2e.sh
+
 run: build ## run with no database: positions are logged as JSON
 	./$(BIN_DIR)/traccar-gateway
 
@@ -45,17 +48,24 @@ install: build ## install the binaries into $(PREFIX)/bin
 uninstall: ## remove the installed binaries
 	rm -f $(addprefix $(DESTDIR)$(PREFIX)/bin/,$(BINARIES))
 
-db-up: ## start a throwaway PostgreSQL on 55432
+docker-check: ## fail early when the docker daemon is not reachable
+	@docker info >/dev/null 2>&1 || { \
+		echo "docker daemon unreachable ($(shell docker context show 2>/dev/null || echo unknown) context)."; \
+		echo "start Docker Desktop with: open -a Docker"; \
+		echo "or run your own PostgreSQL and pass -dsn / TRACCAR_DSN instead."; \
+		exit 1; }
+
+db-up: docker-check ## start a throwaway PostgreSQL on 55432
 	docker run --rm -d --name traccar-pg -p 55432:5432 \
 		-e POSTGRES_PASSWORD=traccar -e POSTGRES_DB=traccar postgres:16
 
 db-down: ## stop the throwaway PostgreSQL
 	-docker rm -f traccar-pg
 
-docker-build: ## build the container image
+docker-build: docker-check ## build the container image
 	docker build -t traccar-server-go:dev .
 
-compose-up: ## start gateway + PostgreSQL with docker compose
+compose-up: docker-check ## start gateway + PostgreSQL with docker compose
 	docker compose up --build -d
 
 compose-down: ## stop the compose stack and drop its volume

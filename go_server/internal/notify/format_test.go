@@ -12,8 +12,8 @@ func testDevice() *model.Device {
 	return &model.Device{ID: 7, UniqueID: "864717003283581", Name: "van-7"}
 }
 
-func testAlert(alertType string, attributes map[string]any) *model.Alert {
-	return &model.Alert{
+func testAlert(alertType string, attributes map[string]any) *model.Event {
+	return &model.Event{
 		DeviceID:   7,
 		Type:       alertType,
 		Time:       time.Date(2026, 10, 31, 7, 32, 10, 0, time.UTC),
@@ -22,7 +22,7 @@ func testAlert(alertType string, attributes map[string]any) *model.Alert {
 }
 
 func TestFormatOverspeed(t *testing.T) {
-	alert := testAlert(model.AlertOverspeed, map[string]any{
+	alert := testAlert(model.EventDeviceOverspeed, map[string]any{
 		"protocol":  "gt06",
 		"latitude":  54.943,
 		"longitude": 25.206,
@@ -57,7 +57,7 @@ func TestFormatOverspeed(t *testing.T) {
 }
 
 func TestFormatWithoutDevice(t *testing.T) {
-	message := Format(testAlert(model.AlertPowerCut, map[string]any{"power": 9.5, "threshold": float64(12)}), nil)
+	message := Format(testAlert(model.EventPowerCut, map[string]any{"power": 9.5, "threshold": float64(12)}), nil)
 
 	if want := "[traccar] powerCut"; message.Subject != want {
 		t.Errorf("subject = %q, want %q", message.Subject, want)
@@ -80,37 +80,37 @@ func TestFormatNilAlert(t *testing.T) {
 func TestSummary(t *testing.T) {
 	tests := []struct {
 		name  string
-		alert *model.Alert
+		alert *model.Event
 		want  string
 	}{
 		{
 			name:  "overspeed",
-			alert: testAlert(model.AlertOverspeed, map[string]any{"speed": 31.5, "limit": float64(30)}),
+			alert: testAlert(model.EventDeviceOverspeed, map[string]any{"speed": 31.5, "limit": float64(30)}),
 			want:  "Speed 31.5 kn above limit 30 kn",
 		},
 		{
 			name:  "powerCut",
-			alert: testAlert(model.AlertPowerCut, map[string]any{"power": 9.5, "threshold": float64(12)}),
+			alert: testAlert(model.EventPowerCut, map[string]any{"power": 9.5, "threshold": float64(12)}),
 			want:  "Power 9.5 V below threshold 12 V",
 		},
 		{
 			name:  "powerRestored",
-			alert: testAlert(model.AlertPowerRestored, map[string]any{"power": 13.25}),
+			alert: testAlert(model.EventPowerRestored, map[string]any{"power": 13.25}),
 			want:  "Power restored at 13.25 V",
 		},
 		{
 			name:  "geofenceEnter",
-			alert: testAlert(model.AlertGeofenceEnter, map[string]any{"geofence": "倉庫"}),
+			alert: testAlert(model.EventGeofenceEnter, map[string]any{"geofence": "倉庫"}),
 			want:  "Entered geofence 倉庫",
 		},
 		{
 			name:  "geofenceExit",
-			alert: testAlert(model.AlertGeofenceExit, map[string]any{"geofence": "Warehouse"}),
+			alert: testAlert(model.EventGeofenceExit, map[string]any{"geofence": "Warehouse"}),
 			want:  "Exited geofence Warehouse",
 		},
 		{
 			name:  "missing attributes",
-			alert: testAlert(model.AlertOverspeed, nil),
+			alert: testAlert(model.EventDeviceOverspeed, nil),
 			want:  "",
 		},
 		{

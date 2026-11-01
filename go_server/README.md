@@ -5,10 +5,12 @@
 
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
-- 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄 / 告警通知（webhook / email，
-  含使用者訂閱）
-  - REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`、使用者 token / 裝置擁有權、
-    帳號與 token 管理、密碼登入、通知訂閱）全部可編譯、`go test ./...` 全綠。
+- 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 三層設定（`traccar.xml` / 環境變數 / flag）
+  + `ProcessingHandler` 處理鏈 + 連線狀態（`devices.status`、online / offline、心跳逾時）+ `events` 表
+  （告警規則 / 地理圍欄 / 通知 webhook / email，含使用者訂閱）
+  - REST（裝置管理、位置查詢、事件查詢（`/api/events`，`/api/alerts` 為別名）、健康檢查、命令下發、
+    `/metrics`、使用者 token / 裝置擁有權、帳號與 token 管理、密碼登入、通知訂閱）全部可編譯、
+    `go test ./...` 全綠。
 
 ## 架構
 
@@ -22,16 +24,18 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                    │
                    ├─ DeviceDirectory   uniqueId ⇄ deviceId
                    ├─ LocationCache    每個裝置最後一筆定位（供心跳/參數訊息補齊）
-                   └─ Sink              寫入管線
-                        ├─ alert.Pipeline  規則評估 → alerts 批次落地
+                   ├─ session.Manager  連線登錄表 → devices.status + deviceOnline / deviceOffline
+                   └─ Sink = handler.Chain   ProcessingHandler 的處理鏈
+                        ├─ 14 個宣告階段（filter … media）；已實作：motion、business，其餘留 Placeholder
+                        ├─ business          = alert.Pipeline（規則評估 → events 與 position 同交易落地）
                         │    └─ notify.Dispatcher  webhook / SMTP 通知（背景傳送）
-                        └─ postgres.BatchSink  positions 批次落地
+                        └─ terminal          = postgres.BatchSink（positions 批次落地）
 
 client ──HTTP──▶ api.Server (RequireAuth)
                    ├─ 憑證：-api-key（admin）、api_tokens（scope + user_devices）或 /api/login 換發的 token
                    ├─ GET /api/devices   ──▶ devices 查詢 / 新增 / 修改 / 刪除
                    ├─ GET /api/positions ──▶ positions 查詢（自動加裝置條件）
-                   ├─ GET /api/alerts    ──▶ alerts 查詢（自動加裝置條件）
+                   ├─ GET /api/events    ──▶ events 查詢（/api/alerts 是別名；自動加裝置條件）
                    ├─ GET /api/health
                    ├─ POST /api/login    ──▶ email + 密碼換發一組 token（唯一不用帶憑證的路由）
                    ├─ GET /metrics       ──▶ Prometheus 文字格式
@@ -56,9 +60,11 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植）                                                                                                                                                                                                                                  |
 | `internal/gateway`               | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                                                                                                                                                  |
 | `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                                                                                                                                                  |
-| `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線                                                                                                                                                                                        |
+| `internal/session`               | 連線登錄表（`devices.status`、心跳超時、`deviceOnline` / `deviceOffline`）與 moving / stopped 狀態機（`motion` 階段）                                                                                                     |
+| `internal/handler`               | 位置處理鏈：母本 `ProcessingHandler` 的 14 個階段順序、`PositionHandler` 介面、`BusinessHandler`（一次跑一個 `Processor`）與 terminal store                                                                                                                                  |
+| `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
-| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`；認證 / scope / 裝置擁有權 |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/events`（`/api/alerts` 為別名）、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`；認證 / scope / 裝置擁有權 |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                                                                                                                                              |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                                                                                                                                                           |
 | `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                                                                                                                                                           |
@@ -67,6 +73,9 @@ client ──HTTP──▶ api.Server (RequireAuth)
 
 需求：Go 1.22 以上（`make build` 只用標準工具鏈，沒有 cgo）。PostgreSQL 只有要跑 REST /
 告警 / 命令歷史時才需要。
+
+下面的區塊帶 `#` 註解，貼進互動式 zsh 前先 `setopt interactive_comments`，否則註解會被當成參數
+（zsh 預設只在腳本裡認註解）。
 
 ```bash
 cd go_server
@@ -82,6 +91,9 @@ make run          # 等於 ./bin/traccar-gateway（記憶體模式，REST 關閉
 # 2) 接 PostgreSQL（自動建表 / 套用 migration）
 make db-up        # docker run postgres:16，監聽 55432
 TRACCAR_DSN='postgres://postgres:traccar@localhost:55432/traccar?sslmode=disable' make run-db
+
+# 3) 另一個終端：把裝置幀打進去，再用 REST 驗證位置、告警、命令整條鏈
+make rest-e2e
 ```
 
 `make` 不帶參數會列出所有 target。要裝進 PATH：
@@ -106,8 +118,38 @@ curl -H 'X-Api-Key: dev-key' http://127.0.0.1:8082/api/health
 docker compose down -v
 ```
 
-`-dsn` 的預設值讀 `TRACCAR_DSN`，容器裡只給環境變數就夠；`-api-key` 同理讀
-`TRACCAR_API_KEY`，SMTP 密碼讀 `TRACCAR_SMTP_PASSWORD`。
+### 設定
+
+三層，優先序由低到高：內建預設 → `traccar.xml` → 環境變數；命令列 flag 在最上層。每個 flag 的
+預設值就是前三層算出來的結果，所以不帶 flag 時就是設定檔說的值。
+
+設定檔預設讀 `./traccar.xml`（不存在就用內建預設），路徑可用 `-config` 或 `TRACCAR_CONFIG`
+指定；檔案裡的 `config.default` 會先載入另一個檔案，再被自己覆寫（跟母本一樣）。
+
+```xml
+<properties>
+    <entry key='web.address'>0.0.0.0:8082</entry>
+    <entry key='database.url'>postgres://127.0.0.1:5432/traccar?sslmode=disable</entry>
+    <entry key='protocol.gt06.address'>0.0.0.0:5023</entry>
+    <entry key='protocol.gt06.timeout'>30s</entry>
+    <entry key='protocol.h02.registerUnknown'>false</entry>
+</properties>
+```
+
+- key 名照母本 `config/Keys.java`；Go 才有的 key（批次寫入、命令佇列、通知管道）在
+  `internal/config/keys.go` 標了 `Go only`。
+- 環境變數名是 key 轉大寫、`.` 換成 `_`、駝峰拆字，前面加 `TRACCAR_`：
+  `database.url` → `TRACCAR_DATABASE_URL`、`alert.overspeedKnots` →
+  `TRACCAR_ALERT_OVERSPEED_KNOTS`、per-protocol 是 `TRACCAR_PROTOCOL_GT06_ADDRESS`。
+- per-protocol 值解析順序：`protocol.<名稱>.<key>` → `<名稱>.<key>`（母本 `default.xml` 的寫法）
+  → `protocol.<key>`（協議共用預設）→ `<key>`（全域）。第一個有值的 key 勝出，所以分段覆寫
+  不受層級影響。
+- 時間值可以寫 `30s`、`5m`，也可以只寫數字（母本的時間 key 是秒）。
+- `server.timeout`（預設 `120s`，母本同名）：裝置多久沒送資料就判離線、寫 `deviceOffline`；
+  `protocol.<名稱>.timeout` 是單一協議的連線讀取逾時。
+
+舊環境變數照舊可用：`TRACCAR_DSN` → `database.url`、`TRACCAR_API_KEY` → `api.key`、
+`TRACCAR_SMTP_PASSWORD` → `mail.smtp.password`；兩種寫法同時出現時以新的 key 名為準。
 
 REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 curl 可加 `-allow-anonymous`
 （見「認證與權限」）。
@@ -122,7 +164,8 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 | Teltonika   | `-teltonika` | `0.0.0.0:5027`                           |
 | REST        | `-http`      | `0.0.0.0:8082`（需要 `-dsn`；空 = 關閉） |
 
-其他 flag：`-batch-size`（預設 500）、`-batch-interval`（預設 1s）、
+以下 flag 的預設值都可以先用上面的設定檔或環境變數給，flag 只是最後一層覆寫：
+`-batch-size`（預設 500）、`-batch-interval`（預設 1s）、
 `-dsn`（預設讀 `TRACCAR_DSN`；空 = 記憶體模式）、
 `-overspeed-knots`（預設 0 = 關閉規則）、`-power-cut-volts`（預設 0 = 關閉規則）、
 `-overspeed-prefer-lowest`（多個圍欄重疊時取最低限速；預設取最高）、
@@ -179,9 +222,11 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 
 `internal/storage/postgres/migrations/*.sql` 由 `Store.Migrate` 依版本套用：
 
-- `devices(id, unique_id, name, model, protocol, attributes, last_update, created_at)`
+- `devices(id, unique_id, name, model, protocol, attributes, status, last_update, created_at)`
+  （`status` 由 `0010_events.sql` 補上：online / offline / unknown）
 - `positions(id, device_id, protocol, device_time, server_time, valid, latitude, longitude, altitude, speed, course, accuracy, attributes)`
-- `alerts(id, device_id, position_id, type, alert_time, geofence_id, attributes)`（`0002_alerts.sql`）
+- `events(id, device_id, position_id, geofence_id, type, event_time, attributes)`（`0010_events.sql`；
+  `0011_events_replace_alerts.sql` 把舊的 `alerts` 資料搬進來後把該表刪掉）
 - `geofences(id, name, area, attributes, created_at)`（`0002_alerts.sql`）
 - `users(id, email, name, admin, disabled, created_at, password_hash)`（`0003_users.sql`；`disabled` 由
   `0004_users_disabled.sql` 補上，`password_hash` 由 `0006_users_password.sql` 補上，預設 NULL =
@@ -258,17 +303,18 @@ INSERT INTO geofences (name, area, attributes) VALUES
 查詢：
 
 ```bash
-curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=20'
+curl 'localhost:8082/api/events?deviceId=7&type=deviceOverspeed,powerCut&limit=20'
 ```
 
 ```json
 {
-  "alerts": [
+  "events": [
     {
       "id": 1,
       "deviceId": 7,
+      "positionId": 4211,
       "type": "deviceOverspeed",
-      "alertTime": "2026-10-31T07:32:10Z",
+      "eventTime": "2026-10-31T07:32:10Z",
       "attributes": { "limit": 30, "protocol": "gt06", "speed": 31.5 }
     }
   ],
@@ -276,15 +322,19 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
 }
 ```
 
+`GET /api/events` 與 `GET /api/alerts` 打的是同一個查詢：`/api/events` 回
+`{"events": [...], "count": n}`（欄位 `eventTime`），`/api/alerts` 是舊名字的別名，回
+`{"alerts": [...], "count": n}`（欄位 `alertTime`），兩邊的列完全相同。
+
 參數：`deviceId`、`type`（可重複或逗號分隔）、`from` / `to`（RFC3339 或 epoch 毫秒）、
-`limit`（1–1000，預設 100）、`offset`。預設依 `alert_time DESC, id DESC` 排序。
+`limit`（1–1000，預設 100）、`offset`。預設依 `event_time DESC, id DESC` 排序。
 
 已知取捨：
 
-- **`alerts.position_id` 目前一律是 NULL**。`BatchSink` 用 multi-row `INSERT`，拿不到 position id；
-  需要精確關聯時用 `alerts.device_id` + `alert_time` 去 join `positions`，或之後改成
-  `INSERT ... RETURNING`（會犧牲批次吞吐）。告警的 `attributes` 已內含 `latitude` / `longitude` /
-  `speed` / `protocol` 快照，單看 `alerts` 表也夠用。
+- **`events.position_id` 現在會填**。會產生事件的定位由 `alert.Pipeline` 組成一份 report
+  （位置 + 事件），`Store.InsertReports` 在同一個交易裡用 `INSERT ... RETURNING id` 寫位置、
+  再帶著那個 id 寫事件；沒有事件的定位照舊走 `BatchSink`，所以批次吞吐不受影響。
+  代價是「有事件的那一筆」走的是同步交易（罕見），而且兩條路徑的寫入順序不保證。
 - **去重與圍欄狀態都在記憶體**：重啟後去重視窗重新計時、圍欄只做「播種」。
 - **門檻 / 圍欄變更最多延遲一個 refresh 週期**：`devices.attributes` 依 `-device-refresh`、
   `geofences` 依 `-geofence-refresh` 重新載入（兩者預設 5m）；設 `0` 表示只在啟動時載入一次。
@@ -296,7 +346,7 @@ curl 'localhost:8082/api/alerts?deviceId=7&type=deviceOverspeed,powerCut&limit=2
 
 ## 通知管道
 
-告警除了寫進 `alerts` 表，還可以推到 webhook 與 email。兩個管道共用同一份格式化內容：
+告警除了寫進 `events` 表，還可以推到 webhook 與 email。兩個管道共用同一份格式化內容：
 `alert.Pipeline` 每產生一筆告警就丟進 `notify.Dispatcher` 的佇列，傳送在背景 goroutine 進行，
 device 連線與資料庫寫入都不等網路。沒有設定任何 `-notify-*` 時整條路徑不會啟動；
 通知需要 `-dsn`（告警規則本身就要資料庫），記憶體模式只會印出「ignoring -notify-\* flags」。
@@ -455,7 +505,7 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 | ---------------- | ------------------------------------------------------------------------ |
 | `read:positions` | `GET /api/positions`                                                     |
 | `read:devices`   | `GET /api/devices`                                                       |
-| `read:alerts`    | `GET /api/alerts`                                                        |
+| `read:alerts`    | `GET /api/events`、`GET /api/alerts`（同一個查詢）                        |
 | `read:metrics`   | `GET /metrics`                                                           |
 | `read:commands`  | `GET /api/commands`                                                      |
 | `write:devices`  | `POST/PUT/DELETE /api/devices`                                           |
@@ -468,7 +518,7 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 ### 使用者與裝置擁有權
 
 `users.admin = true` 的使用者不受 scope 與裝置限制；其他使用者只看得到 `user_devices`
-有授權的裝置。所有查詢（devices / positions / alerts）都會自動加上裝置條件，**沒有授權任何裝置
+有授權的裝置。所有查詢（devices / positions / events）都會自動加上裝置條件，**沒有授權任何裝置
 就回空結果，而不是全部**。修改 / 刪除裝置與下命令也要擁有該裝置，否則 `403`。
 `users.disabled = true` 的帳號會立刻失效（token 查詢直接回 `401`），但 token 與授權都保留，
 之後重新啟用就照舊可用。
@@ -661,7 +711,7 @@ curl -i -X PUT localhost:8082/api/devices/7 \
   -H 'Content-Type: application/json' \
   -d '{"name":"van-7","model":"GT06N"}'
 
-# 刪除：positions / alerts 由 FK CASCADE 一併刪除
+# 刪除：positions / events 由 FK CASCADE 一併刪除
 curl -i -X DELETE localhost:8082/api/devices/7
 # 204；不存在回 404
 ```
@@ -863,6 +913,29 @@ position 數；`handshake` 為 false 的場景（H02）不需要握手，裝置�
 數資料表的 lane 需要 `PSQL_DSN`，讀 `/metrics` 的 lane 需要 `API_URL`（預設 `http://127.0.0.1:8082`），
 缺環境變數時回 `skip` 與 exit code 3，跟失敗的 exit code 1 分開。
 
+### REST 端到端（`scripts/rest-e2e.sh`）
+
+`make smoke` 只證明解碼器到 sink；它不碰資料庫，也看不到 REST。`make rest-e2e` 補上另一段：
+用 `-dsn` 起網關 → `device-sim` 回放四個場景 → 帶 `X-Api-Key` 依序斷言
+
+- `GET /api/devices`：`-auto-register` 建出來的裝置（用場景的 `uniqueId` 對回 device id）
+- `GET /api/positions`：每個場景至少一列，最新一列的 `protocol` 與場景一致
+- `GET /api/events`（或 `GET /api/alerts`）：`-overspeed-knots 1` 讓回放的位置觸發 `deviceOverspeed`
+- `POST /api/commands` → `GET /api/commands`：裝置離線時回 `queued:true`、狀態 `pending`；
+  再回放同一場景讓裝置重連，狀態要變 `sent` 且 `attempts` ≥ 1
+
+```bash
+make db-up                                # 或自備 PostgreSQL
+make rest-e2e                             # DSN=... 可指向別的庫
+REST_E2E_SCENES="gt06 h02" make rest-e2e  # 只跑兩個場景
+```
+
+斷言比的是「跑之前最新一筆 id」與「跑之後最新一筆 id」，所以同一個庫可以重複跑。資料表由
+`Store.Migrate` 建立，不需要先手動建 schema。macOS 用 Homebrew 的 PostgreSQL 時，`initdb` /
+`pg_ctl` 要帶 `LC_ALL=en_US.UTF-8`，否則會撞到 `postmaster became multithreaded during startup`。
+
+腳本要綁 TCP port 也要連資料庫，沙箱裡跑不動（啟動失敗會印提示），請在一般終端執行。
+
 效能量測（本機 i5-4200U，`-benchtime 2s`）：
 
 ```bash
@@ -892,11 +965,11 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`、`<protocol>: acknowledge command: <err>`（裝置回應已到但 `commands` 寫不回去，連線不受影響）                                                    |
 | `gateway.Dispatcher` log | `dispatch: give up on command <id> of device <id> after <n> attempts`、`dispatch: load pending commands of device <id>: <err>`、`dispatch: re-encode command <id> of device <id>: <err>`、`dispatch: mark command <id> sent/failed: <err>`                                          |
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                                                                                                                                      |
-| `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                                                                                                                                             |
+| `alert.Pipeline` log     | `alert: write <n> reports: <err>`、`alert: queue full, dropped <n> events for device <id>`                                                                                                                                                                                             |
 | `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...`                                                                                                                |
 | `notify.Dispatcher` log  | `notify: webhook, mail enabled`、`notify: <channel>: <err>`、`notify: lookup device <id>: <err>`、`notify: lookup subscriptions for device <id>: <err>`、`notify: queue full, dropped <type> for device <id>`                                                                       |
-| `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: query commands: <err>`、`api: record command <type> for device <id>: <err>`、`api: send command <type> to device <id>: <err>` |
-| CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`、`dropped <n> notifications because the queue was full`                                                                                                                         |
+| `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query events: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: query commands: <err>`、`api: record command <type> for device <id>: <err>`、`api: send command <type> to device <id>: <err>` |
+| CLI 關閉時               | `dropped <n> positions because the queue was full`、`alert: queue full, dropped <n> events for device <id>``、`dropped <n> notifications because the queue was full`                                                                                                                         |
 | `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                                                                                                                                    |
 | 記憶體模式 sink          | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`）                                                                                                                                                                                                                         |
 
@@ -981,7 +1054,7 @@ scrape_configs:
 - 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知只有 webhook 與 email 兩種。使用者訂閱只決定
   類型與管道：email 收件者是帳號 email，webhook 仍共用 `-notify-webhook` 的 URL。門檻可用
   裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
-- 圍欄只能以 SQL 維護，且對所有裝置生效；`alerts.position_id` 目前是 NULL（見上節）。
+- 圍欄只能以 SQL 維護，且對所有裝置生效（`events.position_id` 已會填，見上節）。
 - `devices.model` 會被讀取，而且決定解碼路徑。GT06 的 `LW*` / `SEEWORLD` / `VL103` `LL303` `VL512` `G18`
   換掉告警碼的意義，`NT_MODELS`（`NT11` `NT20` `NT26` `NT40` `NT46` `VL100` `XT40`）換掉 `0x22` /
   `0x25` 整段欄位佈局；JT808 的 `G-360P` `G-508P` `AL300` `GL100` `VL300` 各走自己的報警字串分支，
@@ -1022,7 +1095,7 @@ scrape_configs:
 | 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL，11 張表                                            | 缺 39 張表，且沒有通用查詢與權限儲存                                                                                   |
 | 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + `user_devices`                                       | 只有裝置一種資源，無群組、無共享                                                                                       |
 | REST     | 25 個 resource、81 個端點                                                                           | 31 條路由                                                    | 見 M3                                                                                                                  |
-| 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 5 種，寫在 `alerts`，路由是 `/api/alerts`                    | 18 種；表名與路由都與母本不同                                                                                          |
+| 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 9 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名）  | 14 種；表名與母本相同，事件型別待 M4-1 補齊                                                                            |
 | 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email                                              | 7 個管道、模板語法                                                                                                     |
 | 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | 無                                                           | 全部                                                                                                                   |
 | 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | 無                                                           | 全部                                                                                                                   |
@@ -1047,22 +1120,46 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
 
 後面每一段都要掛在這四件事上，所以先做。
 
-- [ ] **M1-1 `internal/config`**
+- [x] **M1-1 `internal/config`**
   - 母本：`config/Config.java`、`config/Keys.java`（267 個 key）、`config/ProtocolConfig.java`。
   - 做什麼：`traccar.xml` → 環境變數 → flag 三層覆寫，key 名照 `Keys`，支援 `protocol.<name>.<key>` 的 per-protocol 值；先移植真的會用到的 40 個 key，其餘用到再加。
   - 驗收：現有 38 個 flag 全部改由 config 提供且行為不變；`go test ./internal/config`。
-- [ ] **M1-2 `internal/handler` 處理鏈**
+  - 落地：35 個全域 key + 4 個 per-protocol key（`internal/config/keys.go`），38 個 flag 的預設值全部改成
+    「設定檔 + 環境變數算出來的值」，所以不帶 flag 時就是設定檔說的值；`-config`/`TRACCAR_CONFIG`
+    指定檔案，`config.default` 照母本鏈式載入。`go test ./internal/config` 18 個測試全綠，
+    `./bin/traccar-gateway -h` 的預設值逐個對過（見 README「設定」）。
+- [x] **M1-2 `internal/handler` 處理鏈**
   - 母本：`ProcessingHandler`、`handler/BasePositionHandler`、`handler/PostProcessHandler`。
   - 做什麼：`PositionHandler` 介面 + 有序鏈，順序照 `ProcessingHandler` 的宣告；`alert.Pipeline` 降級成 `BusinessHandler` 一段，鏈在 `internal/handler` 組裝，`cmd` 只負責接線。
   - 驗收：`TestHandlerOrder` 斷言順序與母本一致；`alert` 不再是 `gateway` 與 `PostgreSQL` 之間唯一的一段。
-- [ ] **M1-3 `internal/session`**
+  - 落地：`internal/handler.Order` 宣告 14 個階段（filter / defaultData / position / motion / geofence /
+    computedAttributes / speedLimit / alertEvent / business / distance / fuel / driver / maintenance / media），
+    還沒實作的留 `Placeholder`，之後要填只要在 `Config.Stages` 指定同名階段，位置不會跑掉。
+    `alert.Pipeline` 現在只做規則評估（`next` 傳 nil），落地由鏈的 terminal（`BatchSink`）負責，
+    所以 `business` 之後的階段和 terminal 的錯誤都會回傳給 gateway 記錄。`go test ./internal/handler` 7 個測試。
+- [x] **M1-3 `internal/session`**
   - 母本：`session/ConnectionManager`、`DeviceSession`、`session/state/{Motion,Overspeed}Processor`。
   - 做什麼：連線登錄表（deviceId ⇄ conn、online / offline / timeout）、`devices` 補 `status` / `last_update` 以外的狀態欄位、motion 與 overspeed 狀態機（母本用位置間距與時間判定 `deviceMoving` / `deviceStopped`）。
   - 驗收：裝置斷線後 `status` 轉 `offline`；心跳超時產生 `deviceOffline`；`device-sim` 的斷線 / 重連腳本能重現整段。
-- [ ] **M1-4 `events` 表取代 `alerts`**
+  - 落地：`internal/session.Manager` 是連線登錄表：gateway 用 `WithSessionTracker` 回報開連線、每一幀、關連線，
+    manager 以不阻塞讀取迴圈的方式把 `devices.status` 與 `deviceOnline` / `deviceOffline` 寫進 DB；
+    `server.timeout`（預設 120s）沒收到資料就判離線，並透過 `Router.Disconnect` 把連線收掉。
+    `internal/session.Motion` 是 motion 狀態機（速度門檻 0.01 kn、距離門檻 500 m、靜止 60s），
+    掛在處理鏈的 `motion` 階段，轉換時寫 `deviceMoving` / `deviceStopped`。
+  - 偏差：overspeed 狀態機沒做。`alert` 引擎目前是 `deviceOverspeed` 的唯一寫入者，若同時再加一個
+    狀態機，`/api/alerts`（之後是 `/api/events`）會出現兩列同一次超速。等 M4 把告警改成事件、
+    通知改成由事件驅動時一起做，見 `decisions.tsv` 2026-11-01 18:2x 那列。
+- [x] **M1-4 `events` 表取代 `alerts`**
   - 母本：`model/Event`、`handler/events/*`、`tc_events`。
   - 做什麼：`events(id, device_id, position_id, geofence_id, type, event_time, attributes)`，寫入時用 `INSERT ... RETURNING id` 回填 `positions` 與 `events` 的雙向關聯；`/api/alerts` 保留為 `/api/events` 的別名一段時間。
   - 驗收：新舊路由回同一批資料；`alerts.position_id` 恒為 NULL 的已知限制消失（`TestEventLinksPosition`）。
+  - 落地：`model.Alert` 整個換成 `model.Event`（型別名、`alert_time` → `event_time`、儲存層
+    `InsertEvents` / `QueryEvents`），`0011_events_replace_alerts.sql` 把舊資料搬進 `events` 後刪表。
+    會產生事件的定位改成 report：`alert.Pipeline` 把「位置 + 事件」排進佇列，`Store.InsertReports`
+    在同一個交易裡寫位置（`RETURNING id`）再寫事件，所以 `events.position_id` 一定有值；
+    沒有事件的定位照舊走 `BatchSink`。`GET /api/events` 與 `GET /api/alerts` 共用同一個查詢。
+  - 測試：`TestEventLinksPosition`（含同裝置同時刻兩筆）、`TestEventsAndAlertsReturnTheSameRows`、
+    `TestInsertReportsIntegration`（`TRACCAR_POSTGRES_DSN` 有設才跑）。
 
 ### M2 資料模型與權限（L）
 
@@ -1162,13 +1259,22 @@ M2 與 M6-2 都是「一直往裡加」的長工，適合跟其他里程碑交�
 
 逐條對過程式與母本（`traccar-master`）：
 
-| 建議 | 判定 | 依據 |
-| ---- | ---- | ---- |
-| OsmAnd 走 HTTP GET/POST，例 `/5055?id=…&lat=…&lon=…&speed=…` | ✅ 正確 | 母本 `ProtocolConfig` 給 OsmAnd 的預設埠就是 5055；`OsmAndProtocolDecoder` 除了 query string 也吃 `application/json` body，欄位還有 `timestamp`、`location`、`cell`、`wifi`、`valid`。Go 這邊還沒有這個解碼器，屬於 M6-1 的 HTTP 基底。 |
-| GT06 要注意 `NT_MODELS` 的欄位版面差異 | ✅ 正確 | `0x22` / `0x25` 的 NT 版面已實作，見上面 GT06 段與「已知限制」。 |
-| JT808 的 `0x7E` ↔ `0x7D02` / `0x7D01` 轉義要穩 | ✅ 正確 | `internal/protocol/jt808/frame.go` 已處理，另含 `0xE7` 分隔符與 `0xE6` / `0x3E` 轉義表。 |
-| JT808 多包拼包要穩 | ❌ 目前沒有 | 標頭只取 `bodyLength = attribute & 0x03ff`，沒看分包旗標 `0x2000`；帶分包旗標的 `0x0200` 會被當成完整訊息解析。這是真缺口，不是「穩定度」問題。 |
-| JT808 用流水號（Serial Number）精確 ACK 配對 | ✅ 正確 | `codec.SerialSource` 給每筆命令號碼並存 `commands.serial`，`0x0001` 回應的流水號對回那一列；重送沿用同一個號碼。 |
-| GT06 / H02 沒有可配對的欄位，維持「最新一筆 sent」收尾 | ✅ 結論對，理由要修 | 協議本身不是沒有欄位：GT06 的 `0x80` 回應帶命令索引、H02 的 `R12` 帶應答序號。是母本的 encoder 把 GT06 索引固定寫 0，兩邊的回應都不足以區分多筆在等回應的命令，所以只能收最新那列。 |
-| 加 `/api/socket` 推播 position / alert | ✅ 正確且是缺口 | 母本是 `api/AsyncSocketServlet`；本 repo 的 roadmap M3-3 已列同一件事。 |
-| 佇列在記憶體，重啟會遺失排隊中指令 | ⚠️ 只對一半 | 接 `-dsn` 時命令先寫進 `commands` 表，重啟後裝置重連會把 `pending` 列重新編碼補送（`Dispatcher.PendingCommands`）；真的會丟的只有記憶體模式。搬到 Redis / NATS 的正當理由是**多節點共用**與縮短復原時間，不是「重啟遺失」。 |
+| 建議                                                         | 判定                | 依據                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OsmAnd 走 HTTP GET/POST，例 `/5055?id=…&lat=…&lon=…&speed=…` | ✅ 正確             | 母本 `ProtocolConfig` 給 OsmAnd 的預設埠就是 5055；`OsmAndProtocolDecoder` 除了 query string 也吃 `application/json` body，欄位還有 `timestamp`、`location`、`cell`、`wifi`、`valid`。Go 這邊還沒有這個解碼器，屬於 M6-1 的 HTTP 基底。 |
+| GT06 要注意 `NT_MODELS` 的欄位版面差異                       | ✅ 正確             | `0x22` / `0x25` 的 NT 版面已實作，見上面 GT06 段與「已知限制」。                                                                                                                                                                        |
+| JT808 的 `0x7E` ↔ `0x7D02` / `0x7D01` 轉義要穩               | ✅ 正確             | `internal/protocol/jt808/frame.go` 已處理，另含 `0xE7` 分隔符與 `0xE6` / `0x3E` 轉義表。                                                                                                                                                |
+| JT808 多包拼包要穩                                           | ❌ 目前沒有         | 標頭只取 `bodyLength = attribute & 0x03ff`，沒看分包旗標 `0x2000`；帶分包旗標的 `0x0200` 會被當成完整訊息解析。這是真缺口，不是「穩定度」問題。                                                                                         |
+| JT808 用流水號（Serial Number）精確 ACK 配對                 | ✅ 正確             | `codec.SerialSource` 給每筆命令號碼並存 `commands.serial`，`0x0001` 回應的流水號對回那一列；重送沿用同一個號碼。                                                                                                                        |
+| GT06 / H02 沒有可配對的欄位，維持「最新一筆 sent」收尾       | ✅ 結論對，理由要修 | 協議本身不是沒有欄位：GT06 的 `0x80` 回應帶命令索引、H02 的 `R12` 帶應答序號。是母本的 encoder 把 GT06 索引固定寫 0，兩邊的回應都不足以區分多筆在等回應的命令，所以只能收最新那列。                                                     |
+| 加 `/api/socket` 推播 position / alert                       | ✅ 正確且是缺口     | 母本是 `api/AsyncSocketServlet`；本 repo 的 roadmap M3-3 已列同一件事。                                                                                                                                                                 |
+| 佇列在記憶體，重啟會遺失排隊中指令                           | ⚠️ 只對一半         | 接 `-dsn` 時命令先寫進 `commands` 表，重啟後裝置重連會把 `pending` 列重新編碼補送（`Dispatcher.PendingCommands`）；真的會丟的只有記憶體模式。搬到 Redis / NATS 的正當理由是**多節點共用**與縮短復原時間，不是「重啟遺失」。             |
+
+接下來可以挑一條
+
+- ~~接 DB 把 REST 走通~~ **已完成（2026-11-01）**：`scripts/rest-e2e.sh` / `make rest-e2e` 在真
+  PostgreSQL 上回放四個場景，斷言 `/api/positions`、`/api/alerts`（`deviceOverspeed`）與
+  `POST /api/commands` → 裝置重連後 `sent` 都成立。順帶修掉 `0009_commands_delivery.sql`
+  讓全新資料庫連 migration 都過不了的問題：`splitStatements` 把註解裡的 `;` 當成語句結尾。
+- M3-3 WebSocket /api/socket + 接 traccar_web_ts 前端——你原本想要「看得見」的介面就是這條。
+- JT808 分包（0x2000）——上次核對時找到的真缺口：帶分包旗標的 `0x2000` 現在會被當完整訊息解成垃圾位置。這條最適合先補一個會紅的測試再修。

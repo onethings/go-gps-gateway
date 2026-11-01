@@ -54,7 +54,7 @@ func TestOverspeed(t *testing.T) {
 		t.Fatalf("alerts = %d, want 1", len(alerts))
 	}
 	alert := alerts[0]
-	if alert.Type != model.AlertOverspeed || alert.DeviceID != 1 {
+	if alert.Type != model.EventDeviceOverspeed || alert.DeviceID != 1 {
 		t.Errorf("alert = %+v", alert)
 	}
 	if alert.Attributes["speed"] != 31.5 || alert.Attributes["limit"] != 30.0 {
@@ -96,7 +96,7 @@ func TestPowerCut(t *testing.T) {
 	cut := locatedPosition(1, 54.9, 24.0)
 	cut.Set(model.KeyPower, 0.0)
 	alerts := engine.Evaluate(cut)
-	if len(alerts) != 1 || alerts[0].Type != model.AlertPowerCut {
+	if len(alerts) != 1 || alerts[0].Type != model.EventPowerCut {
 		t.Fatalf("alerts = %v", alerts)
 	}
 	if alerts[0].Attributes["power"] != 0.0 || alerts[0].Attributes["threshold"] != 10.0 {
@@ -124,7 +124,7 @@ func TestGeofenceTransitions(t *testing.T) {
 	if len(alerts) != 1 {
 		t.Fatalf("exit alerts = %d, want 1", len(alerts))
 	}
-	if alerts[0].Type != model.AlertGeofenceExit || alerts[0].GeofenceID != 5 {
+	if alerts[0].Type != model.EventGeofenceExit || alerts[0].GeofenceID != 5 {
 		t.Errorf("alert = %+v", alerts[0])
 	}
 	if alerts[0].Attributes["geofence"] != "depot" {
@@ -132,7 +132,7 @@ func TestGeofenceTransitions(t *testing.T) {
 	}
 
 	alerts = engine.Evaluate(locatedPosition(1, 0.4, 0.4))
-	if len(alerts) != 1 || alerts[0].Type != model.AlertGeofenceEnter {
+	if len(alerts) != 1 || alerts[0].Type != model.EventGeofenceEnter {
 		t.Fatalf("enter alerts = %v", alerts)
 	}
 

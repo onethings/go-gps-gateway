@@ -12,13 +12,13 @@ import (
 func TestPipelineAlertHookSeesEveryAlert(t *testing.T) {
 	var (
 		mu   sync.Mutex
-		seen []*model.Alert
+		seen []*model.Event
 	)
 
 	engine := New(Config{OverspeedKnots: 30}, nil)
 	pipeline := NewPipeline(engine, nil, &recordingWriter{},
 		WithBatchInterval(time.Hour),
-		WithAlertHook(func(alert *model.Alert) {
+		WithAlertHook(func(alert *model.Event) {
 			mu.Lock()
 			defer mu.Unlock()
 			seen = append(seen, alert)
@@ -41,7 +41,7 @@ func TestPipelineAlertHookSeesEveryAlert(t *testing.T) {
 	if len(seen) != 1 {
 		t.Fatalf("hook calls = %d, want 1", len(seen))
 	}
-	if seen[0].Type != model.AlertOverspeed {
+	if seen[0].Type != model.EventDeviceOverspeed {
 		t.Errorf("alert type = %q", seen[0].Type)
 	}
 	if seen[0].DeviceID != 7 {
@@ -60,7 +60,7 @@ func TestPipelineHookRunsDespiteWriteBackpressure(t *testing.T) {
 	pipeline := NewPipeline(engine, nil, writer,
 		WithBatchSize(1),
 		WithBatchInterval(time.Hour),
-		WithAlertHook(func(*model.Alert) {
+		WithAlertHook(func(*model.Event) {
 			mu.Lock()
 			defer mu.Unlock()
 			seen++

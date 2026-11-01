@@ -139,19 +139,94 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// splitStatements splits a migration file on semicolons. The migrations are
-// plain DDL without semicolons inside literals, which keeps this simple.
+// splitStatements splits a migration file on the semicolons that end a
+// statement. A semicolon inside a '...' literal or a comment belongs to the
+// text: 0009 explains the new columns with a comment that contains one, and
+// splitting there produced a fragment that started mid-sentence.
+//
+// Dollar-quoted strings are not handled: the migrations are plain DDL.
 func splitStatements(content string) []string {
-	parts := strings.Split(content, ";")
-	statements := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" || strings.HasPrefix(trimmed, "--") && len(strings.Split(trimmed, "\n")) == 1 {
-			continue
+	var (
+		statements []string
+		builder    strings.Builder
+		inLine     bool
+		inBlock    bool
+		inString   bool
+	)
+
+	flush := func() {
+		if statement := strings.TrimSpace(builder.String()); statement != "" && hasSQL(statement) {
+			statements = append(statements, statement)
 		}
-		statements = append(statements, trimmed)
+		builder.Reset()
 	}
+
+	for i := 0; i < len(content); i++ {
+		switch c := content[i]; {
+		case inLine:
+			builder.WriteByte(c)
+			if c == '\n' {
+				inLine = false
+			}
+		case inBlock:
+			builder.WriteByte(c)
+			if c == '*' && i+1 < len(content) && content[i+1] == '/' {
+				builder.WriteByte('/')
+				i++
+				inBlock = false
+			}
+		case inString:
+			builder.WriteByte(c)
+			if c == '\'' {
+				if i+1 < len(content) && content[i+1] == '\'' {
+					builder.WriteByte(content[i+1])
+					i++
+				} else {
+					inString = false
+				}
+			}
+		case c == '\'':
+			inString = true
+			builder.WriteByte(c)
+		case c == '-' && i+1 < len(content) && content[i+1] == '-':
+			inLine = true
+			builder.WriteString("--")
+			i++
+		case c == '/' && i+1 < len(content) && content[i+1] == '*':
+			inBlock = true
+			builder.WriteString("/*")
+			i++
+		case c == ';':
+			flush()
+		default:
+			builder.WriteByte(c)
+		}
+	}
+	flush()
 	return statements
+}
+
+// hasSQL reports whether the text carries anything besides whitespace and
+// comments, so a file that ends in a comment does not yield an empty query.
+func hasSQL(statement string) bool {
+	for i := 0; i < len(statement); i++ {
+		switch c := statement[i]; {
+		case c == '-' && i+1 < len(statement) && statement[i+1] == '-':
+			for i < len(statement) && statement[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < len(statement) && statement[i+1] == '*':
+			i += 2
+			for i+1 < len(statement) && !(statement[i] == '*' && statement[i+1] == '/') {
+				i++
+			}
+			i++
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func migrationVersion(name string) (int, error) {
@@ -308,6 +383,12 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 // a single statement. It never moves the column backwards, so a retransmitted
 // or out-of-order position cannot rewind it.
 func (s *Store) updateLastUpdate(ctx context.Context, touched map[int64]time.Time) error {
+	return updateLastUpdateWith(ctx, s.db, touched)
+}
+
+// updateLastUpdateWith is updateLastUpdate on a given connection, so the report
+// transaction can advance it in the same commit as the positions.
+func updateLastUpdateWith(ctx context.Context, db execer, touched map[int64]time.Time) error {
 	if len(touched) == 0 {
 		return nil
 	}
@@ -326,7 +407,7 @@ func (s *Store) updateLastUpdate(ctx context.Context, touched map[int64]time.Tim
 		return fmt.Errorf("postgres: encode last_update: %w", err)
 	}
 
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := db.ExecContext(ctx,
 		`UPDATE devices AS d SET last_update = v.at
 		 FROM jsonb_to_recordset($1::jsonb) AS v(id bigint, at timestamptz)
 		 WHERE d.id = v.id AND (d.last_update IS NULL OR d.last_update < v.at)`,

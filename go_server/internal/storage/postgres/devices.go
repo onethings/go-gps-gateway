@@ -17,7 +17,7 @@ const (
 
 	// deviceColumns keeps the SELECT list and the scan order in sync.
 	deviceColumns = `id, unique_id, name, model, protocol, attributes,
-		last_update, created_at`
+		status, last_update, created_at`
 )
 
 // Devices returns the devices matching the filter, most recently updated first.
@@ -95,7 +95,7 @@ func scanDevice(row interface{ Scan(dest ...any) error }) (*model.Device, error)
 	)
 	if err := row.Scan(
 		&device.ID, &device.UniqueID, &device.Name, &deviceModel, &protocol,
-		&attributes, &lastUpdate, &device.CreatedAt,
+		&attributes, &device.Status, &lastUpdate, &device.CreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("postgres: scan device: %w", err)
 	}

@@ -26,7 +26,7 @@ const (
 // Format renders an alert into the subject and body every channel sends. Both
 // channels share the rendering so mail and webhook consumers see the same
 // facts.
-func Format(alert *model.Alert, device *model.Device) Message {
+func Format(alert *model.Event, device *model.Device) Message {
 	message := Message{Alert: alert, Device: device}
 	if alert == nil {
 		return message
@@ -65,38 +65,38 @@ func Format(alert *model.Alert, device *model.Device) Message {
 
 // Summary describes the rule verdict in one line. It returns an empty string
 // when the alert does not carry the attributes the rule normally sets.
-func Summary(alert *model.Alert) string {
+func Summary(alert *model.Event) string {
 	if alert == nil {
 		return ""
 	}
 
 	switch alert.Type {
-	case model.AlertOverspeed:
+	case model.EventDeviceOverspeed:
 		speed, okSpeed := number(alert.Attributes[attrSpeed])
 		limit, okLimit := number(alert.Attributes[attrLimit])
 		if !okSpeed || !okLimit {
 			return ""
 		}
 		return fmt.Sprintf("Speed %s kn above limit %s kn", formatNumber(speed), formatNumber(limit))
-	case model.AlertPowerCut:
+	case model.EventPowerCut:
 		power, okPower := number(alert.Attributes[attrPower])
 		threshold, okThreshold := number(alert.Attributes[attrThreshold])
 		if !okPower || !okThreshold {
 			return ""
 		}
 		return fmt.Sprintf("Power %s V below threshold %s V", formatNumber(power), formatNumber(threshold))
-	case model.AlertPowerRestored:
+	case model.EventPowerRestored:
 		power, ok := number(alert.Attributes[attrPower])
 		if !ok {
 			return ""
 		}
 		return fmt.Sprintf("Power restored at %s V", formatNumber(power))
-	case model.AlertGeofenceEnter, model.AlertGeofenceExit:
+	case model.EventGeofenceEnter, model.EventGeofenceExit:
 		name, _ := alert.Attributes[attrGeofence].(string)
 		if name == "" {
 			return ""
 		}
-		if alert.Type == model.AlertGeofenceEnter {
+		if alert.Type == model.EventGeofenceEnter {
 			return "Entered geofence " + name
 		}
 		return "Exited geofence " + name

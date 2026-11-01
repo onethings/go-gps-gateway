@@ -218,7 +218,7 @@ func TestNotificationRoutesReportNotConfigured(t *testing.T) {
 }
 
 func TestNotificationPresetRequiresAdminButListIsOpen(t *testing.T) {
-	store := newFakeNotifications(sampleNotification(1, model.AlertOverspeed, "mail"))
+	store := newFakeNotifications(sampleNotification(1, model.EventDeviceOverspeed, "mail"))
 	principal := auth.NewPrincipal(1, false, []auth.Scope{auth.ScopeAll}, nil)
 	handler := NewServer(nil,
 		WithUsers(newFakeUsers(sampleUser(1, "alice@example.test"))),
@@ -262,7 +262,7 @@ func TestNotificationPresetCRUD(t *testing.T) {
 		t.Fatalf("create status = %d (body %s)", recorder.Code, recorder.Body)
 	}
 	created := decodeBody[notificationResponse](t, recorder)
-	if created.Type != model.AlertOverspeed || created.Description != "fast" {
+	if created.Type != model.EventDeviceOverspeed || created.Description != "fast" {
 		t.Errorf("created = %+v", created)
 	}
 	if len(created.Notificators) != 2 || created.Notificators[0] != "mail" || created.Notificators[1] != "webhook" {
@@ -284,7 +284,7 @@ func TestNotificationPresetCRUD(t *testing.T) {
 		t.Fatalf("update status = %d (body %s)", recorder.Code, recorder.Body)
 	}
 	updated := decodeBody[notificationResponse](t, recorder)
-	if updated.Type != model.AlertOverspeed || updated.Description != "fast" ||
+	if updated.Type != model.EventDeviceOverspeed || updated.Description != "fast" ||
 		len(updated.Notificators) != 1 || updated.Notificators[0] != "mail" {
 		t.Errorf("updated = %+v", updated)
 	}
@@ -319,7 +319,7 @@ func TestUserNotificationSubscriptionsSelfService(t *testing.T) {
 		sampleUser(1, "alice@example.test"),
 		sampleUser(2, "bob@example.test"),
 	)
-	notifications := newFakeNotifications(sampleNotification(5, model.AlertPowerCut, "mail"))
+	notifications := newFakeNotifications(sampleNotification(5, model.EventPowerCut, "mail"))
 	handler := NewServer(nil,
 		WithUsers(users), WithNotifications(notifications),
 		withTestToken(auth.NewPrincipal(1, false, []auth.Scope{auth.ScopeReadAlerts}, nil)),
@@ -355,7 +355,7 @@ func TestUserNotificationSubscriptionsSelfService(t *testing.T) {
 
 func TestUserNotificationSubscriptionUnknownIDs(t *testing.T) {
 	users := newFakeUsers(sampleUser(1, "alice@example.test"))
-	notifications := newFakeNotifications(sampleNotification(5, model.AlertPowerCut, "mail"))
+	notifications := newFakeNotifications(sampleNotification(5, model.EventPowerCut, "mail"))
 	handler := notificationHandler(users, notifications)
 
 	if recorder := apiRequest(t, handler, http.MethodPut, "/api/users/1/notifications/99", "", testAdminKey); recorder.Code != http.StatusNotFound {
@@ -368,7 +368,7 @@ func TestUserNotificationSubscriptionUnknownIDs(t *testing.T) {
 
 func TestUserNotificationListingAsAdmin(t *testing.T) {
 	users := newFakeUsers(sampleUser(2, "bob@example.test"))
-	notifications := newFakeNotifications(sampleNotification(5, model.AlertPowerCut, "mail"))
+	notifications := newFakeNotifications(sampleNotification(5, model.EventPowerCut, "mail"))
 	handler := notificationHandler(users, notifications)
 
 	if recorder := apiRequest(t, handler, http.MethodPut, "/api/users/2/notifications/5", "", testAdminKey); recorder.Code != http.StatusNoContent {

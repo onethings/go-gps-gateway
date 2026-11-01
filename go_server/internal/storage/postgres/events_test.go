@@ -11,30 +11,33 @@ import (
 	"traccar-server_go/go_server/internal/model"
 )
 
-func TestAlertArgs(t *testing.T) {
-	alert := &model.Alert{
+func TestEventArgs(t *testing.T) {
+	alert := &model.Event{
 		DeviceID:   7,
 		PositionID: 11,
-		Type:       model.AlertOverspeed,
+		Type:       model.EventDeviceOverspeed,
 		Time:       time.Date(2026, 10, 31, 13, 2, 10, 0, time.UTC),
 		Attributes: map[string]any{"speed": 31.5},
 	}
 
-	args, err := alertArgs(alert)
+	args, err := eventArgs(alert)
 	if err != nil {
-		t.Fatalf("alertArgs: %v", err)
+		t.Fatalf("eventArgs: %v", err)
 	}
-	if len(args) != alertColumns {
-		t.Fatalf("args = %d, want %d", len(args), alertColumns)
+	if len(args) != eventColumns {
+		t.Fatalf("args = %d, want %d", len(args), eventColumns)
 	}
-	if args[0] != int64(7) || args[1] != int64(11) || args[2] != model.AlertOverspeed {
-		t.Errorf("unexpected leading args: %#v", args[:3])
+	if args[0] != int64(7) || args[1] != int64(11) {
+		t.Errorf("unexpected leading ids: %#v", args[:2])
 	}
-	if _, ok := args[3].(time.Time); !ok {
-		t.Errorf("alert time is %T, want time.Time", args[3])
+	if args[2] != nil {
+		t.Errorf("geofence id = %#v, want NULL", args[2])
 	}
-	if args[4] != nil {
-		t.Errorf("geofence id = %#v, want NULL", args[4])
+	if args[3] != model.EventDeviceOverspeed {
+		t.Errorf("type = %#v", args[3])
+	}
+	if _, ok := args[4].(time.Time); !ok {
+		t.Errorf("event time is %T, want time.Time", args[4])
 	}
 
 	var attributes map[string]any
@@ -46,12 +49,12 @@ func TestAlertArgs(t *testing.T) {
 	}
 }
 
-func TestAlertArgsDefaults(t *testing.T) {
-	args, err := alertArgs(&model.Alert{DeviceID: 1, Type: model.AlertPowerCut})
+func TestEventArgsDefaults(t *testing.T) {
+	args, err := eventArgs(&model.Event{DeviceID: 1, Type: model.EventPowerCut})
 	if err != nil {
-		t.Fatalf("alertArgs: %v", err)
+		t.Fatalf("eventArgs: %v", err)
 	}
-	if args[3].(time.Time).IsZero() {
+	if args[4].(time.Time).IsZero() {
 		t.Error("a missing time should be filled with the current time")
 	}
 	if args[5].(string) != "{}" {
@@ -59,22 +62,22 @@ func TestAlertArgsDefaults(t *testing.T) {
 	}
 }
 
-func TestAlertArgsRejectsIncompleteAlerts(t *testing.T) {
-	if _, err := alertArgs(&model.Alert{Type: model.AlertOverspeed}); err != ErrMissingDevice {
+func TestEventArgsRejectsIncompleteEvents(t *testing.T) {
+	if _, err := eventArgs(&model.Event{Type: model.EventDeviceOverspeed}); err != ErrMissingDevice {
 		t.Errorf("err = %v, want %v", err, ErrMissingDevice)
 	}
-	if _, err := alertArgs(&model.Alert{DeviceID: 1}); err != ErrMissingAlertType {
-		t.Errorf("err = %v, want %v", err, ErrMissingAlertType)
+	if _, err := eventArgs(&model.Event{DeviceID: 1}); err != ErrMissingEventType {
+		t.Errorf("err = %v, want %v", err, ErrMissingEventType)
 	}
 }
 
-func TestAlertQuery(t *testing.T) {
+func TestEventQuery(t *testing.T) {
 	from := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
 
-	query, args := alertQuery(model.AlertFilter{
+	query, args := eventQuery(model.EventFilter{
 		DeviceID: 7,
-		Types:    []string{model.AlertOverspeed, "", model.AlertGeofenceEnter},
+		Types:    []string{model.EventDeviceOverspeed, "", model.EventGeofenceEnter},
 		From:     from,
 		To:       to,
 		Limit:    50,
@@ -82,8 +85,8 @@ func TestAlertQuery(t *testing.T) {
 	})
 
 	for _, fragment := range []string{
-		"WHERE device_id = $1 AND type IN ($2, $3) AND alert_time >= $4 AND alert_time <= $5",
-		"ORDER BY alert_time DESC, id DESC LIMIT $6 OFFSET $7",
+		"WHERE device_id = $1 AND type IN ($2, $3) AND event_time >= $4 AND event_time <= $5",
+		"ORDER BY event_time DESC, id DESC LIMIT $6 OFFSET $7",
 	} {
 		if !strings.Contains(query, fragment) {
 			t.Errorf("query is missing %q:\n%s", fragment, query)
@@ -92,7 +95,7 @@ func TestAlertQuery(t *testing.T) {
 	if len(args) != 7 {
 		t.Fatalf("args = %d, want 7: %#v", len(args), args)
 	}
-	if args[0] != int64(7) || args[1] != model.AlertOverspeed || args[2] != model.AlertGeofenceEnter {
+	if args[0] != int64(7) || args[1] != model.EventDeviceOverspeed || args[2] != model.EventGeofenceEnter {
 		t.Errorf("args = %#v", args[:3])
 	}
 	if !args[3].(time.Time).Equal(from) || !args[4].(time.Time).Equal(to) {
@@ -103,67 +106,67 @@ func TestAlertQuery(t *testing.T) {
 	}
 }
 
-func TestAlertQueryDefaults(t *testing.T) {
-	query, args := alertQuery(model.AlertFilter{})
+func TestEventQueryDefaults(t *testing.T) {
+	query, args := eventQuery(model.EventFilter{})
 	if strings.Contains(query, "WHERE") || strings.Contains(query, "OFFSET") {
 		t.Errorf("empty filter produced conditions:\n%s", query)
 	}
 	if !strings.HasSuffix(query, "LIMIT $1") {
 		t.Errorf("query = %s", query)
 	}
-	if len(args) != 1 || args[0] != defaultAlertLimit {
+	if len(args) != 1 || args[0] != defaultEventLimit {
 		t.Errorf("args = %#v", args)
 	}
 
-	_, args = alertQuery(model.AlertFilter{Limit: 5000})
-	if args[0] != maxAlertLimit {
-		t.Errorf("limit = %v, want %d", args[0], maxAlertLimit)
+	_, args = eventQuery(model.EventFilter{Limit: 5000})
+	if args[0] != maxEventLimit {
+		t.Errorf("limit = %v, want %d", args[0], maxEventLimit)
 	}
 }
 
-func TestAlertsInsert(t *testing.T) {
+func TestEventsInsert(t *testing.T) {
 	timestamp := time.Date(2026, 10, 31, 13, 2, 10, 0, time.UTC)
-	query, args, err := alertsInsert([]*model.Alert{
-		{DeviceID: 7, Type: model.AlertOverspeed, Time: timestamp},
-		{DeviceID: 8, PositionID: 3, Type: model.AlertPowerCut, Time: timestamp, GeofenceID: 5},
+	query, args, err := eventsInsert([]*model.Event{
+		{DeviceID: 7, Type: model.EventDeviceOverspeed, Time: timestamp},
+		{DeviceID: 8, PositionID: 3, Type: model.EventPowerCut, Time: timestamp, GeofenceID: 5},
 		{DeviceID: 9}, // skipped: no type
 	})
 	if err != nil {
-		t.Fatalf("alertsInsert: %v", err)
+		t.Fatalf("eventsInsert: %v", err)
 	}
 
 	want := "VALUES ($1, $2, $3, $4, $5, $6::jsonb), ($7, $8, $9, $10, $11, $12::jsonb)"
 	if !strings.Contains(query, want) {
 		t.Errorf("query does not match %q:\n%s", want, query)
 	}
-	if len(args) != 2*alertColumns {
-		t.Fatalf("args = %d, want %d", len(args), 2*alertColumns)
+	if len(args) != 2*eventColumns {
+		t.Fatalf("args = %d, want %d", len(args), 2*eventColumns)
 	}
 	if args[0] != int64(7) || args[1] != nil {
 		t.Errorf("first row = %#v", args[:2])
 	}
-	if args[6] != int64(8) || args[7] != int64(3) || args[10] != int64(5) {
+	if args[6] != int64(8) || args[7] != int64(3) || args[8] != int64(5) {
 		t.Errorf("second row = %#v", args[6:11])
 	}
 }
 
-func TestAlertsInsertWithoutValidRows(t *testing.T) {
-	query, args, err := alertsInsert([]*model.Alert{{}, nil})
+func TestEventsInsertWithoutValidRows(t *testing.T) {
+	query, args, err := eventsInsert([]*model.Event{{}, nil})
 	if err != nil {
-		t.Fatalf("alertsInsert: %v", err)
+		t.Fatalf("eventsInsert: %v", err)
 	}
 	if query != "" || args != nil {
 		t.Errorf("query = %q, args = %#v", query, args)
 	}
 
-	if query, _, err := alertsInsert(nil); err != nil || query != "" {
+	if query, _, err := eventsInsert(nil); err != nil || query != "" {
 		t.Errorf("query = %q, err = %v", query, err)
 	}
 }
 
-// TestAlertsMigration checks the embedded DDL still splits cleanly: the
+// TestEventsTableMigration checks the embedded DDL still splits cleanly: the
 // migration runner only understands semicolon separated statements.
-func TestAlertsMigration(t *testing.T) {
+func TestEventsTableMigration(t *testing.T) {
 	content, err := migrationsFS.ReadFile("migrations/0002_alerts.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
@@ -191,8 +194,8 @@ func TestAlertsMigration(t *testing.T) {
 	}
 }
 
-// TestAlertStoreIntegration runs only when TRACCAR_POSTGRES_DSN is set.
-func TestAlertStoreIntegration(t *testing.T) {
+// TestEventStoreIntegration runs only when TRACCAR_POSTGRES_DSN is set.
+func TestEventStoreIntegration(t *testing.T) {
 	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("TRACCAR_POSTGRES_DSN is not set")
@@ -235,19 +238,19 @@ func TestAlertStoreIntegration(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	if err := store.InsertAlerts(ctx, []*model.Alert{
-		{DeviceID: deviceID, Type: model.AlertOverspeed, Time: now,
+	if err := store.InsertEvents(ctx, []*model.Event{
+		{DeviceID: deviceID, Type: model.EventDeviceOverspeed, Time: now,
 			Attributes: map[string]any{"speed": 31.5}},
-		{DeviceID: deviceID, Type: model.AlertGeofenceEnter, Time: now.Add(time.Second),
+		{DeviceID: deviceID, Type: model.EventGeofenceEnter, Time: now.Add(time.Second),
 			GeofenceID: geofenceID, Attributes: map[string]any{"geofence": "depot"}},
-		{Type: model.AlertPowerCut},
+		{Type: model.EventPowerCut},
 	}); err != nil {
 		t.Fatalf("insert alerts: %v", err)
 	}
 
-	entered, err := store.QueryAlerts(ctx, model.AlertFilter{
+	entered, err := store.QueryEvents(ctx, model.EventFilter{
 		DeviceID: deviceID,
-		Types:    []string{model.AlertGeofenceEnter},
+		Types:    []string{model.EventGeofenceEnter},
 	})
 	if err != nil {
 		t.Fatalf("query alerts: %v", err)
@@ -262,7 +265,7 @@ func TestAlertStoreIntegration(t *testing.T) {
 		t.Errorf("position id = %d, want the NULL default", entered[0].PositionID)
 	}
 
-	all, err := store.QueryAlerts(ctx, model.AlertFilter{
+	all, err := store.QueryEvents(ctx, model.EventFilter{
 		DeviceID: deviceID,
 		From:     now.Add(-time.Minute),
 		To:       now.Add(time.Minute),
@@ -274,7 +277,7 @@ func TestAlertStoreIntegration(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("alerts = %d, want 2", len(all))
 	}
-	if all[0].Type != model.AlertGeofenceEnter || all[1].Type != model.AlertOverspeed {
+	if all[0].Type != model.EventGeofenceEnter || all[1].Type != model.EventDeviceOverspeed {
 		t.Errorf("alerts are not newest first: %+v", all)
 	}
 

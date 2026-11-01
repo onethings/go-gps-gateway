@@ -8,7 +8,7 @@ import (
 	"traccar-server_go/go_server/internal/model"
 )
 
-func alertTypes(alerts []*model.Alert) []string {
+func alertTypes(alerts []*model.Event) []string {
 	types := make([]string, 0, len(alerts))
 	for _, alert := range alerts {
 		types = append(types, alert.Type)
@@ -43,13 +43,13 @@ func TestNotRepeatSuppressesRepeats(t *testing.T) {
 	now := base
 	engine.now = func() time.Time { return now }
 
-	wantTypes(t, "first", alertTypes(engine.Evaluate(speed(30))), []string{model.AlertOverspeed})
+	wantTypes(t, "first", alertTypes(engine.Evaluate(speed(30))), []string{model.EventDeviceOverspeed})
 
 	now = base.Add(time.Minute)
 	wantTypes(t, "repeat within the window", alertTypes(engine.Evaluate(speed(31))), nil)
 
 	now = base.Add(2 * time.Hour)
-	wantTypes(t, "repeat after the window", alertTypes(engine.Evaluate(speed(32))), []string{model.AlertOverspeed})
+	wantTypes(t, "repeat after the window", alertTypes(engine.Evaluate(speed(32))), []string{model.EventDeviceOverspeed})
 }
 
 func TestNotRepeatIsPerDevice(t *testing.T) {
@@ -59,11 +59,11 @@ func TestNotRepeatIsPerDevice(t *testing.T) {
 
 	first := speed(30)
 	first.DeviceID = 7
-	wantTypes(t, "device 7", alertTypes(engine.Evaluate(first)), []string{model.AlertOverspeed})
+	wantTypes(t, "device 7", alertTypes(engine.Evaluate(first)), []string{model.EventDeviceOverspeed})
 
 	other := speed(30)
 	other.DeviceID = 8
-	wantTypes(t, "device 8", alertTypes(engine.Evaluate(other)), []string{model.AlertOverspeed})
+	wantTypes(t, "device 8", alertTypes(engine.Evaluate(other)), []string{model.EventDeviceOverspeed})
 
 	repeat := speed(30)
 	repeat.DeviceID = 7
@@ -76,7 +76,7 @@ func TestNotRepeatDisabledByDefault(t *testing.T) {
 	engine.now = func() time.Time { return base }
 
 	for i := 0; i < 3; i++ {
-		wantTypes(t, "unsuppressed evaluation", alertTypes(engine.Evaluate(speed(30))), []string{model.AlertOverspeed})
+		wantTypes(t, "unsuppressed evaluation", alertTypes(engine.Evaluate(speed(30))), []string{model.EventDeviceOverspeed})
 	}
 }
 
@@ -90,8 +90,8 @@ func TestNotRepeatKeepsGeofenceTransitions(t *testing.T) {
 
 	// The first sighting only seeds the membership state.
 	wantTypes(t, "seed", alertTypes(engine.Evaluate(inside)), nil)
-	wantTypes(t, "exit", alertTypes(engine.Evaluate(outside)), []string{model.AlertGeofenceExit})
-	wantTypes(t, "enter", alertTypes(engine.Evaluate(inside)), []string{model.AlertGeofenceEnter})
+	wantTypes(t, "exit", alertTypes(engine.Evaluate(outside)), []string{model.EventGeofenceExit})
+	wantTypes(t, "enter", alertTypes(engine.Evaluate(inside)), []string{model.EventGeofenceEnter})
 }
 
 func TestPowerCutAndRestore(t *testing.T) {
@@ -102,11 +102,11 @@ func TestPowerCutAndRestore(t *testing.T) {
 		volts float64
 		want  []string
 	}{
-		{"cut", 11.5, []string{model.AlertPowerCut}},
-		{"still cut", 11.4, []string{model.AlertPowerCut}},
-		{"restored", 12.5, []string{model.AlertPowerRestored}},
+		{"cut", 11.5, []string{model.EventPowerCut}},
+		{"still cut", 11.4, []string{model.EventPowerCut}},
+		{"restored", 12.5, []string{model.EventPowerRestored}},
 		{"healthy", 13, nil},
-		{"cut again", 11.8, []string{model.AlertPowerCut}},
+		{"cut again", 11.8, []string{model.EventPowerCut}},
 	}
 	for _, test := range cases {
 		wantTypes(t, test.name, alertTypes(engine.Evaluate(poweredPosition(7, test.volts))), test.want)
@@ -118,9 +118,9 @@ func TestPowerRestoreIsNotSuppressed(t *testing.T) {
 	engine := New(Config{PowerCutVolts: 12, NotRepeat: time.Hour}, nil)
 	engine.now = func() time.Time { return base }
 
-	wantTypes(t, "cut", alertTypes(engine.Evaluate(poweredPosition(7, 11))), []string{model.AlertPowerCut})
+	wantTypes(t, "cut", alertTypes(engine.Evaluate(poweredPosition(7, 11))), []string{model.EventPowerCut})
 	wantTypes(t, "repeat cut", alertTypes(engine.Evaluate(poweredPosition(7, 11))), nil)
-	wantTypes(t, "restore", alertTypes(engine.Evaluate(poweredPosition(7, 13))), []string{model.AlertPowerRestored})
+	wantTypes(t, "restore", alertTypes(engine.Evaluate(poweredPosition(7, 13))), []string{model.EventPowerRestored})
 }
 
 func TestPowerRestoreNeedsAPreviousCut(t *testing.T) {

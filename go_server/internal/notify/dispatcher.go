@@ -28,7 +28,7 @@ type Dispatcher struct {
 	logf          func(format string, args ...any)
 	meters        *metrics.Set
 
-	queue chan *model.Alert
+	queue chan *model.Event
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -109,7 +109,7 @@ func NewDispatcher(devices DeviceLookup, channels []Channel, options ...Option) 
 	if dispatcher.queueSize <= 0 {
 		dispatcher.queueSize = defaultQueueSize
 	}
-	dispatcher.queue = make(chan *model.Alert, dispatcher.queueSize)
+	dispatcher.queue = make(chan *model.Event, dispatcher.queueSize)
 
 	dispatcher.wg.Add(1)
 	go dispatcher.run()
@@ -118,7 +118,7 @@ func NewDispatcher(devices DeviceLookup, channels []Channel, options ...Option) 
 
 // Enqueue queues one alert. It never blocks: when the queue is full the alert
 // is dropped and counted.
-func (d *Dispatcher) Enqueue(alert *model.Alert) {
+func (d *Dispatcher) Enqueue(alert *model.Event) {
 	if alert == nil || len(d.channels) == 0 {
 		return
 	}
@@ -188,7 +188,7 @@ func (d *Dispatcher) run() {
 	}
 }
 
-func (d *Dispatcher) deliver(alert *model.Alert) {
+func (d *Dispatcher) deliver(alert *model.Event) {
 	device := d.lookup(alert.DeviceID)
 	if !deviceAllows(device, alert.Type) {
 		return
@@ -258,7 +258,7 @@ func (d *Dispatcher) lookup(deviceID int64) *model.Device {
 // subscribers resolves the user subscriptions for the alert. A failed lookup
 // is logged and treated as "nobody subscribed" so the server-wide defaults
 // still deliver the alert.
-func (d *Dispatcher) subscribers(alert *model.Alert) []model.NotificationSubscription {
+func (d *Dispatcher) subscribers(alert *model.Event) []model.NotificationSubscription {
 	if d.subscriptions == nil || alert == nil || alert.DeviceID == 0 {
 		return nil
 	}

@@ -59,7 +59,7 @@ type SubscriptionLookup interface {
 // ValidNotificationType reports whether value may be stored as a preset type.
 // "all" and "*" subscribe to every alert type the engine produces.
 func ValidNotificationType(value string) bool {
-	return value == "all" || value == "*" || model.IsAlertType(value)
+	return value == "all" || value == "*" || model.IsEventType(value)
 }
 
 // ParseNotificators canonicalises and validates a notification channel list.
@@ -95,7 +95,7 @@ func ParseNotificators(values []string) ([]string, error) {
 // Message is one formatted alert. Device is nil when the device could not be
 // resolved, in which case the body only names the device id.
 type Message struct {
-	Alert   *model.Alert
+	Alert   *model.Event
 	Device  *model.Device
 	Subject string
 	Body    string

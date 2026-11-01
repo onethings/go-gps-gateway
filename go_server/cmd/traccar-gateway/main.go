@@ -22,97 +22,58 @@ import (
 	"traccar-server_go/go_server/internal/alert"
 	"traccar-server_go/go_server/internal/api"
 	"traccar-server_go/go_server/internal/auth"
+	"traccar-server_go/go_server/internal/config"
 	"traccar-server_go/go_server/internal/gateway"
+	"traccar-server_go/go_server/internal/handler"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/notify"
+	"traccar-server_go/go_server/internal/session"
 	"traccar-server_go/go_server/internal/storage/postgres"
 )
 
 func main() {
-	addresses := map[string]*string{
-		"h02":       flag.String("h02", "0.0.0.0:5013", "H02 listen address"),
-		"gt06":      flag.String("gt06", "0.0.0.0:5023", "GT06 listen address"),
-		"jt808":     flag.String("jt808", "0.0.0.0:8610", "JT808 listen address"),
-		"teltonika": flag.String("teltonika", "0.0.0.0:5027", "Teltonika listen address"),
-	}
-	dsn := flag.String("dsn", os.Getenv("TRACCAR_DSN"),
-		"PostgreSQL DSN (defaults to TRACCAR_DSN); empty uses an in-memory directory and a log sink")
-	batchSize := flag.Int("batch-size", 500, "positions per database insert")
-	batchInterval := flag.Duration("batch-interval", time.Second, "maximum delay before a batch is written")
-	httpAddress := flag.String("http", "0.0.0.0:8082", "REST listen address; empty disables the API")
-	apiKey := flag.String("api-key", os.Getenv("TRACCAR_API_KEY"),
-		"REST API key (defaults to TRACCAR_API_KEY); empty means database tokens only")
-	allowAnonymous := flag.Bool("allow-anonymous", false,
-		"disable REST authentication entirely; local development only")
-	issueToken := flag.String("issue-token", "",
-		"issue an API token for this user email and exit (needs -dsn)")
-	tokenScopes := flag.String("token-scopes", "read:positions,read:devices,read:alerts",
-		"comma separated scopes for -issue-token")
-	tokenTTL := flag.Duration("token-ttl", 0, "lifetime of an issued token; 0 never expires")
-	overspeedKnots := flag.Float64("overspeed-knots", 0, "overspeed alert threshold in knots; 0 disables the rule")
-	powerCutVolts := flag.Float64("power-cut-volts", 0, "power cut alert threshold in volts; 0 disables the rule")
-	preferLowest := flag.Bool("overspeed-prefer-lowest", false,
-		"use the lowest geofence speedLimit when several geofences contain a position (default: highest)")
-	alertRepeat := flag.Duration("alert-repeat", 0,
-		"suppress repeat overspeed/powerCut alerts per device within this window; 0 disables")
-	geofenceRefresh := flag.Duration("geofence-refresh", 5*time.Minute, "geofence reload interval; 0 loads them once")
-	deviceRefresh := flag.Duration("device-refresh", 5*time.Minute,
-		"device attribute reload interval for per-device thresholds; 0 loads them once")
-	autoRegister := flag.Bool("auto-register", true,
-		"create a device row the first time an unknown identifier appears; false drops that frame")
-	commandRetry := flag.Duration("command-retry", gateway.DefaultCommandRetry,
-		"how long a written command waits for the device answer before it is sent again")
-	commandAttempts := flag.Int("command-attempts", gateway.DefaultCommandAttempts,
-		"how often a command payload may be written before it is marked failed")
-	commandQueue := flag.Int("command-queue", gateway.DefaultCommandQueue,
-		"undelivered commands one device may hold; 0 falls back to the default")
-	commandQueueTTL := flag.Duration("command-queue-ttl", gateway.DefaultCommandQueueTTL,
-		"how long a command may wait for its device to reconnect")
-	commandRetention := flag.Duration("command-retention", 7*24*time.Hour,
-		"delete command history older than this; 0 keeps it forever")
-	notifyWebhook := flag.String("notify-webhook", "",
-		"webhook URL that receives alert JSON; empty disables the webhook channel")
-	notifyWebhookAuthorization := flag.String("notify-webhook-authorization", "",
-		"Authorization header sent with every webhook request")
-	notifySMTP := flag.String("notify-email-smtp", "",
-		"SMTP host:port for alert email; empty disables the mail channel")
-	notifyEmailFrom := flag.String("notify-email-from", "", "sender address of alert email")
-	notifyEmailTo := flag.String("notify-email-to", "",
-		"default alert email recipients, comma separated; empty uses only per-device notifyEmail")
-	notifyEmailUsername := flag.String("notify-email-username", "", "SMTP username; empty disables AUTH")
-	notifyEmailPassword := flag.String("notify-email-password", os.Getenv("TRACCAR_SMTP_PASSWORD"),
-		"SMTP password (defaults to TRACCAR_SMTP_PASSWORD)")
-	notifyEmailTLS := flag.String("notify-email-tls", notify.MailTLSAuto,
-		"SMTP TLS mode: auto, starttls, implicit or none")
-	notifyTypes := flag.String("notify-types", "",
-		"comma separated alert types to deliver; empty delivers every type")
-	notifyTimeout := flag.Duration("notify-timeout", 10*time.Second,
-		"timeout of one device lookup or notification send")
-	notifyQueue := flag.Int("notify-queue", 256, "alerts that may wait for notification delivery")
-	loginMaxFailures := flag.Int("login-max-failures", api.DefaultLoginMaxFailures,
-		"consecutive wrong passwords that lock an account; 0 disables the lockout")
-	loginLockDuration := flag.Duration("login-lock-duration", api.DefaultLoginLockDuration,
-		"how long a locked account refuses logins")
-	flag.Parse()
+	flags := flag.NewFlagSet("traccar-gateway", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
 
-	if *issueToken != "" && *dsn == "" {
+	// The configuration file has to be read before the flags are registered:
+	// every flag defaults to the value the file and the environment resolved,
+	// so passing a flag is the only way to override them.
+	argument, _ := config.PathFromArgs(os.Args[1:])
+	tree, err := config.Load(argument, os.Environ())
+	if err != nil {
+		log.Fatal(err)
+	}
+	binder := config.Bind(flags, tree, tree.Root())
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		log.Fatalf("%v", err)
+	}
+	settings, err := binder.Settings()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	log.Printf("config: %s", tree.Summary())
+
+	if settings.IssueToken != "" && settings.DatabaseURL == "" {
 		log.Fatal("-issue-token needs -dsn")
 	}
 
-	deliveredTypes, err := notifyTypeFilter(*notifyTypes)
+	deliveredTypes, err := notifyTypeFilter(settings.NotifyTypes)
 	if err != nil {
 		log.Fatalf("-notify-types: %v", err)
 	}
 	channels, mailer, err := notifyChannels(notifyChannelConfig{
-		WebhookURL:           *notifyWebhook,
-		WebhookAuthorization: *notifyWebhookAuthorization,
-		SMTPAddress:          *notifySMTP,
-		EmailFrom:            *notifyEmailFrom,
-		EmailTo:              *notifyEmailTo,
-		EmailUsername:        *notifyEmailUsername,
-		EmailPassword:        *notifyEmailPassword,
-		EmailTLS:             *notifyEmailTLS,
+		WebhookURL:           settings.WebhookURL,
+		WebhookAuthorization: settings.WebhookAuthorization,
+		SMTPAddress:          settings.EmailSMTP,
+		EmailFrom:            settings.EmailFrom,
+		EmailTo:              settings.EmailTo,
+		EmailUsername:        settings.EmailUsername,
+		EmailPassword:        settings.EmailPassword,
+		EmailTLS:             settings.EmailTLS,
 	})
 	if err != nil {
 		log.Fatalf("notify: %v", err)
@@ -131,75 +92,96 @@ func main() {
 		store      *postgres.Store
 		pipeline   *alert.Pipeline
 		dispatcher *notify.Dispatcher
+		motion     *session.Motion
+		sessions   *session.Manager
 	)
 
-	if *dsn != "" {
-		store, err = postgres.New(ctx, *dsn)
+	if settings.DatabaseURL != "" {
+		store, err = postgres.New(ctx, settings.DatabaseURL)
 		if err != nil {
 			log.Fatalf("postgres: %v", err)
 		}
 		defer store.Close()
 
-		if *issueToken != "" {
-			if err := issueAPIToken(ctx, store, *issueToken, *tokenScopes, *tokenTTL); err != nil {
+		if settings.IssueToken != "" {
+			if err := issueAPIToken(ctx, store, settings.IssueToken,
+				strings.Join(settings.TokenScopes, ","), settings.TokenTTL); err != nil {
 				log.Fatalf("issue token: %v", err)
 			}
 			return
 		}
 
-		batcher = postgres.NewBatchSink(store, *batchSize, *batchInterval,
+		batcher = postgres.NewBatchSink(store, settings.BatchSize, settings.BatchInterval,
 			postgres.WithBatchLogger(log.Printf),
 			postgres.WithBatchMetrics(meters))
 		directory = store
 
 		engine := alert.New(alert.Config{
-			OverspeedKnots: *overspeedKnots,
-			PowerCutVolts:  *powerCutVolts,
-			NotRepeat:      *alertRepeat,
-			PreferLowest:   *preferLowest,
+			OverspeedKnots: settings.OverspeedKnots,
+			PowerCutVolts:  settings.PowerCutVolts,
+			NotRepeat:      settings.AlertRepeat,
+			PreferLowest:   settings.OverspeedLowest,
 		}, nil)
 
-		var hook func(*model.Alert)
+		var hook func(*model.Event)
 		if len(channels) > 0 {
 			dispatcher = notify.NewDispatcher(store, channels,
 				notify.WithLogger(log.Printf),
 				notify.WithMetrics(meters),
-				notify.WithTimeout(*notifyTimeout),
-				notify.WithQueueSize(*notifyQueue),
+				notify.WithTimeout(settings.NotifyTimeout),
+				notify.WithQueueSize(settings.NotifyQueue),
 				notify.WithSubscriptions(store),
 				notify.WithTypes(deliveredTypes))
 			hook = dispatcher.Enqueue
 			log.Printf("notify: %s enabled", notifyChannelNames(channels))
 		}
 
-		pipeline = alert.NewPipeline(engine, batcher, store,
+		pipeline = alert.NewPipeline(engine, nil, store,
 			alert.WithLogger(log.Printf),
 			alert.WithMetrics(meters),
 			alert.WithAlertHook(hook))
-		sink = pipeline
+
+		// The motion state machine records deviceMoving / deviceStopped, so it
+		// needs somewhere to write them.
+		motion = session.NewMotion(session.MotionConfig{
+			Events: store,
+			Logger: log.Printf,
+		})
+
+		// The chain is the ProcessingHandler: the alert pipeline is one stage of
+		// it and the batch sink closes it.
+		sink, err = handler.New(handler.Config{
+			Alerts: pipeline,
+			Store:  batcher,
+			Stages: map[string]handler.PositionHandler{handler.StageMotion: motion},
+		})
+		if err != nil {
+			log.Fatalf("handler: %v", err)
+		}
 
 		if err := reloadGeofences(ctx, store, engine); err != nil {
 			log.Printf("alerts: load geofences: %v", err)
 		}
-		if *geofenceRefresh > 0 {
-			go refreshGeofences(ctx, store, engine, *geofenceRefresh)
+		if settings.GeofenceRefresh > 0 {
+			go refreshGeofences(ctx, store, engine, settings.GeofenceRefresh)
 		}
 		if err := reloadDeviceAttributes(ctx, store, engine); err != nil {
 			log.Printf("alerts: load device attributes: %v", err)
 		}
-		if *deviceRefresh > 0 {
-			go refreshDeviceAttributes(ctx, store, engine, *deviceRefresh)
+		if settings.DeviceRefresh > 0 {
+			go refreshDeviceAttributes(ctx, store, engine, settings.DeviceRefresh)
 		}
 	} else {
 		log.Print("no -dsn given, using the in-memory directory and a log sink")
-		if *overspeedKnots != 0 || *powerCutVolts != 0 {
+		if settings.OverspeedKnots != 0 || settings.PowerCutVolts != 0 {
 			log.Print("alert rules need -dsn, ignoring -overspeed-knots and -power-cut-volts")
 		}
 		if len(channels) > 0 {
 			log.Print("alert notifications need -dsn, ignoring -notify-* flags")
 		}
 		directory = gateway.NewMemoryDirectory()
-		sink = gateway.SinkFunc(func(position *model.Position) error {
+
+		logSink := gateway.SinkFunc(func(position *model.Position) error {
 			encoded, err := json.Marshal(position)
 			if err != nil {
 				return err
@@ -207,9 +189,36 @@ func main() {
 			log.Printf("position %s", encoded)
 			return nil
 		})
+		sink, err = handler.New(handler.Config{Store: logSink})
+		if err != nil {
+			log.Fatalf("handler: %v", err)
+		}
 	}
 
 	router := gateway.NewRouter(registry, directory)
+
+	// The session manager owns devices.status and the online / offline events.
+	// It is created after the router because the timeout has to close the
+	// connection of the protocol the device connected with.
+	var sessionsDone chan struct{}
+	if store != nil {
+		sessions = session.New(session.Config{
+			Store:   store,
+			Events:  store,
+			Timeout: settings.ServerTimeout,
+			Close: func(protocol string, deviceID int64) {
+				if err := router.Disconnect(protocol, deviceID); err != nil {
+					log.Printf("session: close device %d: %v", deviceID, err)
+				}
+			},
+			Logger: log.Printf,
+		})
+		sessionsDone = make(chan struct{})
+		go func() {
+			defer close(sessionsDone)
+			sessions.Run(ctx)
+		}()
+	}
 
 	// One dispatcher serves the REST layer and the protocol servers: the REST
 	// side queues a command, the answer path closes it, and the reconnect of a
@@ -217,37 +226,37 @@ func main() {
 	var commands *gateway.Dispatcher
 	if store != nil {
 		commands = gateway.NewDispatcher(router, store,
-			gateway.WithCommandRetry(*commandRetry),
-			gateway.WithCommandAttempts(*commandAttempts),
-			gateway.WithCommandQueue(*commandQueue),
-			gateway.WithCommandQueueTTL(*commandQueueTTL),
+			gateway.WithCommandRetry(settings.CommandRetry),
+			gateway.WithCommandAttempts(settings.CommandAttempts),
+			gateway.WithCommandQueue(settings.CommandQueue),
+			gateway.WithCommandQueueTTL(settings.CommandQueueTTL),
 			gateway.WithDispatcherLogger(log.Printf),
 			gateway.WithDispatcherMetrics(meters),
 		)
 		go commands.Run(ctx)
 
-		if *commandRetention > 0 {
-			go purgeCommandHistory(ctx, store, *commandRetention)
+		if settings.CommandRetention > 0 {
+			go purgeCommandHistory(ctx, store, settings.CommandRetention)
 		}
 	}
 
 	var servers sync.WaitGroup
-	for _, name := range registry.Names() {
-		address := addresses[name]
-		if address == nil || *address == "" {
+	for _, protocol := range settings.Protocols {
+		name, address := protocol.Name, protocol.Address
+		if address == "" {
 			continue
 		}
 
-		listener, err := net.Listen("tcp", *address)
+		listener, err := net.Listen("tcp", address)
 		if err != nil {
-			log.Fatalf("%s: listen %s: %v", name, *address, err)
+			log.Fatalf("%s: listen %s: %v", name, address, err)
 		}
 
 		options := []gateway.Option{
-			gateway.WithReadTimeout(10 * time.Minute),
+			gateway.WithReadTimeout(protocol.ReadTimeout),
 			gateway.WithMetrics(meters),
 		}
-		if *autoRegister {
+		if protocol.AutoRegister {
 			options = append(options, gateway.WithAutoRegister())
 		}
 		if store != nil {
@@ -255,6 +264,7 @@ func main() {
 			// wrote, and a device that reconnects gets what was queued for it,
 			// so the gateway needs the same dispatcher.
 			options = append(options, gateway.WithCommandTracker(commands))
+			options = append(options, gateway.WithSessionTracker(sessions))
 		}
 
 		server, err := gateway.NewServer(registry, name, directory, sink, options...)
@@ -280,7 +290,7 @@ func main() {
 	// The API is created after the listeners so that every protocol server is
 	// already registered in the router when the first request arrives.
 	var apiServer *http.Server
-	if *httpAddress != "" {
+	if settings.WebAddress != "" {
 		if store == nil {
 			log.Print("no -dsn given, REST API disabled")
 		} else {
@@ -295,7 +305,7 @@ func main() {
 				api.WithMetrics(meters),
 				api.WithHealthPinger(store),
 				api.WithLogger(log.Printf),
-				api.WithLoginLockout(*loginMaxFailures, *loginLockDuration),
+				api.WithLoginLockout(settings.LoginMaxFailures, settings.LoginLockDuration),
 			}
 			if mailer != nil {
 				options = append(options, api.WithPasswordReset(notify.NewPasswordResetMail(mailer)))
@@ -303,23 +313,23 @@ func main() {
 				log.Print("api: no SMTP relay configured; password reset email is unavailable")
 			}
 			switch {
-			case *allowAnonymous:
+			case settings.AllowAnonymous:
 				log.Print("api: -allow-anonymous set, REST is unauthenticated")
-			case *apiKey == "":
+			case settings.APIKey == "":
 				log.Print("api: no -api-key set; REST accepts only database tokens")
 				options = append(options, api.WithTokens(store))
 			default:
-				options = append(options, api.WithAPIKey(*apiKey), api.WithTokens(store))
+				options = append(options, api.WithAPIKey(settings.APIKey), api.WithTokens(store))
 			}
 			apiServer = &http.Server{
-				Addr:              *httpAddress,
+				Addr:              settings.WebAddress,
 				Handler:           api.NewServer(store, options...).Handler(),
 				ReadHeaderTimeout: 5 * time.Second,
 				ReadTimeout:       15 * time.Second,
 				WriteTimeout:      30 * time.Second,
 				IdleTimeout:       60 * time.Second,
 			}
-			log.Printf("api: listening on %s", *httpAddress)
+			log.Printf("api: listening on %s", settings.WebAddress)
 			go func() {
 				if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					log.Printf("api: %v", err)
@@ -332,6 +342,15 @@ func main() {
 	log.Print("shutting down")
 
 	servers.Wait()
+
+	// The session manager writes the offline transitions of the connections
+	// that just ended, so it drains after the servers are done.
+	if sessionsDone != nil {
+		<-sessionsDone
+		if dropped := sessions.Dropped(); dropped > 0 {
+			log.Printf("session: dropped %d status changes because the queue was full", dropped)
+		}
+	}
 
 	if apiServer != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -546,13 +565,12 @@ func notifyChannels(config notifyChannelConfig) ([]notify.Channel, *notify.Mail,
 
 // notifyTypeFilter validates -notify-types so that a misspelled type fails at
 // startup instead of silently never matching. An empty value keeps every type.
-func notifyTypeFilter(value string) ([]string, error) {
-	types := notify.SplitList(value)
+func notifyTypeFilter(types []string) ([]string, error) {
 	for _, alertType := range types {
 		switch alertType {
 		case "none", "all", "*":
 		default:
-			if !model.IsAlertType(alertType) {
+			if !model.IsEventType(alertType) {
 				return nil, fmt.Errorf("unknown alert type %q", alertType)
 			}
 		}

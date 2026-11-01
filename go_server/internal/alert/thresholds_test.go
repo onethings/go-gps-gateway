@@ -21,8 +21,8 @@ func fenceWithLimit(t *testing.T, id int64, limit float64) *geofence.Geofence {
 	return fence
 }
 
-func alertsOfType(alerts []*model.Alert, alertType string) []*model.Alert {
-	var matches []*model.Alert
+func alertsOfType(alerts []*model.Event, alertType string) []*model.Event {
+	var matches []*model.Event
 	for _, alert := range alerts {
 		if alert.Type == alertType {
 			matches = append(matches, alert)
@@ -130,7 +130,7 @@ func TestOverspeedGeofenceThresholdUsesHighestByDefault(t *testing.T) {
 		t.Fatalf("45 knots is below the highest geofence limit: %v", alerts)
 	}
 
-	alerts := alertsOfType(engine.Evaluate(inside(55)), model.AlertOverspeed)
+	alerts := alertsOfType(engine.Evaluate(inside(55)), model.EventDeviceOverspeed)
 	if len(alerts) != 1 || alerts[0].Attributes["limit"] != 50.0 {
 		t.Fatalf("alerts = %#v, want the highest geofence limit 50", alerts)
 	}
@@ -144,7 +144,7 @@ func TestOverspeedGeofenceThresholdPreferLowest(t *testing.T) {
 
 	position := locatedPosition(1, 0.5, 0.5)
 	position.Speed = 45
-	alerts := alertsOfType(engine.Evaluate(position), model.AlertOverspeed)
+	alerts := alertsOfType(engine.Evaluate(position), model.EventDeviceOverspeed)
 	if len(alerts) != 1 || alerts[0].Attributes["limit"] != 40.0 {
 		t.Fatalf("alerts = %#v, want the lowest geofence limit 40", alerts)
 	}
@@ -157,13 +157,13 @@ func TestOverspeedGeofenceThresholdAppliesOnlyInside(t *testing.T) {
 
 	inside := locatedPosition(1, 0.5, 0.5)
 	inside.Speed = 40
-	if alerts := alertsOfType(engine.Evaluate(inside), model.AlertOverspeed); len(alerts) != 0 {
+	if alerts := alertsOfType(engine.Evaluate(inside), model.EventDeviceOverspeed); len(alerts) != 0 {
 		t.Fatalf("inside the geofence the limit is 50: %v", alerts)
 	}
 
 	outside := locatedPosition(1, 5, 5)
 	outside.Speed = 40
-	alerts := alertsOfType(engine.Evaluate(outside), model.AlertOverspeed)
+	alerts := alertsOfType(engine.Evaluate(outside), model.EventDeviceOverspeed)
 	if len(alerts) != 1 || alerts[0].Attributes["limit"] != 30.0 {
 		t.Fatalf("outside the geofence the global limit 30 applies: %#v", alerts)
 	}
@@ -179,7 +179,7 @@ func TestOverspeedGeofenceThresholdRespectsAltitude(t *testing.T) {
 	position := locatedPosition(1, 0.5, 0.5)
 	position.Altitude = 150
 	position.Speed = 40
-	alerts := alertsOfType(engine.Evaluate(position), model.AlertOverspeed)
+	alerts := alertsOfType(engine.Evaluate(position), model.EventDeviceOverspeed)
 	if len(alerts) != 1 || alerts[0].Attributes["limit"] != 30.0 {
 		t.Fatalf("alerts = %#v, want the global limit 30 above the ceiling", alerts)
 	}
@@ -202,7 +202,7 @@ func TestPowerCutPerDeviceThreshold(t *testing.T) {
 	position = locatedPosition(1, 54.9, 24.0)
 	position.Set(model.KeyPower, 7.0)
 	alerts := engine.Evaluate(position)
-	if len(alerts) != 1 || alerts[0].Type != model.AlertPowerCut {
+	if len(alerts) != 1 || alerts[0].Type != model.EventPowerCut {
 		t.Fatalf("alerts = %#v, want powerCut", alerts)
 	}
 	if alerts[0].Attributes["threshold"] != 8.0 {

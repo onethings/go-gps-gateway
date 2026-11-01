@@ -34,8 +34,8 @@ func TestParseNotificators(t *testing.T) {
 
 func TestValidNotificationType(t *testing.T) {
 	for _, value := range []string{
-		model.AlertOverspeed, model.AlertPowerCut, model.AlertPowerRestored,
-		model.AlertGeofenceEnter, model.AlertGeofenceExit, "all", "*",
+		model.EventDeviceOverspeed, model.EventPowerCut, model.EventPowerRestored,
+		model.EventGeofenceEnter, model.EventGeofenceExit, "all", "*",
 	} {
 		if !ValidNotificationType(value) {
 			t.Errorf("%q should be a valid notification type", value)

@@ -51,7 +51,7 @@ func TestNotificationStoreIntegration(t *testing.T) {
 	}
 
 	created, err := store.CreateNotification(ctx, model.NotificationCreate{
-		Type:         model.AlertOverspeed,
+		Type:         model.EventDeviceOverspeed,
 		Notificators: []string{"mail", "webhook"},
 		Description:  "fast",
 	})
@@ -62,7 +62,7 @@ func TestNotificationStoreIntegration(t *testing.T) {
 		_, _ = store.db.ExecContext(context.Background(),
 			`DELETE FROM notifications WHERE id = $1`, created.ID)
 	})
-	if created.ID == 0 || created.Type != model.AlertOverspeed ||
+	if created.ID == 0 || created.Type != model.EventDeviceOverspeed ||
 		strings.Join(created.Notificators, ",") != "mail,webhook" ||
 		created.Description != "fast" || created.CreatedAt.IsZero() {
 		t.Fatalf("created = %+v", created)
@@ -77,13 +77,13 @@ func TestNotificationStoreIntegration(t *testing.T) {
 	}
 
 	updated, err := store.UpdateNotification(ctx, created.ID, model.NotificationUpdate{
-		Type:         stringPointer(model.AlertPowerCut),
+		Type:         stringPointer(model.EventPowerCut),
 		Notificators: &[]string{"mail"},
 	})
 	if err != nil {
 		t.Fatalf("update notification: %v", err)
 	}
-	if updated.Type != model.AlertPowerCut || strings.Join(updated.Notificators, ",") != "mail" ||
+	if updated.Type != model.EventPowerCut || strings.Join(updated.Notificators, ",") != "mail" ||
 		updated.Description != "fast" {
 		t.Errorf("updated = %+v", updated)
 	}
@@ -99,7 +99,7 @@ func TestNotificationStoreIntegration(t *testing.T) {
 		t.Fatalf("assign notification twice: %v", err)
 	}
 
-	subscriptions, err := store.DeviceSubscriptions(ctx, deviceID, model.AlertPowerCut)
+	subscriptions, err := store.DeviceSubscriptions(ctx, deviceID, model.EventPowerCut)
 	if err != nil {
 		t.Fatalf("device subscriptions: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestNotificationStoreIntegration(t *testing.T) {
 		t.Fatalf("assign wildcard: %v", err)
 	}
 
-	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.AlertGeofenceEnter)
+	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.EventGeofenceEnter)
 	if err != nil {
 		t.Fatalf("device subscriptions: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestNotificationStoreIntegration(t *testing.T) {
 		t.Fatalf("wildcard subscriptions = %+v", subscriptions)
 	}
 
-	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.AlertPowerCut)
+	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.EventPowerCut)
 	if err != nil {
 		t.Fatalf("device subscriptions: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestNotificationStoreIntegration(t *testing.T) {
 	if _, err := store.UpdateUser(ctx, user.ID, model.UserUpdate{Disabled: &disabled}); err != nil {
 		t.Fatalf("disable user: %v", err)
 	}
-	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.AlertPowerCut)
+	subscriptions, err = store.DeviceSubscriptions(ctx, deviceID, model.EventPowerCut)
 	if err != nil {
 		t.Fatalf("device subscriptions after disable: %v", err)
 	}

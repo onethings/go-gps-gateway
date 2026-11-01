@@ -23,6 +23,9 @@ type Device struct {
 	Model      string
 	Protocol   string
 	Attributes map[string]any
+	// Status is the connection state the session manager last recorded:
+	// online while the device holds a connection, offline after it went away.
+	Status string
 	// LastUpdate is the newest device time stored for the device, zero when it
 	// has never reported a position.
 	LastUpdate time.Time

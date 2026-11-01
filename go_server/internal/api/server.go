@@ -30,9 +30,9 @@ const (
 	maxCommandLimit     = 1000
 )
 
-// AlertQuerier is the storage contract the alerts handler needs.
-type AlertQuerier interface {
-	QueryAlerts(ctx context.Context, filter model.AlertFilter) ([]model.Alert, error)
+// EventQuerier is the storage contract the alerts handler needs.
+type EventQuerier interface {
+	QueryEvents(ctx context.Context, filter model.EventFilter) ([]model.Event, error)
 }
 
 // CommandRouter encodes a command and delivers it to the device connection.
@@ -89,7 +89,7 @@ type DeviceOwnerStore interface {
 
 // Server holds the handlers and their configuration.
 type Server struct {
-	alerts        AlertQuerier
+	alerts        EventQuerier
 	positions     PositionQuerier
 	devices       DeviceStore
 	users         UserStore
@@ -206,7 +206,7 @@ func WithMetrics(set *metrics.Set) Option {
 }
 
 // NewServer creates the API handlers.
-func NewServer(alerts AlertQuerier, options ...Option) *Server {
+func NewServer(alerts EventQuerier, options ...Option) *Server {
 	server := &Server{
 		alerts:            alerts,
 		logf:              func(string, ...any) {},
@@ -225,6 +225,8 @@ func NewServer(alerts AlertQuerier, options ...Option) *Server {
 // ServeMux in this module already provides.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// /api/alerts is the previous name of /api/events and stays as an alias.
+	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/alerts", s.handleAlerts)
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
 	mux.HandleFunc("POST /api/devices", s.handleCreateDevice)
@@ -339,6 +341,24 @@ func writeForbiddenDevice(w http.ResponseWriter, deviceID int64) {
 	writeError(w, http.StatusForbidden, fmt.Errorf("device %d is not accessible", deviceID))
 }
 
+// eventResponse is one row of /api/events.
+type eventResponse struct {
+	ID         int64          `json:"id"`
+	DeviceID   int64          `json:"deviceId"`
+	PositionID int64          `json:"positionId,omitempty"`
+	Type       string         `json:"type"`
+	EventTime  time.Time      `json:"eventTime"`
+	GeofenceID int64          `json:"geofenceId,omitempty"`
+	Attributes map[string]any `json:"attributes,omitempty"`
+}
+
+type eventsResponse struct {
+	Events []eventResponse `json:"events"`
+	Count  int             `json:"count"`
+}
+
+// alertResponse is the same row in the vocabulary /api/alerts has always used.
+// The route is now an alias of /api/events, kept because the front end reads it.
 type alertResponse struct {
 	ID         int64          `json:"id"`
 	DeviceID   int64          `json:"deviceId"`
@@ -354,42 +374,76 @@ type alertsResponse struct {
 	Count  int             `json:"count"`
 }
 
+// handleAlerts serves the deprecated route: the same query as /api/events in the
+// envelope an alert client expects.
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, auth.ScopeReadAlerts) {
+	events, ok := s.queryEvents(w, r)
+	if !ok {
 		return
+	}
+
+	response := alertsResponse{Alerts: make([]alertResponse, 0, len(events)), Count: len(events)}
+	for _, event := range events {
+		response.Alerts = append(response.Alerts, alertResponse{
+			ID:         event.ID,
+			DeviceID:   event.DeviceID,
+			PositionID: event.PositionID,
+			Type:       event.Type,
+			AlertTime:  event.Time.UTC(),
+			GeofenceID: event.GeofenceID,
+			Attributes: event.Attributes,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// handleEvents serves /api/events, which replaced /api/alerts.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	events, ok := s.queryEvents(w, r)
+	if !ok {
+		return
+	}
+
+	response := eventsResponse{Events: make([]eventResponse, 0, len(events)), Count: len(events)}
+	for _, event := range events {
+		response.Events = append(response.Events, eventResponse{
+			ID:         event.ID,
+			DeviceID:   event.DeviceID,
+			PositionID: event.PositionID,
+			Type:       event.Type,
+			EventTime:  event.Time.UTC(),
+			GeofenceID: event.GeofenceID,
+			Attributes: event.Attributes,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// queryEvents authorises and runs the shared event query. It reports false when
+// it has already written the response.
+func (s *Server) queryEvents(w http.ResponseWriter, r *http.Request) ([]model.Event, bool) {
+	if !s.authorize(w, r, auth.ScopeReadAlerts) {
+		return nil, false
 	}
 	filter, err := alertFilter(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 	filter.DeviceIDs = s.deviceScope(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
-	alerts, err := s.alerts.QueryAlerts(ctx, filter)
+	events, err := s.alerts.QueryEvents(ctx, filter)
 	if err != nil {
 		// The database error stays in the log; the client only learns that the
 		// request failed.
-		s.logf("api: query alerts: %v", err)
+		s.logf("api: query events: %v", err)
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
-		return
+		return nil, false
 	}
-
-	response := alertsResponse{Alerts: make([]alertResponse, 0, len(alerts)), Count: len(alerts)}
-	for _, alert := range alerts {
-		response.Alerts = append(response.Alerts, alertResponse{
-			ID:         alert.ID,
-			DeviceID:   alert.DeviceID,
-			PositionID: alert.PositionID,
-			Type:       alert.Type,
-			AlertTime:  alert.Time.UTC(),
-			GeofenceID: alert.GeofenceID,
-			Attributes: alert.Attributes,
-		})
-	}
-	writeJSON(w, http.StatusOK, response)
+	return events, true
 }
 
 type positionResponse struct {
@@ -1006,9 +1060,9 @@ func commandFilter(r *http.Request) (model.CommandFilter, error) {
 //
 //	deviceId=7&type=deviceOverspeed,geofenceEnter
 //	from=2026-10-31T00:00:00Z&to=1780000000000&limit=50&offset=0
-func alertFilter(r *http.Request) (model.AlertFilter, error) {
+func alertFilter(r *http.Request) (model.EventFilter, error) {
 	query := r.URL.Query()
-	var filter model.AlertFilter
+	var filter model.EventFilter
 
 	deviceID, err := parseDeviceID(query)
 	if err != nil {

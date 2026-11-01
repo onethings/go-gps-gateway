@@ -76,7 +76,7 @@ func TestDispatcherDeliversToEveryChannel(t *testing.T) {
 			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
 		})
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, map[string]any{"speed": 31.5, "limit": float64(30)}))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, map[string]any{"speed": 31.5, "limit": float64(30)}))
 	closeDispatcher(t, dispatcher)
 
 	for _, notifier := range []*recordingNotifier{webhook, mailer} {
@@ -101,17 +101,17 @@ func TestDispatcherTypeFilter(t *testing.T) {
 	notifier := &recordingNotifier{name: "webhook"}
 	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: testDevice()}},
 		[]Channel{{Notifier: notifier, Defaults: []string{"https://example.com/hook"}, Attribute: AttrNotifyWebhook}},
-		WithTypes([]string{model.AlertPowerCut}))
+		WithTypes([]string{model.EventPowerCut}))
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
-	dispatcher.Enqueue(testAlert(model.AlertPowerCut, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventPowerCut, nil))
 	closeDispatcher(t, dispatcher)
 
 	calls := notifier.snapshot()
 	if len(calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(calls))
 	}
-	if got := calls[0].message.Alert.Type; got != model.AlertPowerCut {
+	if got := calls[0].message.Alert.Type; got != model.EventPowerCut {
 		t.Errorf("type = %q", got)
 	}
 }
@@ -132,15 +132,15 @@ func TestDispatcherPerDeviceRouting(t *testing.T) {
 			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
 		})
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
-	dispatcher.Enqueue(testAlert(model.AlertPowerCut, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventPowerCut, nil))
 	closeDispatcher(t, dispatcher)
 
 	webhookCalls := webhook.snapshot()
 	if len(webhookCalls) != 1 {
 		t.Fatalf("webhook calls = %d, want 1", len(webhookCalls))
 	}
-	if got := webhookCalls[0].message.Alert.Type; got != model.AlertPowerCut {
+	if got := webhookCalls[0].message.Alert.Type; got != model.EventPowerCut {
 		t.Errorf("webhook type = %q", got)
 	}
 	if got := webhookCalls[0].recipients; len(got) != 1 || got[0] != "https://device.example/hook" {
@@ -159,7 +159,7 @@ func TestDispatcherNotifyTypesNone(t *testing.T) {
 	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: device}},
 		[]Channel{{Notifier: notifier, Defaults: []string{"https://example.com/hook"}, Attribute: AttrNotifyWebhook}})
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 	closeDispatcher(t, dispatcher)
 
 	if calls := notifier.snapshot(); len(calls) != 0 {
@@ -175,15 +175,15 @@ func TestDispatcherNotifyTypesArray(t *testing.T) {
 	dispatcher := NewDispatcher(&fakeLookup{devices: map[int64]*model.Device{7: device}},
 		[]Channel{{Notifier: notifier, Defaults: []string{"https://example.com/hook"}, Attribute: AttrNotifyWebhook}})
 
-	dispatcher.Enqueue(testAlert(model.AlertGeofenceExit, map[string]any{"geofence": "depot"}))
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventGeofenceExit, map[string]any{"geofence": "depot"}))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 	closeDispatcher(t, dispatcher)
 
 	calls := notifier.snapshot()
 	if len(calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(calls))
 	}
-	if got := calls[0].message.Alert.Type; got != model.AlertGeofenceExit {
+	if got := calls[0].message.Alert.Type; got != model.EventGeofenceExit {
 		t.Errorf("type = %q", got)
 	}
 }
@@ -195,7 +195,7 @@ func TestDispatcherLookupFailureStillDelivers(t *testing.T) {
 		[]Channel{{Notifier: notifier, Defaults: []string{"https://example.com/hook"}, Attribute: AttrNotifyWebhook}},
 		WithLogger(func(string, ...any) { logged = true }))
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 	closeDispatcher(t, dispatcher)
 
 	if calls := notifier.snapshot(); len(calls) != 1 {
@@ -217,7 +217,7 @@ func TestDispatcherMetrics(t *testing.T) {
 			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
 		}, WithMetrics(meters), WithLogger(func(string, ...any) {}))
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 	closeDispatcher(t, dispatcher)
 
 	if got := meters.Notifications.With("webhook").Value(); got != 1 {
@@ -270,7 +270,7 @@ func TestDispatcherDropsWhenQueueFull(t *testing.T) {
 		WithMetrics(meters),
 		WithLogger(func(string, ...any) {}))
 
-	alert := testAlert(model.AlertOverspeed, nil)
+	alert := testAlert(model.EventDeviceOverspeed, nil)
 	dispatcher.Enqueue(alert)
 
 	select {
@@ -305,7 +305,7 @@ func TestDispatcherIgnoresEnqueueAfterClose(t *testing.T) {
 		[]Channel{{Notifier: notifier, Defaults: []string{"https://example.com/hook"}, Attribute: AttrNotifyWebhook}})
 
 	closeDispatcher(t, dispatcher)
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 
 	if got := dispatcher.Dropped(); got != 1 {
 		t.Errorf("dropped = %d, want 1", got)
@@ -317,7 +317,7 @@ func TestDispatcherIgnoresEnqueueAfterClose(t *testing.T) {
 
 func TestDispatcherWithoutChannelsDoesNothing(t *testing.T) {
 	dispatcher := NewDispatcher(nil, nil)
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 	closeDispatcher(t, dispatcher)
 
 	if got := dispatcher.Dropped(); got != 0 {
@@ -356,7 +356,7 @@ func TestDispatcherSubscriptionRouting(t *testing.T) {
 			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
 		}, WithSubscriptions(subscriptions))
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 	closeDispatcher(t, dispatcher)
 
 	mailCalls := mailer.snapshot()
@@ -390,7 +390,7 @@ func TestDispatcherSubscriptionsReplaceDefaults(t *testing.T) {
 			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
 		}, WithSubscriptions(subscriptions))
 
-	dispatcher.Enqueue(testAlert(model.AlertPowerCut, nil))
+	dispatcher.Enqueue(testAlert(model.EventPowerCut, nil))
 	closeDispatcher(t, dispatcher)
 
 	if calls := webhook.snapshot(); len(calls) != 0 {
@@ -419,7 +419,7 @@ func TestDispatcherDeviceAttributeBeatsSubscriptions(t *testing.T) {
 			{Notifier: mailer, Defaults: []string{"ops@example.com"}, Attribute: AttrNotifyEmail},
 		}, WithSubscriptions(subscriptions))
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 	closeDispatcher(t, dispatcher)
 
 	mailCalls := mailer.snapshot()
@@ -443,7 +443,7 @@ func TestDispatcherSubscriptionLookupFailureFallsBack(t *testing.T) {
 		WithSubscriptions(&fakeSubscriptions{err: errors.New("database down")}),
 		WithLogger(func(string, ...any) { logged = true }))
 
-	dispatcher.Enqueue(testAlert(model.AlertOverspeed, nil))
+	dispatcher.Enqueue(testAlert(model.EventDeviceOverspeed, nil))
 	closeDispatcher(t, dispatcher)
 
 	calls := notifier.snapshot()

@@ -16,12 +16,12 @@ import (
 
 type fakeQuerier struct {
 	mu      sync.Mutex
-	alerts  []model.Alert
+	alerts  []model.Event
 	err     error
-	filters []model.AlertFilter
+	filters []model.EventFilter
 }
 
-func (f *fakeQuerier) QueryAlerts(_ context.Context, filter model.AlertFilter) ([]model.Alert, error) {
+func (f *fakeQuerier) QueryEvents(_ context.Context, filter model.EventFilter) ([]model.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.filters = append(f.filters, filter)
@@ -31,7 +31,7 @@ func (f *fakeQuerier) QueryAlerts(_ context.Context, filter model.AlertFilter) (
 	return f.alerts, nil
 }
 
-func (f *fakeQuerier) lastFilter(t *testing.T) model.AlertFilter {
+func (f *fakeQuerier) lastFilter(t *testing.T) model.EventFilter {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -50,11 +50,11 @@ func get(t *testing.T, handler http.Handler, target string) *httptest.ResponseRe
 
 func TestAlertsResponse(t *testing.T) {
 	alertTime := time.Date(2026, 10, 31, 13, 2, 10, 0, time.UTC)
-	querier := &fakeQuerier{alerts: []model.Alert{{
+	querier := &fakeQuerier{alerts: []model.Event{{
 		ID:         3,
 		DeviceID:   7,
 		PositionID: 11,
-		Type:       model.AlertGeofenceEnter,
+		Type:       model.EventGeofenceEnter,
 		Time:       alertTime,
 		GeofenceID: 5,
 		Attributes: map[string]any{"geofence": "depot"},
@@ -78,7 +78,7 @@ func TestAlertsResponse(t *testing.T) {
 	}
 	alert := response.Alerts[0]
 	if alert.ID != 3 || alert.DeviceID != 7 || alert.PositionID != 11 ||
-		alert.Type != model.AlertGeofenceEnter || alert.GeofenceID != 5 {
+		alert.Type != model.EventGeofenceEnter || alert.GeofenceID != 5 {
 		t.Errorf("alert = %+v", alert)
 	}
 	if !alert.AlertTime.Equal(alertTime) {

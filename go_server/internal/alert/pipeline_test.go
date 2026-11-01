@@ -11,13 +11,13 @@ import (
 
 type recordingWriter struct {
 	mu      sync.Mutex
-	batches [][]*model.Alert
+	batches [][]*model.Report
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
-func (w *recordingWriter) InsertAlerts(_ context.Context, alerts []*model.Alert) error {
+func (w *recordingWriter) InsertReports(_ context.Context, reports []*model.Report) error {
 	w.once.Do(func() {
 		if w.started != nil {
 			close(w.started)
@@ -29,16 +29,20 @@ func (w *recordingWriter) InsertAlerts(_ context.Context, alerts []*model.Alert)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.batches = append(w.batches, append([]*model.Alert(nil), alerts...))
+	w.batches = append(w.batches, append([]*model.Report(nil), reports...))
 	return nil
 }
 
-func (w *recordingWriter) snapshot() ([][]*model.Alert, int) {
+// snapshot returns the batches and how many events they carried in total.
+func (w *recordingWriter) snapshot() ([][]*model.Report, int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
 	total := 0
 	for _, batch := range w.batches {
-		total += len(batch)
+		for _, report := range batch {
+			total += len(report.Events)
+		}
 	}
 	return w.batches, total
 }
@@ -56,7 +60,7 @@ func (s *recordingSink) Handle(*model.Position) error {
 	return s.err
 }
 
-func TestPipelineWritesAlertsAndForwardsPositions(t *testing.T) {
+func TestPipelineQueuesReportsAndForwardsQuietPositions(t *testing.T) {
 	writer := &recordingWriter{}
 	next := &recordingSink{}
 	engine := New(Config{OverspeedKnots: 30}, nil)
@@ -70,22 +74,36 @@ func TestPipelineWritesAlertsAndForwardsPositions(t *testing.T) {
 		}
 	}
 
+	// A position that raises nothing still goes to the next sink.
+	if err := pipeline.Handle(speed(1)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := pipeline.Close(ctx); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
-	if next.positions != 3 {
-		t.Errorf("forwarded positions = %d, want 3", next.positions)
+	// The three speeding positions are stored with their event, so they do not
+	// reach the forwarding sink: the writer owns them.
+	if next.positions != 1 {
+		t.Errorf("forwarded positions = %d, want 1", next.positions)
 	}
 	batches, total := writer.snapshot()
 	if total != 3 {
-		t.Fatalf("written alerts = %d, want 3", total)
+		t.Fatalf("written events = %d, want 3", total)
 	}
 	for i, batch := range batches {
 		if len(batch) > 10 {
-			t.Errorf("batch %d has %d alerts", i, len(batch))
+			t.Errorf("batch %d has %d reports", i, len(batch))
+		}
+	}
+	for _, batch := range batches {
+		for _, report := range batch {
+			if report.Position == nil || report.Position.DeviceID == 0 {
+				t.Errorf("report without a position: %#v", report)
+			}
 		}
 	}
 	if pipeline.Dropped() != 0 {

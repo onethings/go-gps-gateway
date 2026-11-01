@@ -61,7 +61,7 @@ func TestPositionQueryScoped(t *testing.T) {
 }
 
 func TestAlertQueryScoped(t *testing.T) {
-	query, args := alertQuery(model.AlertFilter{DeviceIDs: []int64{7}})
+	query, args := eventQuery(model.EventFilter{DeviceIDs: []int64{7}})
 
 	if !strings.Contains(query, "WHERE device_id IN ($1)") {
 		t.Errorf("query = %s", query)

@@ -22,7 +22,7 @@ func TestPipelineMetrics(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	if got := meters.Alerts.With(model.AlertOverspeed).Value(); got != 2 {
+	if got := meters.Alerts.With(model.EventDeviceOverspeed).Value(); got != 2 {
 		t.Errorf("overspeed alerts = %d, want 2", got)
 	}
 	if got := meters.AlertsDropped.Value(); got != 0 {

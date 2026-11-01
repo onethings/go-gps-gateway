@@ -132,6 +132,29 @@ const (
 	ForwardBackoff        = "forward.backoff"
 	ForwardTimeout        = "forward.timeout"
 
+	// Geographic services. They are read through their own helper because a
+	// service is only enabled when it has everything it needs.
+	GeocoderEnable    = "geocoder.enable"
+	GeocoderType      = "geocoder.type"
+	GeocoderURL       = "geocoder.url"
+	GeocoderKey       = "geocoder.key"
+	GeocoderLanguage  = "geocoder.language"
+	GeocoderCache     = "geocoder.cache"
+	GeocoderCacheFile = "geocoder.cache.file"
+	GeocoderTimeout   = "geocoder.timeout"
+	SpeedLimitEnable  = "speedlimit.enable"
+	SpeedLimitURL     = "speedlimit.url"
+	SpeedLimitRadius  = "speedlimit.radius"
+	SpeedLimitCache   = "speedlimit.cache"
+	MapMatcherEnable  = "mapmatcher.enable"
+	MapMatcherURL     = "mapmatcher.url"
+	MapMatcherKey     = "mapmatcher.key"
+	MapMatcherRadius  = "mapmatcher.radius"
+	GeolocationEnable = "geolocation.enable"
+	GeolocationURL    = "geolocation.url"
+	GeolocationKey    = "geolocation.key"
+	GeolocationCache  = "geolocation.cache"
+
 	// TLS certificates for the protocol listeners. The Java server configures
 	// these on the web server only, so this is a Go addition.
 	ServerTLSCertificate = "server.tls.certificate"
@@ -259,6 +282,27 @@ var KnownKeys = []string{
 
 	ServerTLSCertificate,
 	ServerTLSKey,
+
+	GeocoderEnable,
+	GeocoderType,
+	GeocoderURL,
+	GeocoderKey,
+	GeocoderLanguage,
+	GeocoderCache,
+	GeocoderCacheFile,
+	GeocoderTimeout,
+	SpeedLimitEnable,
+	SpeedLimitURL,
+	SpeedLimitRadius,
+	SpeedLimitCache,
+	MapMatcherEnable,
+	MapMatcherURL,
+	MapMatcherKey,
+	MapMatcherRadius,
+	GeolocationEnable,
+	GeolocationURL,
+	GeolocationKey,
+	GeolocationCache,
 }
 
 // Keys a protocol section may set. They are resolved through Protocol, which

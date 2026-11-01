@@ -641,3 +641,128 @@ func TestNotificatorsAnnouncementFilter(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 }
+
+// fakeGeocoder answers with a fixed address or a fixed error.
+type fakeGeocoder struct {
+	address string
+	err     error
+}
+
+func (f fakeGeocoder) Address(context.Context, float64, float64) (string, error) {
+	return f.address, f.err
+}
+
+func TestServerGeocode(t *testing.T) {
+	handler := NewServer(nil,
+		WithGeocoder(fakeGeocoder{address: "Riga, Latvia"}),
+		withTestToken(auth.NewPrincipal(1, false,
+			[]auth.Scope{auth.ScopeReadPositions}, nil)),
+	).Handler()
+
+	recorder := withToken(t, handler, http.MethodGet,
+		"/api/server/geocode?latitude=54.94535&longitude=24.01762", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", recorder.Code, recorder.Body)
+	}
+	var address string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &address); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if address != "Riga, Latvia" {
+		t.Fatalf("address = %q", address)
+	}
+}
+
+func TestServerGeocodeWithoutAService(t *testing.T) {
+	handler := NewServer(nil, withTestToken(auth.AdminPrincipal())).Handler()
+	recorder := withToken(t, handler, http.MethodGet,
+		"/api/server/geocode?latitude=1&longitude=2", "")
+	if recorder.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", recorder.Code)
+	}
+}
+
+// fakeSpeedLimits answers with a fixed limit, or reports it does not know.
+type fakeSpeedLimits struct {
+	limit float64
+	known bool
+	err   error
+}
+
+func (f fakeSpeedLimits) Limit(context.Context, float64, float64) (float64, bool, error) {
+	return f.limit, f.known, f.err
+}
+
+func TestServerSpeedLimit(t *testing.T) {
+	handler := NewServer(nil,
+		WithSpeedLimits(fakeSpeedLimits{limit: 26.99, known: true}),
+		withTestToken(auth.NewPrincipal(1, false,
+			[]auth.Scope{auth.ScopeReadPositions}, nil)),
+	).Handler()
+
+	recorder := withToken(t, handler, http.MethodGet,
+		"/api/server/speedlimit?latitude=54.94535&longitude=24.01762", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", recorder.Code, recorder.Body)
+	}
+	var limit float64
+	if err := json.Unmarshal(recorder.Body.Bytes(), &limit); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if limit != 26.99 {
+		t.Fatalf("limit = %v", limit)
+	}
+
+	unknown := NewServer(nil,
+		WithSpeedLimits(fakeSpeedLimits{}),
+		withTestToken(auth.AdminPrincipal()),
+	).Handler()
+	if status := withToken(t, unknown, http.MethodGet,
+		"/api/server/speedlimit?latitude=1&longitude=2", "").Code; status != http.StatusNotFound {
+		t.Fatalf("unknown limit status = %d, want 404", status)
+	}
+}
+
+// fakeGeolocator answers a fixed coordinate.
+type fakeGeolocator struct {
+	latitude  float64
+	longitude float64
+	found     bool
+}
+
+func (f fakeGeolocator) Locate(context.Context, *model.Network) (float64, float64, bool) {
+	return f.latitude, f.longitude, f.found
+}
+
+func TestServerGeolocation(t *testing.T) {
+	handler := NewServer(nil,
+		WithGeolocation(fakeGeolocator{latitude: 54.9, longitude: 24.0, found: true}),
+		withTestToken(auth.NewPrincipal(1, false,
+			[]auth.Scope{auth.ScopeReadPositions}, nil)),
+	).Handler()
+
+	body := `{"homeMobileCountryCode":247,"homeMobileNetworkCode":1,"radioType":"lte",
+		"cellTowers":[{"cellId":2000,"locationAreaCode":100,"mobileCountryCode":247,"mobileNetworkCode":1}]}`
+	recorder := withToken(t, handler, http.MethodPost, "/api/server/geolocation", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", recorder.Code, recorder.Body)
+	}
+	var response map[string]float64
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if response["latitude"] != 54.9 || response["longitude"] != 24.0 {
+		t.Fatalf("response = %v", response)
+	}
+}
+
+func TestServerGeolocationNeedsCells(t *testing.T) {
+	handler := NewServer(nil,
+		WithGeolocation(fakeGeolocator{found: true}),
+		withTestToken(auth.AdminPrincipal()),
+	).Handler()
+
+	if status := withToken(t, handler, http.MethodPost, "/api/server/geolocation", `{}`).Code; status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+}

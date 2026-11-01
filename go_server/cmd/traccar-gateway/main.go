@@ -26,6 +26,7 @@ import (
 	"traccar-server_go/go_server/internal/eventctx"
 	"traccar-server_go/go_server/internal/forward"
 	"traccar-server_go/go_server/internal/gateway"
+	"traccar-server_go/go_server/internal/geo"
 	"traccar-server_go/go_server/internal/handler"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
@@ -96,16 +97,19 @@ func main() {
 	socketHub := api.NewSocketHub()
 
 	var (
-		directory  gateway.DeviceDirectory
-		sink       gateway.Sink
-		batcher    *postgres.BatchSink
-		store      *postgres.Store
-		pipeline   *alert.Pipeline
-		dispatcher *notify.Dispatcher
-		motion     *session.Motion
-		sessions   *session.Manager
-		state      *eventState
-		forwarder  *forward.Service
+		directory   gateway.DeviceDirectory
+		sink        gateway.Sink
+		batcher     *postgres.BatchSink
+		store       *postgres.Store
+		pipeline    *alert.Pipeline
+		dispatcher  *notify.Dispatcher
+		motion      *session.Motion
+		sessions    *session.Manager
+		state       *eventState
+		forwarder   *forward.Service
+		speedLimit  *geo.SpeedLimits
+		locator     *geo.Locator
+		geoSettings = geo.ReadSettings(settings.Config)
 	)
 
 	if settings.DatabaseURL != "" {
@@ -225,6 +229,19 @@ func main() {
 			LastPosition:  state.LastPosition,
 		}
 
+		// The speed limit service only ever answers from its cache here; a miss
+		// schedules a background request, so a slow third party never delays the
+		// ingest.
+		stages := map[string]handler.PositionHandler{}
+		if geoSettings.SpeedLimit.Enabled {
+			speedLimit = geo.NewSpeedLimits(geoSettings, nil, log.Printf)
+			if err := speedLimit.Load(); err != nil {
+				log.Printf("geo: load speed limit cache: %v", err)
+			}
+			stages[handler.StageSpeedLimit] = geo.Stage{Limits: speedLimit}
+			log.Printf("geo: speed limits enabled via %s", geoSettings.SpeedLimit.URL)
+		}
+
 		// The chain is the ProcessingHandler: the alert pipeline is the business
 		// stage, the M4-1 rules sit on their own stages and the terminal writes
 		// the position once, together with every event raised for it.
@@ -238,7 +255,7 @@ func main() {
 				pipeline.EnqueueReport(position, events)
 				return nil
 			},
-			Stages: map[string]handler.PositionHandler{
+			Stages: mergeStages(stages, map[string]handler.PositionHandler{
 				handler.StageMotion: motion,
 				handler.StageAlertEvent: handler.RuleStage{
 					Stage: handler.StageAlertEvent,
@@ -268,7 +285,7 @@ func main() {
 					Stage: handler.StageMedia,
 					Rules: []handler.EventRule{&handler.MediaRule{}, &handler.CommandResultRule{}},
 				},
-			},
+			}),
 		})
 		if err != nil {
 			log.Fatalf("handler: %v", err)
@@ -432,6 +449,25 @@ func main() {
 				api.WithWebPath(settings.WebPath),
 				api.WithReboot(stop),
 			}
+			if geoSettings.SpeedLimit.Enabled {
+				options = append(options, api.WithSpeedLimits(speedLimitGetter{speedLimit: speedLimit}))
+			}
+			if geoSettings.Geolocation.Enabled {
+				locator = geo.NewLocator(geoSettings, nil)
+				if err := locator.Load(); err != nil {
+					log.Printf("geo: load geolocation cache: %v", err)
+				}
+				options = append(options, api.WithGeolocation(locator))
+				log.Print("geo: cell tower geolocation enabled")
+			}
+			if geoSettings.Geocoder.Enabled {
+				geocoder := geo.NewGeocoder(geoSettings, nil)
+				if err := geocoder.Load(); err != nil {
+					log.Printf("geo: load geocoder cache: %v", err)
+				}
+				options = append(options, api.WithGeocoder(geocoder))
+				log.Printf("geo: reverse geocoding enabled (%s)", geoSettings.Geocoder.Type)
+			}
 			if mailer != nil {
 				options = append(options, api.WithPasswordReset(notify.NewPasswordResetMail(mailer)))
 				options = append(options, api.WithReportMailer(reportMailer{mail: mailer}))
@@ -499,6 +535,19 @@ func main() {
 		}
 	}
 
+	// The speed limit stage sits in the chain the pipeline closes, so its
+	// background requests are drained next.
+	if speedLimit != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := speedLimit.Close(shutdownCtx); err != nil {
+			log.Printf("geo: speed limits: %v", err)
+		}
+		cancel()
+		if err := speedLimit.Save(); err != nil {
+			log.Printf("geo: save speed limit cache: %v", err)
+		}
+	}
+
 	// The pipeline feeds the notification queue, so it has to stop first.
 	if dispatcher != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -537,6 +586,33 @@ func main() {
 			log.Printf("dropped %d positions because the queue was full", dropped)
 		}
 	}
+}
+
+// mergeStages combines the stages the pipeline always installs with the ones a
+// configured service adds, so enabling a service never silently replaces a rule.
+func mergeStages(base, extra map[string]handler.PositionHandler) map[string]handler.PositionHandler {
+	merged := make(map[string]handler.PositionHandler, len(base)+len(extra))
+	for name, stage := range extra {
+		merged[name] = stage
+	}
+	for name, stage := range base {
+		merged[name] = stage
+	}
+	return merged
+}
+
+// speedLimitGetter adapts the cached limit service to the REST route, which
+// wants to wait for the answer while the ingest path does not.
+type speedLimitGetter struct {
+	speedLimit *geo.SpeedLimits
+}
+
+// Limit implements api.SpeedLimits.
+func (g speedLimitGetter) Limit(ctx context.Context, latitude, longitude float64) (float64, bool, error) {
+	if g.speedLimit == nil {
+		return 0, false, nil
+	}
+	return g.speedLimit.Fetch(ctx, latitude, longitude)
 }
 
 // issueAPIToken prints a fresh token for an existing user. Only the SHA-256

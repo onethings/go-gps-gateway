@@ -136,6 +136,8 @@ type Server struct {
 	statistics       StatisticsStore
 	auditStore       AuditStore
 	geocoder         Geocoder
+	speedLimits      SpeedLimits
+	geolocator       Geolocator
 	reboot           func()
 	notificators     []string
 	notifierSender   NotificationSender

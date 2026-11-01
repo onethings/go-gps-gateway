@@ -23,6 +23,9 @@ const (
 	KeyRoaming    = "roaming"
 	KeyEvent      = "event"
 	KeyAlarm      = "alarm"
+	// KeySpeedLimit is the posted limit of the road the device is on, in knots,
+	// written by the geographic speed limit service.
+	KeySpeedLimit = "speedLimit"
 	KeyStatus     = "status"
 	KeyOdometer   = "odometer"
 	KeyHours      = "hours"

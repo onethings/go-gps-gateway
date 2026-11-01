@@ -89,9 +89,30 @@ func WithAudit(store AuditStore) Option {
 	return func(s *Server) { s.auditStore = store }
 }
 
+// SpeedLimits resolves the posted limit of a coordinate. It is the speed limit
+// service of M6-3; the route tolerates a miss as "unknown".
+type SpeedLimits interface {
+	Limit(ctx context.Context, latitude, longitude float64) (float64, bool, error)
+}
+
+// Geolocator turns a cell tower group into a coordinate.
+type Geolocator interface {
+	Locate(ctx context.Context, network *model.Network) (float64, float64, bool)
+}
+
 // WithGeocoder enables GET /api/server/geocode.
 func WithGeocoder(geocoder Geocoder) Option {
 	return func(s *Server) { s.geocoder = geocoder }
+}
+
+// WithSpeedLimits enables GET /api/server/speedlimit.
+func WithSpeedLimits(limits SpeedLimits) Option {
+	return func(s *Server) { s.speedLimits = limits }
+}
+
+// WithGeolocation enables POST /api/server/geolocation.
+func WithGeolocation(locator Geolocator) Option {
+	return func(s *Server) { s.geolocator = locator }
 }
 
 // WithReboot installs the callback POST /api/server/reboot calls. Without it the
@@ -593,6 +614,76 @@ func (s *Server) handleServerGeocode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, address)
 }
 
+// handleServerSpeedLimit answers the posted limit of a coordinate. The service
+// is cached and may answer "unknown", which the front end shows as no limit.
+func (s *Server) handleServerSpeedLimit(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.ScopeReadPositions) {
+		return
+	}
+	if s.speedLimits == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("speed limits are not enabled"))
+		return
+	}
+	query := r.URL.Query()
+	latitude, err := floatQuery(query, "latitude")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	longitude, err := floatQuery(query, "longitude")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	limit, known, err := s.speedLimits.Limit(ctx, latitude, longitude)
+	if err != nil {
+		s.logf("api: speedlimit %f,%f: %v", latitude, longitude, err)
+		writeError(w, http.StatusBadGateway, errors.New("the speed limit service is unavailable"))
+		return
+	}
+	if !known {
+		writeError(w, http.StatusNotFound, errors.New("no speed limit is known for that position"))
+		return
+	}
+	writeJSON(w, http.StatusOK, limit)
+}
+
+// handleServerGeolocation locates a cell tower group. It is a Go addition: the
+// Java server only uses the service from its decoders.
+func (s *Server) handleServerGeolocation(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.ScopeReadPositions) {
+		return
+	}
+	if s.geolocator == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("geolocation is not enabled"))
+		return
+	}
+
+	var network model.Network
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxServerBody)).Decode(&network); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if network.IsEmpty() {
+		writeError(w, http.StatusBadRequest, errors.New("cellTowers is required"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	latitude, longitude, found := s.geolocator.Locate(ctx, &network)
+	if !found {
+		writeError(w, http.StatusNotFound, errors.New("the position of the cell towers is unknown"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]float64{"latitude": latitude, "longitude": longitude})
+}
+
 func floatQuery(values url.Values, name string) (float64, error) {
 	raw := values.Get(name)
 	if raw == "" {
@@ -902,6 +993,8 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/server", s.handleUpdateServer)
 	mux.HandleFunc("GET /api/server/timezones", s.handleServerTimezones)
 	mux.HandleFunc("GET /api/server/geocode", s.handleServerGeocode)
+	mux.HandleFunc("GET /api/server/speedlimit", s.handleServerSpeedLimit)
+	mux.HandleFunc("POST /api/server/geolocation", s.handleServerGeolocation)
 	mux.HandleFunc("GET /api/server/gc", s.handleServerGC)
 	mux.HandleFunc("POST /api/server/reboot", s.handleServerReboot)
 	mux.HandleFunc("POST /api/server/file/{path...}", s.handleServerFile)

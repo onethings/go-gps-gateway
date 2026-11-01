@@ -74,6 +74,8 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
 | `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）、`GET /api/socket`（WebSocket 推播）；認證 / scope / 裝置擁有權 |
+| `internal/geo`                   | 地理加值：TTL + 檔案快取、反向地理編碼（Nominatim / Google）、速限（Overpass）、地圖吸附（Mapbox）、基地台定位（Google）                                                                                                |
+| `internal/report`                | 報表：route / trips / stops / summary / events / geofences / devices / combined，CSV / GPX / KML / XLSX 匯出                                                                                                          |
 | `internal/websocket`             | RFC 6455 伺服器端子集：握手、文字 / 二進位訊息與 fragmentation、ping / pong、close（無 extension）  |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                                                                                                                                              |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                                                                                                                                                           |
@@ -1354,7 +1356,7 @@ scrape_configs:
 | 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | json / url / mqtt / redis / wialon（`internal/forward`，每個目的地一條佇列 + 退避重試） | amqp / kafka                                                                                                           |
 | 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | route / trips / stops / summary / events / geofences / devices / combined + CSV / GPX / KML / XLSX | 油耗事件差值、calendar 過濾                                                                                            |
 | 排程     | `schedule/` 8 個 task                                                                               | 無                                                           | 全部                                                                                                                   |
-| 地理加值 | 28 個 geocoder 檔、`speedlimit/`、`mapmatcher/`、`geolocation/`                                     | 無                                                           | 全部                                                                                                                   |
+| 地理加值 | 28 個 geocoder 檔、`speedlimit/`、`mapmatcher/`、`geolocation/`                                     | Nominatim / Google geocoder、Overpass 速限、Mapbox 吸附、Google 基地台定位，全部有 TTL + 檔案快取 | geocoder 只剩 2 家；matcher 沒有消費端                                                                                 |
 | 設定     | `Config` + 267 個 `Keys`，支援 `protocol.<name>.<key>`                                              | 38 個 command line flag                                      | 無設定檔、無 per-protocol、無動態重載                                                                                  |
 | 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | `internal/websocket` + `/api/socket`：位置 / 事件 / 裝置狀態  | 沒有 log 串流與 multi-node broadcast（母本 `BaseBroadcastService`）                                                    |
 | 安全     | token、OIDC、LDAP、`api/signature`                                                                  | token、密碼登入                                              | OIDC / LDAP / 簽章                                                                                                     |
@@ -1733,7 +1735,27 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
     「看起來能跑但數值錯」的解碼器，因此先留白並在本節標明，等取得向量再補。
   - 偏差：四位元組 encoder（下發指令）還沒做，四家目前都只解上行；`gps103` 的 ack 只回心跳的
     `**,imei:<id>;B`。
-- [ ] **M6-3 地理加值**：geocoder（先 2 個）、speedlimit（Overpass）、mapmatcher、geolocation（cell tower）。外部服務要有 key 缺省與離線快取，不能讓它擋住 ingest。
+- [x] **M6-3 地理加值**：geocoder（先 2 個）、speedlimit（Overpass）、mapmatcher、geolocation（cell tower）。外部服務要有 key 缺省與離線快取，不能讓它擋住 ingest。
+  - `internal/geo/cache.go`：TTL 快取（預設 24h、上限 1 萬筆、滿了丟最早過期的），可持久化成
+    JSON（`geocoder.cache.file`，寫入用 `.tmp` + `rename`），重啟不會把已經付費的答案丟掉。
+  - `Geocoder`：`nominatim`（預設，只要 User-Agent）與 `google`（`geocoder.key`）。REST 走既有的
+    `GET /api/server/geocode`，`/api/server` 的 `geocoderEnabled` 跟著開關。
+  - `SpeedLimits`：Overpass `way(around:…) [highway][maxspeed]`，多條路取**最低**速限，mph 換算成
+    knots（位置的 speed 也是 knots，超速規則可直接比）。ingest 路徑只讀快取（`Lookup`，miss 只排
+    背景查詢），REST `GET /api/server/speedlimit` 才用會等的 `Fetch`。
+  - `Locator`：Google Geolocation API，`considerIp=false`（不然未知裝置會全部落在機房），用
+    cell 當 key 快取；Go 專有的 `POST /api/server/geolocation` 讓這條服務能被呼叫。
+  - `Matcher`：Mapbox map matching（`mapmatcher.key`，Mapbox 要吃 lon,lat 順序），有測試但**目前
+    沒有呼叫端**：母本用它的是 route 報表，這個 repo 的 route 報表還沒接吸附。
+  - 設定：`geocoder.enable|type|url|key|language|cache`、`geocoder.cache.file`、`geocoder.timeout`、
+    `speedlimit.enable|url|radius|cache`、`mapmatcher.enable|url|key|radius`、
+    `geolocation.enable|url|key|cache`。沒給 key 的服務一律視為關閉並在啟動時講一次，不會每個請求
+    都去撞牆。
+  - 測試：`internal/geo/geo_test.go`（兩家 geocoder、429 失敗、速限非阻塞 + 快取 + 無路可查、
+    maxspeed 單位、stage 寫屬性、cell 快取、mapbox 座標順序、快取持久化 / 過期、設定缺 key 視為
+    關閉）、`internal/api/admin_test.go` 的三條新路由。全部用假 `http.RoundTripper`，不連外。
+  - 偏差：mapmatcher 沒有消費端；geocoder 沒有 Java 的 `geocoder.format` 與多語系回退；speedlimit
+    只查 Overpass，沒有母本的其他 provider。
 
 ### M7 運維與規模（M）
 

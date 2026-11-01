@@ -166,6 +166,10 @@ const (
 	ScheduleReports         = "schedule.reports.interval"
 	ScheduleHealth          = "schedule.health.interval"
 
+	// MediaPath is where the uploaded files are stored. An empty path disables
+	// the media routes.
+	MediaPath = "media.path"
+
 	// TLS certificates for the protocol listeners. The Java server configures
 	// these on the web server only, so this is a Go addition.
 	ServerTLSCertificate = "server.tls.certificate"
@@ -316,6 +320,7 @@ var KnownKeys = []string{
 	GeolocationCache,
 
 	StatisticsInterval,
+	MediaPath,
 	ScheduleExpiration,
 	ScheduleCleanup,
 	ScheduleActionRetention,

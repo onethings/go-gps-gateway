@@ -28,13 +28,14 @@ import (
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/geo"
 	"traccar-server_go/go_server/internal/handler"
+	"traccar-server_go/go_server/internal/media"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/notify"
 	"traccar-server_go/go_server/internal/report"
 	"traccar-server_go/go_server/internal/schedule"
-	"traccar-server_go/go_server/internal/stats"
 	"traccar-server_go/go_server/internal/session"
+	"traccar-server_go/go_server/internal/stats"
 	"traccar-server_go/go_server/internal/storage/postgres"
 )
 
@@ -99,20 +100,21 @@ func main() {
 	socketHub := api.NewSocketHub()
 
 	var (
-		directory   gateway.DeviceDirectory
-		sink        gateway.Sink
-		batcher     *postgres.BatchSink
-		store       *postgres.Store
-		pipeline    *alert.Pipeline
-		dispatcher  *notify.Dispatcher
-		motion      *session.Motion
-		sessions    *session.Manager
-		state       *eventState
-		forwarder   *forward.Service
-		speedLimit  *geo.SpeedLimits
-		locator     *geo.Locator
-		scheduler   *schedule.Scheduler
-		geoSettings = geo.ReadSettings(settings.Config)
+		directory     gateway.DeviceDirectory
+		sink          gateway.Sink
+		batcher       *postgres.BatchSink
+		store         *postgres.Store
+		pipeline      *alert.Pipeline
+		dispatcher    *notify.Dispatcher
+		motion        *session.Motion
+		sessions      *session.Manager
+		state         *eventState
+		forwarder     *forward.Service
+		speedLimit    *geo.SpeedLimits
+		locator       *geo.Locator
+		scheduler     *schedule.Scheduler
+		geoSettings   = geo.ReadSettings(settings.Config)
+		mediaSettings = readMediaSettings(settings.Config)
 	)
 
 	if settings.DatabaseURL != "" {
@@ -493,6 +495,11 @@ func main() {
 				log.Print("geo: cell tower geolocation enabled")
 			}
 			options = append(options, api.WithRequestCounter(meters.Requests))
+			if mediaSettings.Enabled {
+				manager := &media.Manager{Store: store, Directory: mediaSettings.Directory}
+				options = append(options, api.WithMedia(store, manager))
+				log.Printf("media: storing uploads in %s", mediaSettings.Directory)
+			}
 			if geoSettings.Geocoder.Enabled {
 				geocoder := geo.NewGeocoder(geoSettings, nil)
 				geocoder.OnRequest = meters.GeocoderRequests.Inc

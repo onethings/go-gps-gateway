@@ -139,6 +139,8 @@ type Server struct {
 	speedLimits      SpeedLimits
 	geolocator       Geolocator
 	requestCounter   Counter
+	media            MediaStore
+	mediaFiles       MediaFiles
 	reboot           func()
 	notificators     []string
 	notifierSender   NotificationSender
@@ -337,6 +339,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerResourceRoutes(mux)
 
 	s.registerAdminRoutes(mux)
+	s.registerMediaRoutes(mux)
 
 	var handler http.Handler = mux
 	if s.apiKey != "" || s.tokens != nil {

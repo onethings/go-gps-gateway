@@ -74,6 +74,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
 | `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）、`GET /api/socket`（WebSocket 推播）；認證 / scope / 裝置擁有權 |
+| `internal/media`                 | 媒體檔案：上傳後寫入 `media.path`，`media` 表存索引，REST 列表 / 下載 / 刪除                                                                         |
 | `internal/stats`                 | 統計歷史：把 process 計數器（REST 請求、frame、位置、通知、地理查詢）換算成 `statistics` 的每分鐘增量列                                                                                                                 |
 | `internal/schedule`              | 週期性維護：到期停用帳號、清過期 token / 重設碼 / audit、排程報表（CSV 附件 email）、DB health check                                                                                                                     |
 | `internal/geo`                   | 地理加值：TTL + 檔案快取、反向地理編碼（Nominatim / Google）、速限（Overpass）、地圖吸附（Mapbox）、基地台定位（Google）                                                                                                |
@@ -1352,7 +1353,7 @@ scrape_configs:
 | 資料模型 | `model/` 40 個類別                                                                                  | `internal/model` 18 檔 33 個型別（含 Group / Geofence / Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute） | 缺 media / geocoder / forward 等週邊型別                                                                               |
 | 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL + `resourceSpec` 共用 CRUD，19 張表                 | 缺的 31 張以 M4–M6 的週邊為主，且沒有通用查詢建構器                                                                     |
 | 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + 通用 `permissions` 表（user / group / device → 任何資源），group 最多三層 | 缺 `managedUser`（管理員代管下屬）與分享帳號到期自動清理                                                               |
-| REST     | 25 個 resource、81 個端點                                                                           | 110+ 條路由（資源 CRUD、單筆裝置 / 事件、四種位置匯出、WebSocket、protocol / server / session / statistics / audit、commands 下發） | 報表、媒體與 stream 端點見 M5 / M7-3                                                                                  |
+| REST     | 25 個 resource、81 個端點                                                                           | 120+ 條路由（資源 CRUD、單筆裝置 / 事件、四種位置匯出、WebSocket、protocol / server / session / statistics / audit、commands 下發、報表、媒體） | 影像串流端點                                                                                                            |
 | 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 25 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名） | 日曆限制與 media 檔案欄位待 M7-3                                                                                       |
 | 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email + telegram / pushover / sms（HTTP / SNS）/ firebase / traccar push / whatsapp + Velocity 子集模板 | `command` notificator（告警轉命令）還沒接                                                              |
 | 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | json / url / mqtt / redis / wialon（`internal/forward`，每個目的地一條佇列 + 退避重試） | amqp / kafka                                                                                                           |
@@ -1362,7 +1363,7 @@ scrape_configs:
 | 設定     | `Config` + 267 個 `Keys`，支援 `protocol.<name>.<key>`                                              | 38 個 command line flag                                      | 無設定檔、無 per-protocol、無動態重載                                                                                  |
 | 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | `internal/websocket` + `/api/socket`：位置 / 事件 / 裝置狀態  | 沒有 log 串流與 multi-node broadcast（母本 `BaseBroadcastService`）                                                    |
 | 安全     | token、OIDC、LDAP、`api/signature`                                                                  | token、密碼登入                                              | OIDC / LDAP / 簽章                                                                                                     |
-| 媒體     | `media/`、`MediaEventHandler`、`VideoStreamResource`                                                | 無                                                           | 全部                                                                                                                   |
+| 媒體     | `media/`、`MediaEventHandler`、`VideoStreamResource`                                                | 上傳 / 列表 / 下載 / 刪除（`internal/media` + `/api/media`），`MediaRule` 已有 | 影像串流                                                                                                               |
 | 歷史統計 | `tc_statistics` + `StatisticsManager`                                                               | `statistics` 每分鐘增量列（`internal/stats`）+ `/metrics`（即時） | device 等級的細分                                                                                                      |
 
 Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純函式（`[]byte` → `*model.Position`，可用 Java 測試向量直接斷言）、
@@ -1795,7 +1796,21 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
   - 設定：`statistics.interval`（duration，0 = 只留 `/metrics`），也接受 `-statistics-interval`。
   - 測試：`internal/stats/writer_test.go`（首次全量、次次增量、計數器重設、store 失敗、Run 直到取消）。
   - 偏差：`active_*` 是「線上裝置 / 擁有者」而非母本的 session 數；沒有 `DatabaseExportTask`。
-- [ ] **M7-3 媒體**：`media/`、`MediaEventHandler`、`VideoStreamResource`。優先度最低，等 M1–M5 都穩定再談。
+- [x] **M7-3 媒體**：`media/`、`MediaEventHandler`、`VideoStreamResource`。優先度最低，等 M1–M5 都穩定再談。
+  - `internal/media.Manager`：上傳的位元組寫到 `media.path`，`media` 表（migration `0016_media.sql`）
+    存索引。檔名由伺服器產生（時間戳 + 隨機 + 型別 + 副檔名），裝置送來的名字只放進
+    `attributes.originalName`，所以路徑穿越寫不出去；`Path()` 也會再擋一次 `..`。
+  - REST：`GET /api/media?deviceId=&from=&to=`、`POST /api/media?deviceId=&type=`（multipart `file`）、
+    `GET /api/media/{id}`（串流下載，`Content-Type` 依型別）、`DELETE /api/media/{id}`。讀寫分別要
+    `read:positions` / `write:devices`，非管理員只能碰自己 scope 內的裝置。
+  - `MediaEventHandler` 對應的 `handler.MediaRule` 早就在（M4-1）：位置屬性帶 `image` / `video` /
+    `audio` 就產生 `media` 事件並把檔名放進 `file` 屬性。上傳失敗時檔案會一起刪掉，不留孤兒檔。
+  - 設定：`media.path`（空 = 關閉媒體路由）。
+  - 測試：`internal/media/media_test.go`（存檔 + 產生檔名 + 路徑穿越、型別正規化、DB 失敗清檔、
+    壞設定的 manager、刪除兩邊）、`internal/api/media_test.go`（列表、下載串流與 content type、
+    別人的裝置 403、缺檔 404、上傳、寫入 scope、刪除、未啟用 501）。
+  - 偏差：`VideoStreamResource` / 影像串流沒有做（母本要外掛影像伺服器，這個 repo 沒有對應協議；
+    現階段只做「檔案已上傳、可下載」）。上傳大小上限 32MB（Go 專有）。
 
 ## 可以做
 

@@ -131,6 +131,11 @@ const (
 	ForwardAttempts       = "forward.attempts"
 	ForwardBackoff        = "forward.backoff"
 	ForwardTimeout        = "forward.timeout"
+
+	// TLS certificates for the protocol listeners. The Java server configures
+	// these on the web server only, so this is a Go addition.
+	ServerTLSCertificate = "server.tls.certificate"
+	ServerTLSKey         = "server.tls.key"
 )
 
 // ConfigDefault is the key the Java server uses to chain a second file. The
@@ -251,6 +256,9 @@ var KnownKeys = []string{
 	ForwardAttempts,
 	ForwardBackoff,
 	ForwardTimeout,
+
+	ServerTLSCertificate,
+	ServerTLSKey,
 }
 
 // Keys a protocol section may set. They are resolved through Protocol, which
@@ -279,7 +287,7 @@ var ProtocolKeys = []string{
 }
 
 // Protocols are the sections the gateway ships protocol servers for.
-var Protocols = []string{"h02", "gt06", "jt808", "teltonika"}
+var Protocols = []string{"h02", "gt06", "jt808", "teltonika", "osmand", "mqtt"}
 
 // defaults are the compiled-in values, the lowest layer. They match the flag
 // defaults the gateway had before the configuration layer existed.
@@ -325,6 +333,16 @@ var defaultProtocolAddresses = map[string]string{
 	"gt06":      "0.0.0.0:5023",
 	"jt808":     "0.0.0.0:8610",
 	"teltonika": "0.0.0.0:5027",
+	// The two transports the gateway added in M6: OsmAnd is the HTTP protocol
+	// the mobile app speaks, MQTT the broker-less variant of the same payload.
+	"osmand": "0.0.0.0:5055",
+	"mqtt":   "0.0.0.0:1883",
+}
+
+// defaultProtocolTransports overrides the tcp default for the protocols that
+// are not plain byte streams. A section that names its own transport wins.
+var defaultProtocolTransports = map[string]string{
+	"osmand": "http",
 }
 
 // legacyEnvAliases keeps the environment variables the gateway documented

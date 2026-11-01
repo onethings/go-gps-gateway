@@ -2,16 +2,29 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"traccar-server_go/go_server/internal/config"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/session"
+)
+
+// Per-protocol keys of the poll transport. A polled device is dialled by the
+// gateway, so the protocol section carries the device endpoint instead of a
+// listen port.
+const (
+	pollAddressKey  = "poll.address"
+	pollIntervalKey = "poll.interval"
+	pollCommandKey  = "poll.command"
+	pollDeviceIDKey = "poll.deviceId"
+	pollUniqueIDKey = "poll.uniqueId"
 )
 
 // listenerSet owns the protocol listeners so an administrator can move one to a
@@ -29,6 +42,12 @@ type listenerSet struct {
 	commands  *gateway.Dispatcher
 	sessions  *session.Manager
 	logf      func(format string, args ...any)
+	// config is only read for the per-protocol poll keys.
+	config *config.Config
+
+	tlsOnce sync.Once
+	tls     *tls.Config
+	tlsErr  error
 
 	mu      sync.Mutex
 	running map[string]*protocolListener
@@ -45,9 +64,10 @@ type protocolListener struct {
 func newListenerSet(
 	parent context.Context, registry *gateway.Registry, directory gateway.DeviceDirectory, sink gateway.Sink,
 	router *gateway.Router, meters *metrics.Set, commands *gateway.Dispatcher,
-	sessions *session.Manager, logf func(format string, args ...any),
+	sessions *session.Manager, cfg *config.Config, logf func(format string, args ...any),
 ) *listenerSet {
 	return &listenerSet{
+		config:    cfg,
 		parent:    parent,
 		registry:  registry,
 		directory: directory,
@@ -63,7 +83,8 @@ func newListenerSet(
 }
 
 // start opens the listener described by protocol. An empty address disables the
-// protocol; a transport the gateway cannot serve yet is an error.
+// protocol, except for the poll transport, which has no listener and dials the
+// device instead.
 func (l *listenerSet) start(protocol config.ProtocolSettings) error {
 	transport := protocol.Transport
 	if transport == "" {
@@ -75,18 +96,31 @@ func (l *listenerSet) start(protocol config.ProtocolSettings) error {
 func (l *listenerSet) startAt(
 	protocol config.ProtocolSettings, address, transport string,
 ) error {
-	if address == "" {
+	if address == "" && transport != model.TransportPoll {
 		return nil
 	}
-	if transport != model.TransportTCP {
-		return fmt.Errorf("%s: transport %q is not supported yet", protocol.Name, transport)
-	}
 
-	listener, err := net.Listen("tcp", address)
+	server, err := l.newServer(protocol)
 	if err != nil {
-		return fmt.Errorf("%s: listen %s: %w", protocol.Name, address, err)
+		return fmt.Errorf("%s: %w", protocol.Name, err)
 	}
 
+	switch transport {
+	case model.TransportTCP, model.TransportTLS:
+		return l.listenStream(protocol, address, transport, server)
+	case model.TransportUDP:
+		return l.listenPacket(protocol, address, transport, server)
+	case model.TransportHTTP:
+		return l.listenHTTP(protocol, address, transport, server)
+	case model.TransportPoll:
+		return l.startPoll(protocol, transport, server)
+	default:
+		return fmt.Errorf("%s: transport %q is not supported", protocol.Name, transport)
+	}
+}
+
+// newServer builds the protocol server shared by every transport.
+func (l *listenerSet) newServer(protocol config.ProtocolSettings) (*gateway.Server, error) {
 	options := []gateway.Option{
 		gateway.WithReadTimeout(protocol.ReadTimeout),
 		gateway.WithMetrics(l.meters),
@@ -100,32 +134,181 @@ func (l *listenerSet) startAt(
 	if l.sessions != nil {
 		options = append(options, gateway.WithSessionTracker(l.sessions))
 	}
+	return gateway.NewServer(l.registry, protocol.Name, l.directory, l.sink, options...)
+}
 
-	server, err := gateway.NewServer(l.registry, protocol.Name, l.directory, l.sink, options...)
+// listenStream serves a byte stream, plain or over TLS.
+func (l *listenerSet) listenStream(
+	protocol config.ProtocolSettings, address, transport string, server *gateway.Server,
+) error {
+	var (
+		listener net.Listener
+		err      error
+	)
+	if transport == model.TransportTLS {
+		tlsConfig, tlsErr := l.tlsConfig()
+		if tlsErr != nil {
+			return fmt.Errorf("%s: %w", protocol.Name, tlsErr)
+		}
+		listener, err = tls.Listen("tcp", address, tlsConfig)
+	} else {
+		listener, err = net.Listen("tcp", address)
+	}
 	if err != nil {
-		_ = listener.Close()
+		return fmt.Errorf("%s: listen %s: %w", protocol.Name, address, err)
+	}
+
+	l.launch(protocol, transport, listener.Addr().String(), server, func(ctx context.Context) error {
+		return server.Serve(ctx, listener)
+	})
+	return nil
+}
+
+// listenPacket serves a datagram protocol.
+func (l *listenerSet) listenPacket(
+	protocol config.ProtocolSettings, address, transport string, server *gateway.Server,
+) error {
+	conn, err := net.ListenPacket("udp", address)
+	if err != nil {
+		return fmt.Errorf("%s: listen udp %s: %w", protocol.Name, address, err)
+	}
+
+	l.launch(protocol, transport, conn.LocalAddr().String(), server, func(ctx context.Context) error {
+		return server.ServePacket(ctx, conn)
+	})
+	return nil
+}
+
+// listenHTTP serves a protocol the device reaches over HTTP.
+func (l *listenerSet) listenHTTP(
+	protocol config.ProtocolSettings, address, transport string, server *gateway.Server,
+) error {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("%s: listen %s: %w", protocol.Name, address, err)
+	}
+
+	l.launch(protocol, transport, listener.Addr().String(), server, func(ctx context.Context) error {
+		return server.ServeHTTP(ctx, listener)
+	})
+	return nil
+}
+
+// startPoll runs the client-mode side of a protocol: the gateway dials the
+// device and asks for a position on an interval.
+func (l *listenerSet) startPoll(
+	protocol config.ProtocolSettings, transport string, server *gateway.Server,
+) error {
+	if l.config == nil {
+		return fmt.Errorf("%s: poll needs configuration", protocol.Name)
+	}
+	section := l.config.Protocol(protocol.Name)
+	target := section.String(pollAddressKey)
+	if target == "" {
+		return fmt.Errorf("%s: transport poll needs %s", protocol.Name, pollAddressKey)
+	}
+
+	interval := time.Duration(0)
+	if raw := section.String(pollIntervalKey); raw != "" {
+		parsed, err := config.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("%s: %s: %w", protocol.Name, pollIntervalKey, err)
+		}
+		interval = parsed
+	}
+	commandType := section.String(pollCommandKey)
+	if commandType == "" {
+		commandType = model.CommandPositionSingle
+	}
+	deviceID, err := l.pollDeviceID(section.String(pollDeviceIDKey), section.String(pollUniqueIDKey))
+	if err != nil {
 		return fmt.Errorf("%s: %w", protocol.Name, err)
 	}
 
+	// A polled protocol has no listen address, so the log line names the device
+	// endpoint instead.
+	polled := config.ProtocolSettings{Name: protocol.Name, Transport: transport}
+	l.launch(polled, transport, target, server, func(ctx context.Context) error {
+		return server.Poll(ctx, gateway.PollConfig{
+			Protocol: protocol.Name,
+			Address:  target,
+			Interval: interval,
+			Command:  &model.Command{Type: commandType, DeviceID: deviceID},
+		})
+	})
+	return nil
+}
+
+// pollDeviceID finds the device a poller speaks for, either by id or by the
+// unique identifier the protocol knows it by.
+func (l *listenerSet) pollDeviceID(rawID, uniqueID string) (int64, error) {
+	if rawID != "" {
+		parsed, err := strconv.ParseInt(rawID, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", pollDeviceIDKey, err)
+		}
+		return parsed, nil
+	}
+	if uniqueID == "" || l.directory == nil {
+		return 0, nil
+	}
+	session, err := l.directory.Resolve(uniqueID)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: %w", pollUniqueIDKey, uniqueID, err)
+	}
+	if session == nil {
+		return 0, nil
+	}
+	return session.DeviceID, nil
+}
+
+// launch records the server as the live one for its protocol and starts serving.
+func (l *listenerSet) launch(
+	protocol config.ProtocolSettings, transport, target string, server *gateway.Server,
+	serve func(context.Context) error,
+) {
 	ctx, cancel := context.WithCancel(l.parent)
 	done := make(chan struct{})
 
 	l.mu.Lock()
 	l.running[protocol.Name] = &protocolListener{cancel: cancel, done: done}
-	protocol.Address = address
+	protocol.Transport = transport
 	l.configs[protocol.Name] = protocol
 	l.mu.Unlock()
 
 	l.router.Register(protocol.Name, server)
-	l.logf("%s: listening on %s", protocol.Name, listener.Addr())
+	l.logf("%s: listening on %s (%s)", protocol.Name, target, transport)
 
 	go func() {
 		defer close(done)
-		if err := server.Serve(ctx, listener); err != nil {
+		if err := serve(ctx); err != nil {
 			l.logf("%s: %v", protocol.Name, err)
 		}
 	}()
-	return nil
+}
+
+// tlsConfig loads the certificate once. A TLS protocol without one is a
+// configuration error the caller reports, not a panic.
+func (l *listenerSet) tlsConfig() (*tls.Config, error) {
+	l.tlsOnce.Do(func() {
+		if l.config == nil {
+			l.tlsErr = fmt.Errorf("transport tls needs %s and %s", config.ServerTLSCertificate, config.ServerTLSKey)
+			return
+		}
+		certificate := l.config.String(config.ServerTLSCertificate)
+		key := l.config.String(config.ServerTLSKey)
+		if certificate == "" || key == "" {
+			l.tlsErr = fmt.Errorf("transport tls needs %s and %s", config.ServerTLSCertificate, config.ServerTLSKey)
+			return
+		}
+		loaded, err := tls.LoadX509KeyPair(certificate, key)
+		if err != nil {
+			l.tlsErr = fmt.Errorf("transport tls: %w", err)
+			return
+		}
+		l.tls = &tls.Config{Certificates: []tls.Certificate{loaded}, MinVersion: tls.VersionTLS12}
+	})
+	return l.tls, l.tlsErr
 }
 
 // stop closes the listener of one protocol and waits for its accept loop to
@@ -202,8 +385,13 @@ func (l *listenerSet) ApplyProtocolSettings(ctx context.Context, settings model.
 	if !known {
 		return fmt.Errorf("unknown protocol %q", settings.Protocol)
 	}
-	if transport != model.TransportTCP {
-		return fmt.Errorf("%s: transport %q is not supported yet", settings.Protocol, transport)
+	if !model.ValidTransport(transport) {
+		return fmt.Errorf("%s: unknown transport %q", settings.Protocol, transport)
+	}
+	previous := config.ProtocolSettings{Name: protocol.Name, Transport: protocol.Transport}
+	previous.Address = protocol.Address
+	if previous.Transport == "" {
+		previous.Transport = model.TransportTCP
 	}
 
 	host := "0.0.0.0"
@@ -222,7 +410,7 @@ func (l *listenerSet) ApplyProtocolSettings(ctx context.Context, settings model.
 
 	address := net.JoinHostPort(host, strconv.Itoa(settings.Port))
 	if err := l.startAt(protocol, address, transport); err != nil {
-		if restoreErr := l.startAt(protocol, protocol.Address, model.TransportTCP); restoreErr != nil {
+		if restoreErr := l.startAt(previous, previous.Address, previous.Transport); restoreErr != nil {
 			l.logf("%s: restore %s: %v", settings.Protocol, protocol.Address, restoreErr)
 		}
 		return err

@@ -3,11 +3,16 @@ package model
 import "errors"
 
 // Transport values of one protocol server, matching the Java server's
-// ProtocolSettings.Transport enum. TCP is the default.
+// ProtocolSettings.Transport enum. TCP is the default. HTTP and poll are Go
+// only: the Java server recognises its HTTP protocols by the decoder they use,
+// and its pollers are separate server classes.
 const (
-	TransportTCP = "tcp"
-	TransportUDP = "udp"
-	TransportTLS = "tls"
+	TransportTCP  = "tcp"
+	TransportUDP  = "udp"
+	TransportTLS  = "tls"
+	TransportHTTP = "http"
+	// TransportPoll dials the device instead of listening for it.
+	TransportPoll = "poll"
 )
 
 // ErrProtocolNotFound is returned when no protocol settings row has the id.
@@ -27,7 +32,7 @@ type ProtocolSettings struct {
 // can listen on.
 func ValidTransport(value string) bool {
 	switch value {
-	case TransportTCP, TransportUDP, TransportTLS:
+	case TransportTCP, TransportUDP, TransportTLS, TransportHTTP, TransportPoll:
 		return true
 	default:
 		return false

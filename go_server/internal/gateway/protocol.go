@@ -13,6 +13,8 @@ import (
 	"traccar-server_go/go_server/internal/protocol/gt06"
 	"traccar-server_go/go_server/internal/protocol/h02"
 	"traccar-server_go/go_server/internal/protocol/jt808"
+	"traccar-server_go/go_server/internal/protocol/mqtt"
+	"traccar-server_go/go_server/internal/protocol/osmand"
 	"traccar-server_go/go_server/internal/protocol/teltonika"
 )
 
@@ -24,6 +26,9 @@ type Protocol struct {
 	NewFrameDecoder func() codec.FrameDecoder
 	NewDecoder      func() codec.Decoder
 	NewEncoder      func() codec.Encoder
+	// NewHTTP is set by the protocols a device reaches over HTTP. Those have no
+	// frame decoder and no encoder, because the request is the frame.
+	NewHTTP func(base codec.Base) codec.HTTPDecoder
 	// TextCommands and DataCommands list the command types the encoder can
 	// build. The text channel is the one a device reads as a plain string
 	// (SMS-like); the data channel is the protocol's own binary framing.
@@ -85,7 +90,7 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-// DefaultRegistry registers the four implemented protocols.
+// DefaultRegistry registers the implemented protocols.
 func DefaultRegistry() *Registry {
 	registry := NewRegistry()
 
@@ -127,6 +132,25 @@ func DefaultRegistry() *Registry {
 				model.CommandAlarmArm, model.CommandAlarmDisarm, model.CommandAlarmDismiss,
 				model.CommandEngineStop, model.CommandEngineResume, model.CommandCustom,
 			},
+		}
+	})
+
+	// OsmAnd is HTTP: the request is the frame, so there is no frame decoder and
+	// no encoder.
+	registry.Add(osmand.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:    osmand.ProtocolName,
+			NewHTTP: func(inner codec.Base) codec.HTTPDecoder { return osmand.New(inner) },
+		}
+	})
+
+	// MQTT carries one query string per publish, so it decodes the same payload
+	// as OsmAnd and needs no encoder.
+	registry.Add(mqtt.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            mqtt.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return mqtt.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return mqtt.New(base) },
 		}
 	})
 

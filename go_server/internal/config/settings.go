@@ -119,7 +119,7 @@ type Binder struct {
 type rawFlags struct {
 	config string
 
-	h02, gt06, jt808, teltonika string
+	h02, gt06, jt808, teltonika, osmand, mqtt string
 
 	dsn           string
 	batchSize     string
@@ -202,6 +202,10 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 	binder.text(&binder.raw.jt808, "jt808", protocolAddress(cfg, "jt808"), "JT808 listen address")
 	binder.text(&binder.raw.teltonika, "teltonika", protocolAddress(cfg, "teltonika"),
 		"Teltonika listen address")
+	binder.text(&binder.raw.osmand, "osmand", protocolAddress(cfg, "osmand"),
+		"OsmAnd HTTP listen address")
+	binder.text(&binder.raw.mqtt, "mqtt", protocolAddress(cfg, "mqtt"),
+		"MQTT listen address")
 
 	binder.text(&binder.raw.dsn, "dsn", cfg.String(DatabaseURL),
 		"PostgreSQL DSN (defaults to TRACCAR_DSN); empty uses an in-memory directory and a log sink")
@@ -444,6 +448,8 @@ func (b *Binder) protocols(raw rawFlags, settings Settings) ([]ProtocolSettings,
 		"gt06":      raw.gt06,
 		"jt808":     raw.jt808,
 		"teltonika": raw.teltonika,
+		"osmand":    raw.osmand,
+		"mqtt":      raw.mqtt,
 	}
 
 	var (
@@ -469,6 +475,9 @@ func (b *Binder) protocols(raw rawFlags, settings Settings) ([]ProtocolSettings,
 		}
 
 		transport := strings.ToLower(strings.TrimSpace(protocol.String(ProtocolTransport)))
+		if transport == "" {
+			transport = defaultProtocolTransports[name]
+		}
 		if transport == "" {
 			transport = "tcp"
 		}

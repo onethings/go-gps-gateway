@@ -389,7 +389,8 @@ func main() {
 		}
 	}
 
-	listeners := newListenerSet(ctx, registry, directory, sink, router, meters, commands, sessions, log.Printf)
+	listeners := newListenerSet(ctx, registry, directory, sink, router, meters, commands, sessions,
+		settings.Config, log.Printf)
 	for _, protocol := range settings.Protocols {
 		if err := listeners.start(protocol); err != nil {
 			log.Fatal(err)

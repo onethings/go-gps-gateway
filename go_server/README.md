@@ -60,8 +60,10 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/protocol/gt06`         | GT06 / Concox / Jimi 系                                                                                                                                                                                                                                                |
 | `internal/protocol/jt808`        | JT/T 808（中國交通部標準）                                                                                                                                                                                                                                             |
 | `internal/protocol/teltonika`    | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13）                                                                                                                                                                                                                        |
+| `internal/protocol/osmand`       | OsmAnd HTTP：查詢字串 → 位置；同一支 `Decode` 也被 MQTT 協議重用                                                                                                                                                                                                        |
+| `internal/protocol/mqtt`         | MQTT 3.1.1：CONNECT / SUBSCRIBE / PUBLISH / PINGREQ，publish 的 payload 就是 OsmAnd 查詢字串                                                                                                                                                                            |
 | `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植）                                                                                                                                                                                                                                  |
-| `internal/gateway`               | TCP 網關、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                                                                                                                                                  |
+| `internal/gateway`               | 網關：TCP / UDP / TLS / HTTP 四種 listener、poller（主動撥號）、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                                                                                            |
 | `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                                                                                                                                                  |
 | `internal/session`               | 連線登錄表（`devices.status`、心跳超時、`deviceOnline` / `deviceOffline`）與 moving / stopped 狀態機（`motion` 階段）                                                                                                     |
 | `internal/handler`               | 位置處理鏈：母本 `ProcessingHandler` 的 14 個階段順序、`PositionHandler` 介面、`BusinessHandler`（一次跑一個 `Processor`）與 terminal store                                                                                                                                  |
@@ -166,6 +168,8 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 | GT06        | `-gt06`      | `0.0.0.0:5023`                           |
 | JT808       | `-jt808`     | `0.0.0.0:8610`                           |
 | Teltonika   | `-teltonika` | `0.0.0.0:5027`                           |
+| OsmAnd      | `-osmand`    | `0.0.0.0:5055`（transport 預設 `http`）  |
+| MQTT        | `-mqtt`      | `0.0.0.0:1883`                           |
 | REST        | `-http`      | `0.0.0.0:8082`（需要 `-dsn`；空 = 關閉） |
 
 以下 flag 的預設值都可以先用上面的設定檔或環境變數給，flag 只是最後一層覆寫：
@@ -1685,8 +1689,30 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
 
 ### M6 傳輸層與協議廣度（L）
 
-- [ ] **M6-1 傳輸**：UDP（`TrackerServer` datagram）、TLS、HTTP 型協議基底（`BaseHttpProtocolDecoder`）、poller（`BaseProtocolPoller`）、MQTT 基底（`BaseMqttProtocolDecoder`）。
-  - 驗收：每個基底各有一個示範協議走通（HTTP 用 OsmAnd、poller 用 Arnavi、MQTT 用一個現成協議）。
+- [x] **M6-1 傳輸**：UDP（`TrackerServer` datagram）、TLS、HTTP 型協議基底（`BaseHttpProtocolDecoder`）、poller（`BaseProtocolPoller`）、MQTT 基底（`BaseMqttProtocolDecoder`）。
+  - `gateway.ServePacket`：每包 datagram 當成一或多個 frame，decoder 與 session 依來源位址保留
+    （`datagramStates`，閒置 5 分鐘清掉），回應用 `datagramConn` 寫回同一個位址。
+  - `gateway.ServeHTTP` / `HTTPHandler`：`codec.HTTPDecoder` 介面（`HTTPRequest` / `HTTPResponse`），
+    query 與 form body 合併後交給協議；`NewHTTP` 的協議不需要 frame decoder 與 encoder。
+  - `gateway.Poll`：poller 基底，撥號 → 用協議 encoder 產生輪詢指令 → 讀回 frame 解碼 → 間隔重複；
+    撥號失敗或斷線以 5 秒退避重連，`Dial` 可注入（測試用 `net.Pipe`）。
+  - `transport` 現在支援 `tcp`（預設）`udp` `tls` `http` `poll`；`/api/protocols` 改 transport 也走同一條
+    `startAt`，失敗會把舊的 listener 連同舊 transport 一起還原。TLS 憑證讀
+    `server.tls.certificate` / `server.tls.key`（Go 專有，母本只給 web 用）。
+  - 示範協議：`osmand`（HTTP，預設 5055，`transport` 預設 `http`）與 `mqtt`（MQTT 3.1.1，預設 1883，
+    publish 的 payload 就是 OsmAnd 查詢字串，`SUBSCRIBE` 回 QoS0、QoS1 publish 回 PUBACK、
+    PINGREQ 回 PINGRESP）。poller 用測試內的 5 行示範協議驗證，因為 Arnavi 屬於 M6-2 的批次。
+  - 設定：poller 的 `protocol.<name>.poll.address` / `poll.interval` / `poll.command` /
+    `poll.deviceId` / `poll.uniqueId`；`osmand`、`mqtt` 沒有預設協議段之外的旗標需求，
+    兩者都有 `-osmand` / `-mqtt` 覆寫位址。
+  - 測試：`internal/gateway/transport_test.go`（UDP datagram → h02 心跳、OsmAnd HTTP handler、
+    未知裝置不落地、MQTT CONNECT → PUBLISH）、`internal/gateway/poller_test.go`（撥號、輪詢、
+    解碼、停止）、`internal/protocol/osmand/osmand_test.go`（欄位、時間戳單位、未知裝置）、
+    `cmd/traccar-gateway/listeners_test.go`（TLS 缺憑證、poll 裝置解析）。全部不綁 socket
+    （假的 `net.PacketConn`、`httptest.NewRecorder`、`net.Pipe`）。
+  - 偏差：OsmAnd 尚未吃 JSON body 與 `location` / `cell` / `wifi` 欄位；poller 沒有實作母本
+    「由協議自己決定輪詢指令」的 hook，一律走 `EncodedCommand`；UDP 的 frame decoder 若協議
+    沒有提供，就視「一包 = 一格」。
 - [ ] **M6-2 協議批次**：先 8 個高頻家族（Meitrack、Wondex、TK103、Gps103、Watch、Ruptela、Suntech、Eelink），每個都要 Java 測試向量 + 場景檔 + 埠設定；GT06 長尾（`0xA3` / WiFi / `0x94`）與 JT808 批次定位一併收在這裡。
   - 驗收：每個協議一支 `*_test.go` 跑母本向量，`device-sim` 有對應場景。
 - [ ] **M6-3 地理加值**：geocoder（先 2 個）、speedlimit（Overpass）、mapmatcher、geolocation（cell tower）。外部服務要有 key 缺省與離線快取，不能讓它擋住 ingest。
@@ -1749,7 +1775,7 @@ M2 與 M6-2 都是「一直往裡加」的長工，適合跟其他里程碑交�
 
 | 建議                                                         | 判定                | 依據                                                                                                                                                                                                                                    |
 | ------------------------------------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OsmAnd 走 HTTP GET/POST，例 `/5055?id=…&lat=…&lon=…&speed=…` | ✅ 正確             | 母本 `ProtocolConfig` 給 OsmAnd 的預設埠就是 5055；`OsmAndProtocolDecoder` 除了 query string 也吃 `application/json` body，欄位還有 `timestamp`、`location`、`cell`、`wifi`、`valid`。Go 這邊還沒有這個解碼器，屬於 M6-1 的 HTTP 基底。 |
+| OsmAnd 走 HTTP GET/POST，例 `/5055?id=…&lat=…&lon=…&speed=…` | ✅ 正確（已實作）   | 母本 `ProtocolConfig` 給 OsmAnd 的預設埠就是 5055；`OsmAndProtocolDecoder` 除了 query string 也吃 `application/json` body，欄位還有 `timestamp`、`location`、`cell`、`wifi`、`valid`。Go 這邊 M6-1 已做 query string 版（`internal/protocol/osmand`，`http` transport，預設 5055），JSON body 與 `location` / `cell` / `wifi` 尚未支援。 |
 | GT06 要注意 `NT_MODELS` 的欄位版面差異                       | ✅ 正確             | `0x22` / `0x25` 的 NT 版面已實作，見上面 GT06 段與「已知限制」。                                                                                                                                                                        |
 | JT808 的 `0x7E` ↔ `0x7D02` / `0x7D01` 轉義要穩               | ✅ 正確             | `internal/protocol/jt808/frame.go` 已處理，另含 `0xE7` 分隔符與 `0xE6` / `0x3E` 轉義表。                                                                                                                                                |
 | JT808 多包拼包要穩                                           | ❌ 目前沒有         | 標頭只取 `bodyLength = attribute & 0x03ff`，沒看分包旗標 `0x2000`；帶分包旗標的 `0x0200` 會被當成完整訊息解析。這是真缺口，不是「穩定度」問題。                                                                                         |

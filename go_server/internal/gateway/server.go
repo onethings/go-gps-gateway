@@ -304,6 +304,15 @@ func (s *Server) handleFrame(
 	if result == nil {
 		return nil
 	}
+	return s.processResult(ctx, conn, result, session)
+}
+
+// processResult stores what a decoder produced. It is shared by the stream, the
+// datagram and the HTTP paths; conn is nil when the transport has no connection
+// to answer on.
+func (s *Server) processResult(
+	ctx context.Context, conn *deviceConn, result *codec.Result, session **codec.DeviceSession,
+) error {
 	if s.frames != nil && result.Consumed {
 		s.frames.Inc()
 	}
@@ -340,9 +349,11 @@ func (s *Server) handleFrame(
 		}
 	}
 
-	for _, response := range result.Responses {
-		if err := conn.write(response); err != nil {
-			return fmt.Errorf("write response: %w", err)
+	if conn != nil {
+		for _, response := range result.Responses {
+			if err := conn.write(response); err != nil {
+				return fmt.Errorf("write response: %w", err)
+			}
 		}
 	}
 

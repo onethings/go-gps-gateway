@@ -155,6 +155,10 @@ const (
 	GeolocationKey    = "geolocation.key"
 	GeolocationCache  = "geolocation.cache"
 
+	// StatisticsInterval is how often a row is written to the statistics table.
+	// Zero disables the history while /metrics keeps working.
+	StatisticsInterval = "statistics.interval"
+
 	// Scheduled maintenance. The intervals are durations; zero turns a task off.
 	ScheduleExpiration      = "schedule.expiration.interval"
 	ScheduleCleanup         = "schedule.cleanup.interval"
@@ -311,6 +315,7 @@ var KnownKeys = []string{
 	GeolocationKey,
 	GeolocationCache,
 
+	StatisticsInterval,
 	ScheduleExpiration,
 	ScheduleCleanup,
 	ScheduleActionRetention,
@@ -367,6 +372,7 @@ var defaults = map[string]string{
 	DisableShare:        "false",
 
 	AlertGeofenceRefresh: "5m",
+	StatisticsInterval:   "1m",
 	AlertDeviceRefresh:   "5m",
 
 	EventIgnoreDuplicateAlerts: "true",

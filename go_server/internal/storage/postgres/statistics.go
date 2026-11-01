@@ -197,3 +197,67 @@ func nullableTime(value time.Time) any {
 	}
 	return value
 }
+
+// InsertStatistics appends one snapshot. The protocols map is kept as JSON, the
+// same shape the Java server stores.
+func (s *Store) InsertStatistics(ctx context.Context, row *model.Statistics) error {
+	if row == nil {
+		return nil
+	}
+	captureTime := row.CaptureTime
+	if captureTime.IsZero() {
+		captureTime = time.Now()
+	}
+	protocols, err := encodeAttributes(toAttributes(row.Protocols))
+	if err != nil {
+		return err
+	}
+	attributes, err := encodeAttributes(row.Attributes)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO statistics (
+		     capture_time, active_users, active_devices, requests, messages_received,
+		     messages_stored, mail_sent, sms_sent, geocoder_requests, geolocation_requests,
+		     protocols, attributes
+		 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		captureTime.UTC(), row.ActiveUsers, row.ActiveDevices, row.Requests,
+		row.MessagesReceived, row.MessagesStored, row.MailSent, row.SmsSent,
+		row.GeocoderRequests, row.GeolocationRequests, protocols, attributes,
+	); err != nil {
+		return fmt.Errorf("postgres: insert statistics: %w", err)
+	}
+	return nil
+}
+
+// OnlineCounts returns the connected devices and the distinct users that own
+// them. A device counts as connected when the session manager last recorded it
+// online, which is the same status the UI shows.
+func (s *Store) OnlineCounts(ctx context.Context) (int, int, error) {
+	var devices, users int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM devices WHERE status = 'online'`,
+	).Scan(&devices); err != nil {
+		return 0, 0, fmt.Errorf("postgres: count online devices: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(DISTINCT ud.user_id)
+		 FROM user_devices ud
+		 JOIN devices d ON d.id = ud.device_id
+		 WHERE d.status = 'online'`,
+	).Scan(&users); err != nil {
+		return 0, 0, fmt.Errorf("postgres: count online users: %w", err)
+	}
+	return devices, users, nil
+}
+
+// toAttributes converts the per-protocol message counts into the attribute map
+// the JSON column stores.
+func toAttributes(values map[string]int) model.Attributes {
+	attributes := make(model.Attributes, len(values))
+	for key, value := range values {
+		attributes[key] = value
+	}
+	return attributes
+}

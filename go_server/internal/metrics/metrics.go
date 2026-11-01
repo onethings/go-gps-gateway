@@ -136,6 +136,16 @@ func (v *CounterVec) labelValues() []string {
 	return values
 }
 
+// Snapshot returns the current value of every label, which is what the
+// statistics writer turns into a row.
+func (v *CounterVec) Snapshot() map[string]int64 {
+	values := make(map[string]int64)
+	for _, value := range v.labelValues() {
+		values[value] = v.With(value).Value()
+	}
+	return values
+}
+
 // GaugeVec is a set of gauges split by one label.
 type GaugeVec struct {
 	name, help string
@@ -268,6 +278,9 @@ type Set struct {
 	Notifications        *CounterVec
 	NotificationErrors   *CounterVec
 	NotificationsDropped *Counter
+	Requests             *Counter
+	GeocoderRequests     *Counter
+	GeolocationRequests  *Counter
 	CommandsSent         *Counter
 	CommandRetries       *Counter
 	CommandsDropped      *Counter
@@ -301,6 +314,12 @@ func New() *Set {
 			"Failed alert notification sends.", "channel"),
 		NotificationsDropped: NewCounter("traccar_notification_dropped_total",
 			"Notifications dropped because the send queue was full."),
+		Requests: NewCounter("traccar_requests_total",
+			"REST requests handled."),
+		GeocoderRequests: NewCounter("traccar_geocoder_requests_total",
+			"Reverse geocoding requests sent to the provider."),
+		GeolocationRequests: NewCounter("traccar_geolocation_requests_total",
+			"Cell tower lookups sent to the provider."),
 		CommandsSent: NewCounter("traccar_commands_sent_total",
 			"Commands written to a device socket."),
 		CommandRetries: NewCounter("traccar_command_retry_total",

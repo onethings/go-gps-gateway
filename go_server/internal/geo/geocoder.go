@@ -20,6 +20,8 @@ type Geocoder struct {
 	language string
 	client   *http.Client
 	cache    *Cache
+	// OnRequest is called before a remote request, so the caller can count it.
+	OnRequest func()
 }
 
 // NewGeocoder creates the geocoder from the settings. A nil client means the
@@ -52,6 +54,9 @@ func (g *Geocoder) Address(ctx context.Context, latitude, longitude float64) (st
 		return address, nil
 	}
 
+	if g.OnRequest != nil {
+		g.OnRequest()
+	}
 	address, err := g.lookup(ctx, latitude, longitude)
 	if err != nil {
 		return "", err

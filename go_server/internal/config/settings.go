@@ -61,12 +61,13 @@ type Settings struct {
 	// read only token for one device or group.
 	DisableShare bool
 
-	OverspeedKnots  float64
-	PowerCutVolts   float64
-	OverspeedLowest bool
-	AlertRepeat     time.Duration
-	GeofenceRefresh time.Duration
-	DeviceRefresh   time.Duration
+	OverspeedKnots     float64
+	PowerCutVolts      float64
+	OverspeedLowest    bool
+	AlertRepeat        time.Duration
+	GeofenceRefresh    time.Duration
+	DeviceRefresh      time.Duration
+	StatisticsInterval time.Duration
 
 	// M4-1 event rule thresholds. Zero disables the rule, matching the Java
 	// defaults.
@@ -137,12 +138,13 @@ type rawFlags struct {
 	loginLockout   string
 	disableShare   string
 
-	overspeedKnots  string
-	powerCutVolts   string
-	overspeedLowest string
-	alertRepeat     string
-	geofenceRefresh string
-	deviceRefresh   string
+	overspeedKnots     string
+	powerCutVolts      string
+	overspeedLowest    string
+	alertRepeat        string
+	geofenceRefresh    string
+	deviceRefresh      string
+	statisticsInterval string
 
 	fuelDropThreshold     string
 	fuelIncreaseThreshold string
@@ -254,6 +256,9 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 		"suppress repeat overspeed/powerCut alerts per device within this window; 0 disables")
 	binder.text(&binder.raw.geofenceRefresh, "geofence-refresh", cfg.String(AlertGeofenceRefresh),
 		"geofence reload interval; 0 loads them once")
+	binder.text(&binder.raw.statisticsInterval, "statistics-interval",
+		cfg.String(StatisticsInterval),
+		"how often a statistics row is written; 0 disables the history")
 	binder.text(&binder.raw.deviceRefresh, "device-refresh", cfg.String(AlertDeviceRefresh),
 		"device attribute reload interval for per-device thresholds; 0 loads them once")
 
@@ -409,6 +414,7 @@ func (b *Binder) Settings() (Settings, error) {
 	settings.AlertRepeat = toDuration("alert-repeat", raw.alertRepeat)
 	settings.GeofenceRefresh = toDuration("geofence-refresh", raw.geofenceRefresh)
 	settings.DeviceRefresh = toDuration("device-refresh", raw.deviceRefresh)
+	settings.StatisticsInterval = toDuration("statistics-interval", raw.statisticsInterval)
 
 	settings.FuelDropThreshold = toFloat("fuel-drop-threshold", raw.fuelDropThreshold)
 	settings.FuelIncreaseThreshold = toFloat("fuel-increase-threshold", raw.fuelIncreaseThreshold)

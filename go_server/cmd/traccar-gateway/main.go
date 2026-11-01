@@ -33,6 +33,7 @@ import (
 	"traccar-server_go/go_server/internal/notify"
 	"traccar-server_go/go_server/internal/report"
 	"traccar-server_go/go_server/internal/schedule"
+	"traccar-server_go/go_server/internal/stats"
 	"traccar-server_go/go_server/internal/session"
 	"traccar-server_go/go_server/internal/storage/postgres"
 )
@@ -398,6 +399,18 @@ func main() {
 		}
 	}
 
+	// The statistics writer turns the process counters into the rows the
+	// /api/statistics resource reads back.
+	if store != nil && settings.StatisticsInterval > 0 {
+		writer := &stats.Writer{
+			Store:    store,
+			Metrics:  meters,
+			Interval: settings.StatisticsInterval,
+		}
+		go writer.Run(ctx)
+		log.Printf("statistics: writing a row every %s", settings.StatisticsInterval)
+	}
+
 	// The protocol settings table starts from the configured listeners, so an
 	// administrator sees one editable row per shipped protocol, and a row edited
 	// earlier wins over the configuration file.
@@ -472,14 +485,17 @@ func main() {
 			}
 			if geoSettings.Geolocation.Enabled {
 				locator = geo.NewLocator(geoSettings, nil)
+				locator.OnRequest = meters.GeolocationRequests.Inc
 				if err := locator.Load(); err != nil {
 					log.Printf("geo: load geolocation cache: %v", err)
 				}
 				options = append(options, api.WithGeolocation(locator))
 				log.Print("geo: cell tower geolocation enabled")
 			}
+			options = append(options, api.WithRequestCounter(meters.Requests))
 			if geoSettings.Geocoder.Enabled {
 				geocoder := geo.NewGeocoder(geoSettings, nil)
+				geocoder.OnRequest = meters.GeocoderRequests.Inc
 				if err := geocoder.Load(); err != nil {
 					log.Printf("geo: load geocoder cache: %v", err)
 				}

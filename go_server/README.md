@@ -74,6 +74,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
 | `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）、`GET /api/socket`（WebSocket 推播）；認證 / scope / 裝置擁有權 |
+| `internal/stats`                 | 統計歷史：把 process 計數器（REST 請求、frame、位置、通知、地理查詢）換算成 `statistics` 的每分鐘增量列                                                                                                                 |
 | `internal/schedule`              | 週期性維護：到期停用帳號、清過期 token / 重設碼 / audit、排程報表（CSV 附件 email）、DB health check                                                                                                                     |
 | `internal/geo`                   | 地理加值：TTL + 檔案快取、反向地理編碼（Nominatim / Google）、速限（Overpass）、地圖吸附（Mapbox）、基地台定位（Google）                                                                                                |
 | `internal/report`                | 報表：route / trips / stops / summary / events / geofences / devices / combined，CSV / GPX / KML / XLSX 匯出                                                                                                          |
@@ -1362,7 +1363,7 @@ scrape_configs:
 | 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | `internal/websocket` + `/api/socket`：位置 / 事件 / 裝置狀態  | 沒有 log 串流與 multi-node broadcast（母本 `BaseBroadcastService`）                                                    |
 | 安全     | token、OIDC、LDAP、`api/signature`                                                                  | token、密碼登入                                              | OIDC / LDAP / 簽章                                                                                                     |
 | 媒體     | `media/`、`MediaEventHandler`、`VideoStreamResource`                                                | 無                                                           | 全部                                                                                                                   |
-| 歷史統計 | `tc_statistics` + `StatisticsManager`                                                               | 只有 `/metrics`（即時）                                      | 全部                                                                                                                   |
+| 歷史統計 | `tc_statistics` + `StatisticsManager`                                                               | `statistics` 每分鐘增量列（`internal/stats`）+ `/metrics`（即時） | device 等級的細分                                                                                                      |
 
 Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純函式（`[]byte` → `*model.Position`，可用 Java 測試向量直接斷言）、
 `BatchSink` 非阻塞批次寫入、`/metrics` 零依賴、`cmd/device-sim` 能重播場景。任何一個里程碑都不准把它們換掉。
@@ -1781,7 +1782,19 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
     `RunOnce` 與未知 task）。排程報表的產生器 / 寄信都是注入的 fake。
   - 偏差：報表的排程用 attributes 的 duration，不是母本的 `calendars` iCalendar 規則；沒有
     `DatabaseExportTask` / media cleanup（M7-3 再談）。
-- [ ] **M7-2 `tc_statistics`**：每 device / protocol 的訊息量寫 DB，補上 `/api/statistics` 的歷史查詢（`/metrics` 只管即時）。
+- [x] **M7-2 `tc_statistics`**：每 device / protocol 的訊息量寫 DB，補上 `/api/statistics` 的歷史查詢（`/metrics` 只管即時）。
+  - `internal/stats.Writer`：每 `statistics.interval`（預設 1m）寫一列，數值是**距上次的增量**，不是
+    process 啟動以來的累計；計數器重設（重啟）不會寫出負數。
+  - 欄位：`requests`（REST 請求數，新增 middleware）、`messages_received`（解出的 frame 總數）、
+    `messages_stored`（位置數）、`mail_sent` / `sms_sent`（通知計數器取 `mail` / `sms` 通道）、
+    `geocoder_requests` / `geolocation_requests`（地理服務的新計數器，服務本身用 `OnRequest` 回呼）、
+    `protocols`（每個協議的 frame 增量 JSON）、`active_devices` / `active_users`（`devices.status='online'`
+    與擁有這些裝置的去重使用者數）。
+  - 儲存：`InsertStatistics`、`OnlineCounts`。`/api/statistics` 與 `/api/statistics/devices` 本來就讀
+    `statistics` 表，現在有資料可讀。
+  - 設定：`statistics.interval`（duration，0 = 只留 `/metrics`），也接受 `-statistics-interval`。
+  - 測試：`internal/stats/writer_test.go`（首次全量、次次增量、計數器重設、store 失敗、Run 直到取消）。
+  - 偏差：`active_*` 是「線上裝置 / 擁有者」而非母本的 session 數；沒有 `DatabaseExportTask`。
 - [ ] **M7-3 媒體**：`media/`、`MediaEventHandler`、`VideoStreamResource`。優先度最低，等 M1–M5 都穩定再談。
 
 ## 可以做

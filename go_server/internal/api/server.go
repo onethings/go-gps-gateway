@@ -138,6 +138,7 @@ type Server struct {
 	geocoder         Geocoder
 	speedLimits      SpeedLimits
 	geolocator       Geolocator
+	requestCounter   Counter
 	reboot           func()
 	notificators     []string
 	notifierSender   NotificationSender
@@ -337,10 +338,34 @@ func (s *Server) Handler() http.Handler {
 
 	s.registerAdminRoutes(mux)
 
-	if s.apiKey == "" && s.tokens == nil {
-		return mux
+	var handler http.Handler = mux
+	if s.apiKey != "" || s.tokens != nil {
+		handler = RequireAuth(s.apiKey, s.tokens, s.logf, mux)
 	}
-	return RequireAuth(s.apiKey, s.tokens, s.logf, mux)
+	if s.requestCounter != nil {
+		handler = countRequests(s.requestCounter, handler)
+	}
+	return handler
+}
+
+// Counter is the one method the request counter needs, so the package does not
+// depend on the metrics type.
+type Counter interface {
+	Inc()
+}
+
+// WithRequestCounter counts every REST request, which is what the statistics
+// writer reports as the requests of the interval.
+func WithRequestCounter(counter Counter) Option {
+	return func(s *Server) { s.requestCounter = counter }
+}
+
+// countRequests is the smallest possible middleware: it counts and delegates.
+func countRequests(counter Counter, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		counter.Inc()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // authEnabled reports whether the API is protected at all.

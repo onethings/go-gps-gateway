@@ -18,6 +18,8 @@ type Locator struct {
 	key     string
 	client  *http.Client
 	cache   *Cache
+	// OnRequest is called before a remote request, so the caller can count it.
+	OnRequest func()
 }
 
 // NewLocator creates the locator.
@@ -46,6 +48,9 @@ func (l *Locator) Locate(ctx context.Context, network *model.Network) (float64, 
 		}
 	}
 
+	if l.OnRequest != nil {
+		l.OnRequest()
+	}
 	latitude, longitude, ok, err := l.query(ctx, network)
 	if err != nil || !ok {
 		return 0, 0, false

@@ -10,12 +10,16 @@ import (
 
 	"traccar-server_go/go_server/internal/codec"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/protocol/gps103"
 	"traccar-server_go/go_server/internal/protocol/gt06"
 	"traccar-server_go/go_server/internal/protocol/h02"
 	"traccar-server_go/go_server/internal/protocol/jt808"
+	"traccar-server_go/go_server/internal/protocol/meitrack"
 	"traccar-server_go/go_server/internal/protocol/mqtt"
 	"traccar-server_go/go_server/internal/protocol/osmand"
 	"traccar-server_go/go_server/internal/protocol/teltonika"
+	"traccar-server_go/go_server/internal/protocol/tk103"
+	"traccar-server_go/go_server/internal/protocol/wondex"
 )
 
 // Protocol bundles the constructors of one protocol. Constructors are used
@@ -132,6 +136,40 @@ func DefaultRegistry() *Registry {
 				model.CommandAlarmArm, model.CommandAlarmDisarm, model.CommandAlarmDismiss,
 				model.CommandEngineStop, model.CommandEngineResume, model.CommandCustom,
 			},
+		}
+	})
+
+	// The four text protocols share the same shape: one sentence per frame and a
+	// comma or semicolon field separator.
+	registry.Add(gps103.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            gps103.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return &gps103.FrameDecoder{} },
+			NewDecoder:      func() codec.Decoder { return gps103.NewDecoder(base) },
+		}
+	})
+
+	registry.Add(tk103.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            tk103.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return &tk103.FrameDecoder{} },
+			NewDecoder:      func() codec.Decoder { return tk103.NewDecoder(base) },
+		}
+	})
+
+	registry.Add(meitrack.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            meitrack.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return &meitrack.FrameDecoder{} },
+			NewDecoder:      func() codec.Decoder { return meitrack.NewDecoder(base) },
+		}
+	})
+
+	registry.Add(wondex.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            wondex.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return &wondex.FrameDecoder{} },
+			NewDecoder:      func() codec.Decoder { return wondex.NewDecoder(base) },
 		}
 	})
 

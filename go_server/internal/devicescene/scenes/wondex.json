@@ -1,0 +1,13 @@
+{
+  "name": "wondex",
+  "protocol": "wondex",
+  "uniqueId": "1234567890",
+  "handshake": false,
+  "positions": 1,
+  "steps": [
+    {
+      "name": "position",
+      "hex": "23444423313233343536373839303b32303233303530343132333034353b35342e39343533353b32342e30313736323b31322e353b39303b3130303b383b312e320d0a"
+    }
+  ]
+}

@@ -62,6 +62,10 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/protocol/teltonika`    | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13）                                                                                                                                                                                                                        |
 | `internal/protocol/osmand`       | OsmAnd HTTP：查詢字串 → 位置；同一支 `Decode` 也被 MQTT 協議重用                                                                                                                                                                                                        |
 | `internal/protocol/mqtt`         | MQTT 3.1.1：CONNECT / SUBSCRIBE / PUBLISH / PINGREQ，publish 的 payload 就是 OsmAnd 查詢字串                                                                                                                                                                            |
+| `internal/protocol/gps103`       | Coban GPS103 / TK102：`imei:` 開頭、`;` 結尾的文字句，十進位度 + 半球                                                                                                                                                                                                    |
+| `internal/protocol/tk103`        | Xexun TK103：`imei:` 開頭、換行結尾，`ddmm.mmmm` + 半球                                                                                                                                                                                                                 |
+| `internal/protocol/meitrack`     | Meitrack：`$$` + 長度 + 逗號欄位 + `*` + XOR 檢查碼                                                                                                                                                                                                                     |
+| `internal/protocol/wondex`       | Wondex：`#DD#` + `;` 分隔欄位                                                                                                                                                                                                                                           |
 | `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植）                                                                                                                                                                                                                                  |
 | `internal/gateway`               | 網關：TCP / UDP / TLS / HTTP 四種 listener、poller（主動撥號）、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                                                                                            |
 | `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                                                                                                                                                  |
@@ -170,6 +174,10 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 | Teltonika   | `-teltonika` | `0.0.0.0:5027`                           |
 | OsmAnd      | `-osmand`    | `0.0.0.0:5055`（transport 預設 `http`）  |
 | MQTT        | `-mqtt`      | `0.0.0.0:1883`                           |
+| GPS103      | `-gps103`    | `0.0.0.0:5002`                           |
+| TK103       | `-tk103`     | `0.0.0.0:5001`                           |
+| Meitrack    | `-meitrack`  | `0.0.0.0:5020`                           |
+| Wondex      | `-wondex`    | `0.0.0.0:5006`                           |
 | REST        | `-http`      | `0.0.0.0:8082`（需要 `-dsn`；空 = 關閉） |
 
 以下 flag 的預設值都可以先用上面的設定檔或環境變數給，flag 只是最後一層覆寫：
@@ -1333,7 +1341,7 @@ scrape_configs:
 
 | 層       | traccar-master（Java）                                                                              | go_server 現況                                               | 差距                                                                                                                   |
 | -------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| 協議     | `protocol/` 272 個 `*ProtocolDecoder`，共用 HTTP / MQTT / poller 基底                               | 4 個（H02 / GT06 / JT808 / Teltonika），純函式               | 268 個；三種非 TCP 基底都沒有                                                                                          |
+| 協議     | `protocol/` 272 個 `*ProtocolDecoder`，共用 HTTP / MQTT / poller 基底                               | 10 個（H02 / GT06 / JT808 / Teltonika / OsmAnd / MQTT / GPS103 / TK103 / Meitrack / Wondex），純函式 | 262 個；HTTP / MQTT / poller / UDP / TLS 基底已就位                                                                     |
 | 傳輸     | `ServerManager` + `TrackerServer`：TCP / UDP、TLS、每協議一個埠、`TrackerConnector` 主動連線        | `gateway.Server` 每協議一個 TCP listener                     | 無 UDP、無 TLS、無 client 模式                                                                                         |
 | 連線狀態 | `session/ConnectionManager`、`session/state`（motion / overspeed 狀態機）、`session/cache` 圖狀快取 | `gateway.DeviceDirectory` + `LocationCache`                  | 無 online / offline / timeout 與事件、無狀態機、無快取圖                                                               |
 | 處理管線 | `ProcessingHandler`：19 段 position handler + 12 段 event handler + `PostProcessHandler`            | 固定兩段：`alert.Pipeline`（4 條規則）→ `postgres.BatchSink` | position 只對應到 `GeofenceHandler` 的一部分，event 只對應到 Overspeed / Alarm / Geofence 的一部分，且管線寫死不可插拔 |
@@ -1713,8 +1721,18 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
   - 偏差：OsmAnd 尚未吃 JSON body 與 `location` / `cell` / `wifi` 欄位；poller 沒有實作母本
     「由協議自己決定輪詢指令」的 hook，一律走 `EncodedCommand`；UDP 的 frame decoder 若協議
     沒有提供，就視「一包 = 一格」。
-- [ ] **M6-2 協議批次**：先 8 個高頻家族（Meitrack、Wondex、TK103、Gps103、Watch、Ruptela、Suntech、Eelink），每個都要 Java 測試向量 + 場景檔 + 埠設定；GT06 長尾（`0xA3` / WiFi / `0x94`）與 JT808 批次定位一併收在這裡。
-  - 驗收：每個協議一支 `*_test.go` 跑母本向量，`device-sim` 有對應場景。
+- [~] **M6-2 協議批次（4/8）**：先 8 個高頻家族（Meitrack、Wondex、TK103、Gps103、Watch、Ruptela、Suntech、Eelink），每個都要 Java 測試向量 + 場景檔 + 埠設定；GT06 長尾（`0xA3` / WiFi / `0x94`）與 JT808 批次定位一併收在這裡。
+  - 已完成（文字型四家）：`gps103`（預設 5002）、`tk103`（5001）、`meitrack`（5020）、`wondex`（5006）。
+    每支都有 `*_test.go`（位置欄位、時間戳、無效定位、壞檢查碼、frame 切分）與
+    `internal/devicescene/scenes/<name>.json` 場景，場景由 `TestScenesReachTheSink` /
+    `TestScenesRegisterOnFirstContact` 在 `net.Pipe` 上回放。
+  - 共用：`helper.ParseCoordinate` / `ParseDegMinHem`（文字座標 + 半球）、`helper.ParseStampDMYHMS` /
+    `ParseStampYMDHMS`（12 / 14 位時間戳）、`helper.ParseNumber`（空欄位視為 0）。
+  - 尚未完成（二進位四家）：`eelink`、`ruptela`、`suntech`、`watch`。這四家的 frame 版面
+    （長度欄位範圍、時間基準、速度單位、CRC 演算法）差異大，沒有母本測試向量時硬猜只會得到
+    「看起來能跑但數值錯」的解碼器，因此先留白並在本節標明，等取得向量再補。
+  - 偏差：四位元組 encoder（下發指令）還沒做，四家目前都只解上行；`gps103` 的 ack 只回心跳的
+    `**,imei:<id>;B`。
 - [ ] **M6-3 地理加值**：geocoder（先 2 個）、speedlimit（Overpass）、mapmatcher、geolocation（cell tower）。外部服務要有 key 缺省與離線快取，不能讓它擋住 ingest。
 
 ### M7 運維與規模（M）

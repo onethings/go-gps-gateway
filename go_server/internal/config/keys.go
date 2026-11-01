@@ -287,7 +287,11 @@ var ProtocolKeys = []string{
 }
 
 // Protocols are the sections the gateway ships protocol servers for.
-var Protocols = []string{"h02", "gt06", "jt808", "teltonika", "osmand", "mqtt"}
+var Protocols = []string{
+	"h02", "gt06", "jt808", "teltonika",
+	"osmand", "mqtt",
+	"gps103", "tk103", "meitrack", "wondex",
+}
 
 // defaults are the compiled-in values, the lowest layer. They match the flag
 // defaults the gateway had before the configuration layer existed.
@@ -337,6 +341,13 @@ var defaultProtocolAddresses = map[string]string{
 	// the mobile app speaks, MQTT the broker-less variant of the same payload.
 	"osmand": "0.0.0.0:5055",
 	"mqtt":   "0.0.0.0:1883",
+
+	// The text protocol family added in M6-2. The ports are the ones the Java
+	// server ships in its default configuration.
+	"gps103":   "0.0.0.0:5002",
+	"tk103":    "0.0.0.0:5001",
+	"meitrack": "0.0.0.0:5020",
+	"wondex":   "0.0.0.0:5006",
 }
 
 // defaultProtocolTransports overrides the tcp default for the protocols that

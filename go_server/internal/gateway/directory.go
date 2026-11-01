@@ -25,6 +25,37 @@ type DeviceRegistrar interface {
 	Register(uniqueID, protocol string) (int64, error)
 }
 
+// registeringResolver resolves an identifier and creates the device when the
+// directory does not know it yet.
+//
+// It exists because two protocols resolve the identifier inside the decoder
+// instead of reporting it on the result: H02 has no handshake frame at all, and
+// JT808 resolves the ten digit terminal id from the frame header before it can
+// decide anything. Without this wrapper -auto-register only worked for the
+// protocols that hand the identifier to the gateway, so a H02 or JT808 device
+// connecting to an empty database was dropped on its first frame and never
+// registered.
+type registeringResolver struct {
+	resolver  codec.DeviceResolver
+	registrar DeviceRegistrar
+	protocol  string
+}
+
+// Resolve returns the device session, registering the identifier first when it
+// is unknown.
+func (r *registeringResolver) Resolve(uniqueID string) (*codec.DeviceSession, error) {
+	session, err := r.resolver.Resolve(uniqueID)
+	if err != nil || session != nil {
+		return session, err
+	}
+
+	deviceID, err := r.registrar.Register(uniqueID, r.protocol)
+	if err != nil {
+		return nil, err
+	}
+	return &codec.DeviceSession{DeviceID: deviceID, UniqueID: uniqueID}, nil
+}
+
 // MemoryDirectory is an in-memory directory, useful for tests and for running
 // the gateway without a database.
 type MemoryDirectory struct {

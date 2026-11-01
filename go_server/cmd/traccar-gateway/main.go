@@ -60,7 +60,7 @@ func main() {
 	deviceRefresh := flag.Duration("device-refresh", 5*time.Minute,
 		"device attribute reload interval for per-device thresholds; 0 loads them once")
 	autoRegister := flag.Bool("auto-register", true,
-		"create a device row when an unknown identifier logs in; false drops the connection")
+		"create a device row the first time an unknown identifier appears; false drops that frame")
 	commandRetry := flag.Duration("command-retry", gateway.DefaultCommandRetry,
 		"how long a written command waits for the device answer before it is sent again")
 	commandAttempts := flag.Int("command-attempts", gateway.DefaultCommandAttempts,

@@ -137,6 +137,7 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 `-command-queue-ttl`（預設 5m：命令最多等裝置重連多久）、
 `-command-retention`（預設 168h：命令歷史保留多久，0 = 永久保留；見「命令保留期限」）、
 `-allow-anonymous`（關閉 REST 認證，只給本機開發用）、
+`-auto-register`（預設 true：未知識別碼的第一幀就建裝置列；false = 丟掉那幀）、
 `-notify-webhook` / `-notify-email-smtp` 等通知 flag（見「通知管道」）。
 
 ## 協議支援矩陣
@@ -968,7 +969,9 @@ scrape_configs:
   SMTP，寄失敗只留在 log。bcrypt cost 12 讓一次登入約 0.6 秒（見「密碼登入」）。
   每個請求都會查一次 token 與裝置清單，撤銷立即生效但也多一次 DB round trip。
 - 裝置的 `attributes` 只能以 SQL 維護；`PUT` 只改 `name` / `model`，`protocol` 建立後不可改。
-  裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
+  裝置仍會由 `-auto-register` 在第一個認得的幀建立（GT06 登入、Teltonika IMEI、JT808
+  `0x0100`，以及沒有握手幀的 H02 第一筆位置），與 `POST /api/devices` 併用；關掉之後
+  未知裝置的幀直接丟掉（H02 就只能先在資料庫建好列）。
 - 命令會落地（`commands` 表）、排隊、重送並依裝置回應收尾。JT808 已經用流水號精確配對；
   GT06 / H02 / Teltonika 的回應沒有識別碼，配對仍是「該裝置最新一列 `sent`」，連續送出多筆時
   回應只收掉最新那列。重送是同一份位元組，所以對「重送一次就會執行兩次」的命令（例如

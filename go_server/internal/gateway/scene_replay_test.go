@@ -152,3 +152,29 @@ func TestAutoRegisterOnCreatesUnknownDevice(t *testing.T) {
 		t.Errorf("resolve = %v, %v, want a session", session, err)
 	}
 }
+
+// TestScenesRegisterOnFirstContact replays every scene against an empty
+// directory with -auto-register, which is what a fresh install does when the
+// first real device connects. H02 and JT808 resolve the identifier inside the
+// decoder instead of reporting it on the result, so before the resolver could
+// register there was nothing to create the device row and both protocols
+// dropped every frame.
+func TestScenesRegisterOnFirstContact(t *testing.T) {
+	scenes, err := devicescene.All()
+	if err != nil {
+		t.Fatalf("scenes: %v", err)
+	}
+
+	for _, scene := range scenes {
+		t.Run(scene.Name, func(t *testing.T) {
+			delivered, directory := replayScene(t, scene, false, true)
+			if delivered != int64(scene.Positions) {
+				t.Errorf("positions = %d, want %d", delivered, scene.Positions)
+			}
+			session, err := directory.Resolve(scene.UniqueID)
+			if err != nil || session == nil {
+				t.Fatalf("resolve %q = %v, %v, want a session", scene.UniqueID, session, err)
+			}
+		})
+	}
+}

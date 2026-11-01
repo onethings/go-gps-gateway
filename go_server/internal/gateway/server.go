@@ -137,11 +137,28 @@ func NewServer(
 	}
 
 	s.base = codec.Base{
-		Resolver:     directory,
+		Resolver:     s.sessionResolver(),
 		LastLocation: s.locations,
 		UniqueIDs:    directory,
 	}
 	return s, nil
+}
+
+// sessionResolver is what the decoders resolve identifiers through. With
+// -auto-register on it also creates the device, so a protocol that resolves the
+// identifier itself can decode its very first frame.
+func (s *Server) sessionResolver() codec.DeviceResolver {
+	if s.directory == nil {
+		return nil
+	}
+	if registrar, ok := s.directory.(DeviceRegistrar); ok && s.autoRegister {
+		return &registeringResolver{
+			resolver:  s.directory,
+			registrar: registrar,
+			protocol:  s.protocolName,
+		}
+	}
+	return s.directory
 }
 
 // Serve accepts connections until the listener fails or ctx is cancelled.

@@ -237,3 +237,71 @@ func TestEncodePositionPeriodic(t *testing.T) {
 		t.Errorf("payload = %x, want %x", payload, want)
 	}
 }
+
+// uplinkFrame builds a frame the way the gateway sees it: escaped by
+// buildMessage and expanded again by the frame decoder.
+func uplinkFrame(t *testing.T, messageType int, payload []byte) []byte {
+	t.Helper()
+	raw := buildMessage(
+		&header{delimiter: 0x7e, id: mustHex(t, "071604684030")}, messageType, payload)
+	frame, consumed := NewFrameDecoder().DecodeFrame(raw)
+	if frame == nil || consumed != len(raw) {
+		t.Fatalf("frame decoder returned %x, consumed %d of %d", frame, consumed, len(raw))
+	}
+	return frame
+}
+
+// TestDecodeTerminalGeneralResponse covers the answer a terminal sends once it
+// has acted on a downlink command.
+func TestDecodeTerminalGeneralResponse(t *testing.T) {
+	decoder := NewDecoder(Base())
+
+	cases := []struct {
+		name   string
+		result byte
+		code   int
+	}{
+		{"accepted", 0x00, 0},
+		{"refused", 0x01, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// answered serial, answered message id (0x8105 terminal control),
+			// result
+			frame := uplinkFrame(t, msgTerminalGeneralResponse,
+				[]byte{0x00, 0x07, 0x81, 0x05, tc.result})
+
+			result, err := decoder.Decode(frame)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if result.CommandAck == nil {
+				t.Fatalf("no command ack (consumed = %v)", result.Consumed)
+			}
+			if result.CommandAck.Code != tc.code {
+				t.Errorf("code = %d, want %d", result.CommandAck.Code, tc.code)
+			}
+			if len(result.Positions) != 0 {
+				t.Errorf("positions = %d, want 0", len(result.Positions))
+			}
+			if len(result.Responses) != 0 {
+				t.Errorf("responses = %d, want 0", len(result.Responses))
+			}
+		})
+	}
+}
+
+func TestDecodeShortTerminalGeneralResponse(t *testing.T) {
+	frame := uplinkFrame(t, msgTerminalGeneralResponse, []byte{0x00, 0x07})
+
+	result, err := NewDecoder(Base()).Decode(frame)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.CommandAck != nil {
+		t.Fatalf("ack = %+v, want none", result.CommandAck)
+	}
+	if result.Consumed {
+		t.Error("a truncated general response was consumed")
+	}
+}

@@ -298,3 +298,86 @@ func TestAutoRegister(t *testing.T) {
 		t.Errorf("registered device missing: %v", err)
 	}
 }
+
+// recordingTracker stands in for the storage layer, so the gateway side of the
+// acknowledgement path is checked without a database.
+type recordingTracker struct {
+	mu   sync.Mutex
+	acks []trackerAck
+}
+
+type trackerAck struct {
+	deviceID   int64
+	resultCode int
+}
+
+func (r *recordingTracker) AcknowledgeCommand(_ context.Context, deviceID int64, resultCode int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.acks = append(r.acks, trackerAck{deviceID: deviceID, resultCode: resultCode})
+	return nil
+}
+
+func (r *recordingTracker) wait(t *testing.T, count int) []trackerAck {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.mu.Lock()
+		acks := append([]trackerAck(nil), r.acks...)
+		r.mu.Unlock()
+		if len(acks) >= count {
+			return acks
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("acks = %d, want %d", len(acks), count)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestGT06CommandReplyIsTracked feeds the 0x80 frame a device sends after
+// executing a command and checks that the connection's device is reported.
+func TestGT06CommandReplyIsTracked(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("864717003283581", "gt06"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	tracker := &recordingTracker{}
+	server, err := gateway.NewServer(
+		gateway.DefaultRegistry(), "gt06", directory, nil,
+		gateway.WithLogger(newTestLogger(t)),
+		gateway.WithCommandTracker(tracker),
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	conn := startConn(t, server)
+
+	write(t, conn, mustHex(t, "78780d01086471700328358100093f040d0a"))
+	if ack := readN(t, conn, 10); ack[3] != 0x01 {
+		t.Fatalf("login ack = %x", ack)
+	}
+
+	// 7878 | length | 0x80 | command length | "Relay,1#" | english | serial |
+	// crc | 0d0a
+	write(t, conn, mustHex(t, "787810800b52656c61792c312300020001cb480d0a"))
+
+	acks := tracker.wait(t, 1)
+	if acks[0].deviceID != 1 {
+		t.Errorf("device id = %d, want 1", acks[0].deviceID)
+	}
+	if acks[0].resultCode != 0 {
+		t.Errorf("result code = %d, want 0", acks[0].resultCode)
+	}
+
+	// The reply itself must not be acknowledged, or the device would see a
+	// response to a response.
+	extra := make([]byte, 16)
+	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if n, err := conn.Read(extra); err == nil {
+		t.Fatalf("extra response of %d bytes: %x", n, extra[:n])
+	}
+}

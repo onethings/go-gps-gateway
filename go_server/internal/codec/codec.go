@@ -36,6 +36,14 @@ type UniqueIDProvider interface {
 	UniqueID(deviceID int64) (string, error)
 }
 
+// CommandAck is a device's answer to a command this server sent. Only the
+// protocols that can recognise one fill it in.
+type CommandAck struct {
+	// Code is the protocol result code. Zero means the device accepted the
+	// command; any other value means it refused it.
+	Code int
+}
+
 // Result is the outcome of decoding a single frame.
 type Result struct {
 	// Positions holds every position decoded from the frame, in device order.
@@ -49,6 +57,9 @@ type Result struct {
 	// (GT06 login, Teltonika IMEI packet, JT808 register). The gateway binds
 	// it to the connection and resolves the device through DeviceResolver.
 	UniqueID string
+	// CommandAck is set when the frame answers a command. The gateway closes
+	// the command record of the connection's device with it.
+	CommandAck *CommandAck
 }
 
 // NewResult creates an empty successful result.

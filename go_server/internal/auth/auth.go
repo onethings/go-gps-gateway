@@ -23,6 +23,7 @@ const (
 	ScopeReadDevices   Scope = "read:devices"
 	ScopeReadAlerts    Scope = "read:alerts"
 	ScopeReadMetrics   Scope = "read:metrics"
+	ScopeReadCommands  Scope = "read:commands"
 	ScopeWriteDevices  Scope = "write:devices"
 	ScopeWriteCommands Scope = "write:commands"
 
@@ -38,6 +39,7 @@ var KnownScopes = []Scope{
 	ScopeReadDevices,
 	ScopeReadAlerts,
 	ScopeReadMetrics,
+	ScopeReadCommands,
 	ScopeWriteDevices,
 	ScopeWriteCommands,
 	ScopeAll,

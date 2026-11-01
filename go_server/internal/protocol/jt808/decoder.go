@@ -109,6 +109,17 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		}
 		result.AddResponse(buildMessage(h, msgTimeSyncResponse, payload))
 
+	case msgTerminalGeneralResponse:
+		// The terminal answers a downlink message here. There is nothing to
+		// reply with, so the frame only reports how the command ended.
+		if buf.ReadableBytes() >= 5 {
+			buf.ReadUnsignedShort() // answered serial number
+			buf.ReadUnsignedShort() // answered message type
+			result.CommandAck = &codec.CommandAck{Code: int(buf.ReadUnsignedByte())}
+		} else {
+			result.Consumed = false
+		}
+
 	default:
 		// Unhandled or unsupported message: keep the connection alive.
 		result.Consumed = false

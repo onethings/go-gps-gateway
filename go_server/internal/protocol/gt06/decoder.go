@@ -153,6 +153,15 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		result.AddResponse(d.timeResponse())
 		return result, nil
 
+	case messageType == msgCommand0 || messageType == msgCommand1 || messageType == msgCommand2:
+		// The device answers a downlink command here. GT06 carries no result
+		// code, so the frame itself means the command was executed, and it
+		// carries no serial that would identify the request either, which is
+		// why the gateway closes the newest sent command of the device. Like
+		// the Java server, do not answer a command reply.
+		result.CommandAck = &codec.CommandAck{Code: 0}
+		return result, nil
+
 	case messageType == msgInfo && !extended:
 		d.copyLastLocation(position)
 		position.Set(model.KeyPower, float64(buf.ReadShort())/100)

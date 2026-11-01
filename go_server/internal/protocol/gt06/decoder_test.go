@@ -183,3 +183,39 @@ func TestFrameDecoderExtended(t *testing.T) {
 		t.Fatalf("extended frame = %x, consumed = %d", got, consumed)
 	}
 }
+
+// commandReply builds the 0x80 frame a device sends back after executing a
+// downlink command: length byte, ASCII content, two byte language field.
+func commandReply(t *testing.T, messageType int, content string) []byte {
+	t.Helper()
+	data := append([]byte{byte(len(content) + 3)}, content...)
+	data = append(data, 0x00, 0x02) // english
+
+	frame := []byte{0x78, 0x78, byte(len(data) + 5), byte(messageType)}
+	frame = append(frame, data...)
+	frame = append(frame, 0x00, 0x01) // message serial
+	crc := helper.CRC16X25(frame[2:])
+	return append(frame, byte(crc>>8), byte(crc), 0x0d, 0x0a)
+}
+
+func TestDecodeCommandReply(t *testing.T) {
+	for _, messageType := range []int{msgCommand0, msgCommand1, msgCommand2} {
+		frame := commandReply(t, messageType, "Relay,1#")
+		result, err := NewDecoder(Base()).DecodeWithSession(frame, testSession())
+		if err != nil {
+			t.Fatalf("decode %#x: %v", messageType, err)
+		}
+		if result.CommandAck == nil {
+			t.Fatalf("%#x: no command ack", messageType)
+		}
+		if result.CommandAck.Code != 0 {
+			t.Errorf("%#x: code = %d, want 0", messageType, result.CommandAck.Code)
+		}
+		if len(result.Responses) != 0 {
+			t.Errorf("%#x: responses = %d, want 0", messageType, len(result.Responses))
+		}
+		if len(result.Positions) != 0 {
+			t.Errorf("%#x: positions = %d, want 0", messageType, len(result.Positions))
+		}
+	}
+}

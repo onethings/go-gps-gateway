@@ -38,6 +38,11 @@ const (
 	msgResultSuccess        = 0x00
 )
 
+// msgTerminalGeneralResponse is the answer a terminal sends to a downlink
+// message. It is the reverse direction of msgGeneralResponse, which the
+// platform sends.
+const msgTerminalGeneralResponse = 0x0001
+
 // header is the parsed JT808 message header.
 type header struct {
 	delimiter   byte

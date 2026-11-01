@@ -206,11 +206,18 @@ func main() {
 			log.Fatalf("%s: listen %s: %v", name, *address, err)
 		}
 
-		server, err := gateway.NewServer(registry, name, directory, sink,
-			gateway.WithReadTimeout(10*time.Minute),
+		serverOptions := []gateway.Option{
+			gateway.WithReadTimeout(10 * time.Minute),
 			gateway.WithAutoRegister(),
 			gateway.WithMetrics(meters),
-		)
+		}
+		if store != nil {
+			// Device acknowledgements close the command rows the REST layer
+			// wrote, so the gateway needs the same store.
+			serverOptions = append(serverOptions, gateway.WithCommandTracker(store))
+		}
+
+		server, err := gateway.NewServer(registry, name, directory, sink, serverOptions...)
 		if err != nil {
 			log.Fatalf("%s: %v", name, err)
 		}
@@ -243,6 +250,7 @@ func main() {
 				api.WithUsers(store),
 				api.WithNotifications(store),
 				api.WithCommands(router, store),
+				api.WithCommandStore(store),
 				api.WithMetrics(meters),
 				api.WithHealthPinger(store),
 				api.WithLogger(log.Printf),

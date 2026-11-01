@@ -291,34 +291,67 @@ unit 那格用 `httptest` 蓋掉 lane 2 / 3 / 4 / 6 / 7 / 9 / 10 的判斷條件
 
 **Files.**
 
-- [ ] Create `go_server/internal/storage/postgres/migrations/0007_commands.sql`.
-- [ ] Create `go_server/internal/storage/postgres/commands.go`.
-- [ ] Create `go_server/internal/storage/postgres/commands_test.go`.
-- [ ] Edit `go_server/internal/model/command.go`.
-- [ ] Edit `go_server/internal/codec/codec.go`.
-- [ ] Edit `go_server/internal/gateway/server.go`.
-- [ ] Edit `go_server/internal/api/server.go`.
-- [ ] Edit `go_server/internal/protocol/jt808/decoder.go`.
-- [ ] Edit `go_server/internal/protocol/gt06/decoder.go`.
+- [x] Create `go_server/internal/storage/postgres/migrations/0007_commands.sql`.
+- [x] Create `go_server/internal/storage/postgres/commands.go`.
+- [x] Create `go_server/internal/storage/postgres/commands_test.go`.
+- [x] Edit `go_server/internal/model/command.go`.
+- [x] Edit `go_server/internal/codec/codec.go`.
+- [x] Edit `go_server/internal/gateway/server.go`.
+- [x] Edit `go_server/internal/api/server.go`.
+- [x] Edit `go_server/internal/protocol/jt808/decoder.go`.
+- [x] Edit `go_server/internal/protocol/gt06/decoder.go`.
+- [x] Edit `go_server/internal/protocol/jt808/message.go`, one constant for the `0x0001` message type。Outside the
+      list above; see Appendix C 偏差六.
+- [x] Edit `go_server/internal/auth/auth.go`, the `read:commands` scope。Outside the list above; see Appendix C 偏差七.
+- [x] Edit `go_server/cmd/traccar-gateway/main.go`, four lines of store wiring。Outside the list above; see
+      Appendix C 偏差八.
 
 **Build.**
 
-- [ ] `0007_commands.sql` 建 `commands` 表，欄位是 id、device_id、type、attributes、status、result_code、sent_at、done_at。
-- [ ] `model.Command` 加 `ID`、`Status`、`ResultCode` 三個欄位，狀態只有 pending、sent、done、failed。
-- [ ] `handleCommand` 先寫一列 pending 再寫入連線，寫成功改成 sent，離線改成 failed 並保留現行的 409。
-- [ ] `codec.Result` 加 `CommandAck` 欄位，JT808 的終端一般回應與 GT06 的 0x80 命令回應填它，gateway 收到後把對應那列改成 done 或 failed。
-- [ ] 新增 `GET /api/commands`，照裝置擁有權過濾，參數是 deviceId 與 limit。
+- [x] `0007_commands.sql` 建 `commands` 表，欄位是 id、device_id、type、attributes、status、result_code、
+      sent_at、done_at，外加 `created_at`，並用 `CHECK` 把 status 限死在四個值。計畫沒列 `created_at`：
+      一列 `pending` 還沒有 `sent_at`，沒有它就看不出這筆命令停了多久（見 Appendix C 偏差九）。
+- [x] `model.Command` 加 `ID`、`Status`、`ResultCode` 三個欄位，狀態只有 pending、sent、done、failed。
+      另外補了 `SentAt`、`DoneAt`、`CreatedAt`，因為 `GET /api/commands` 要輸出它們。
+      `ResultCode` 是 `*int`：裝置回 0 與裝置沒回是兩件事，`int` 分不出來。
+- [x] `handleCommand` 先寫一列 pending 再寫入連線，寫成功改成 sent，離線改成 failed 並保留現行的 409。
+      編碼失敗（400）與 `devices.protocol` 為 NULL（409）都不留列：那兩種情況連 payload 都沒有。
+      寫列失敗回 500 且**不送出**，否則呼叫端拿到 202 卻查不到紀錄。
+- [x] `codec.Result` 加 `CommandAck` 欄位，JT808 的終端一般回應（`0x0001`）與 GT06 的 0x80 / 0x81 / 0x82
+      命令回應填它，gateway 收到後把對應那列改成 done 或 failed。
+- [x] 新增 `GET /api/commands`，照裝置擁有權過濾，參數是 deviceId 與 limit（另有 offset）。
 
 **You see.**
 
 - [ ] 對在線裝置發命令後，`select status from commands` 由 pending 轉 sent，收到回應後轉 done。
+      Unchecked，因為這個沙箱禁止 bind TCP port，`docker` 也沒有 daemon，起不了 gateway 與 Postgres。
+      `TestCommandStoreIntegration` 做的是同一件事，但需要 `TRACCAR_POSTGRES_DSN`，本機跑不到。
 - [ ] 對離線裝置發命令，HTTP 仍是 409，`commands` 多一列 failed。
+      Unchecked for the same reason. `TestCommandOfflineIsRecordedAsFailed` 在 `httptest` 裡驗了這條。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `commands_test.go` 涵蓋四種狀態轉移與 `GET /api/commands` 的擁有權過濾。`decoder_test.go` 各加一個 ACK 解析 case。跑 `go test ./internal/storage/postgres/... ./internal/api/... ./internal/protocol/...`。
+- [x] `commands_test.go` 涵蓋四種狀態轉移與 `GET /api/commands` 的擁有權過濾。`decoder_test.go` 各加一個 ACK
+      解析 case。跑 `go test ./internal/storage/postgres/... ./internal/api/... ./internal/protocol/...`。
+      Evidence. `go vet ./...`、`go build ./...`、`go test ./...` 全綠，`go test -race` 在
+      `api` / `gateway` / `storage/postgres` / 兩個 protocol package 也乾淨。
+      `postgres`：`TestCommandQueryDefaults`、`TestCommandQueryFilters`、`TestCommandQueryOwnership`
+      （空授權清單產生 `WHERE false`）、`TestCommandQueryClamps`、`TestCreateCommandRejectsMissingDevice`，
+      以及 `TestCommandStoreIntegration`（pending → sent → done、離線失敗、裝置回 1 變 failed、
+      一次回應只收掉最新一列、擁有權過濾）；後者需要 `TRACCAR_POSTGRES_DSN`，本機只跑到 skip。
+      `api`：`TestCommandIsRecorded`（202 且回 id）、`TestCommandOfflineIsRecordedAsFailed`、
+      `TestCommandUnsupportedIsNotRecorded`、`TestCommandIsNotSentWhenRecordingFails`、`TestCommandList`
+      （欄位與時間戳）、`TestCommandListIsScopedToOwnedDevices`、`TestCommandListNeedsScope`。
+      `jt808`：`TestDecodeTerminalGeneralResponse`（結果 0 與 1）、`TestDecodeShortTerminalGeneralResponse`。
+      `gt06`：`TestDecodeCommandReply`（0x80 / 0x81 / 0x82，且不回覆）。`gateway`：
+      `TestGT06CommandReplyIsTracked`（net.Pipe 上的登入 → 0x80 → tracker 收到 device 1、code 0，
+      且不再回一個 ACK）。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `openrouter/OpenRouter 寫Code/x-ai/grok-4.7` at the PR head, per the boot recipe.
+
+這個沙箱禁止 bind TCP port，`docker` 也沒有 daemon，`scripts/live-lanes.sh` 在 tree 裡也不存在
+（PR-1 的分支還沒合進來），所以十條 lane 全部沒跑，全部維持未勾。
+unit 那格用 `httptest` 與 `net.Pipe` 蓋掉 lane 2 / 3 / 4 / 6 / 7 / 8 的判斷條件，但不算替代證據。
 
 - [ ] Lane 1. Regression lane against trunk. 在線裝置發一次 engineStop，trunk 與 head 都回 202，且 sim 都收到同一個位元組序列。Save `lane-1.log`. Pass when 兩邊位元組相同。
 - [ ] Lane 2. 發命令後立刻查 `commands`。Save `lane-2.log`. Pass when 那一列是 pending 或 sent。
@@ -329,14 +362,21 @@ unit 那格用 `httptest` 蓋掉 lane 2 / 3 / 4 / 6 / 7 / 9 / 10 的判斷條件
 - [ ] Lane 7. 送不存在的命令型別。Save `lane-7.log`. Pass when 回 400 且 `commands` 沒有新列。
 - [ ] Lane 8. 用裝置擁有權過濾查 `GET /api/commands`。Save `lane-8.log`. Pass when 看不到別人的裝置的命令。
 - [ ] Lane 9. 有 pending 列時重啟 gateway。Save `lane-9.log`. Pass when 重啟後列還在且沒有重送。
+      （程式碼上成立：gateway 啟動時不掃 `commands`，所以不會重送；但沒有實測。）
 - [ ] Lane 10. 一秒內送 100 個命令到 100 台在線裝置。Save `lane-10.log`. Pass when 5 秒內全部到終態，`notification_dropped_total` 或 `alert_dropped_total` 沒有增加。
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `POST /api/commands` 的 p95 延遲與每秒完成的命令數。
+- [x] Metric. `POST /api/commands` 的 p95 延遲與每秒完成的命令數。
+      只量到 handler 這一段：`BenchmarkCommandAccepted` 在 `httptest` 裡配假 store，三輪 2000 次，
+      39 µs / 45 µs / 55 µs 一次，等於 handler 上限約 18k 到 25k 次/秒，p95 遠低於 50 毫秒。
+      真路徑還要加三次 DB round trip（INSERT、UPDATE sent、ack 時的 UPDATE），本機沒有資料庫量不到。
 - [ ] Probe. `scripts/live-lanes.sh 10` 在 trunk 與 head 各跑五次，交錯執行。
+      Unchecked，這個腳本不在 tree 裡，而且沒有可 bind 的 socket。
 - [ ] Baseline. 先記 trunk 的 p95，trunk 沒有 `commands` 表，所以 trunk 量的是寫入 socket 的時間。
+      Unchecked for the same reason.
 - [ ] Rule. head 的 p95 超過 50 毫秒就失敗，每秒完成數低於 100 也失敗。
+      Unchecked。上面那組 in-process 數字離門檻有三個數量級，但它不含資料庫，不能拿來判這條規則。
 
 **Review gate.** None. PR-4 is not review-gated.
 
@@ -361,6 +401,9 @@ unit 那格用 `httptest` 蓋掉 lane 2 / 3 / 4 / 6 / 7 / 9 / 10 的判斷條件
 p95 740 ms，而計畫的 3 倍規則要求它跟 `GET /api/devices` 同一個量級，所以這條規則沒過。
 bcrypt cost 12 是計畫指定的值，owner 沒有改它，等 operator 決定（見 PR-3 的 perf 格）。
 
+PR-4 留下的未證問題是「命令多三趟 DB 之後 p95 還守不守得住 50 毫秒」。本機只量到 handler 那一段：
+`BenchmarkCommandAccepted` 配假 store 是 39 到 55 µs 一次。三次 round trip 的成本要真實資料庫才量得到。
+
 ## Appendix B. Alternatives rejected
 
 用 Java 版的 `traccar-master` 當 live 對照組被否決，因為它要 Gradle 與 MySQL 才能跑同一批 lane，成本遠高於寫一支 Go simulator。
@@ -368,6 +411,10 @@ bcrypt cost 12 是計畫指定的值，owner 沒有改它，等 operator 決定�
 讓 PR-2 與 PR-4 並行到最後才一起驗證被否決，因為兩支都會動 `codec.Result` 與 decoder，衝突會在合併時才爆出來。
 
 把 `attributes` 與圍欄改成 REST 可維護被否決，那是另一支獨立的 PR，塞進來會讓 PR-3 與 PR-4 的檔案邊界失效。
+
+PR-4 用流水號配對 ACK 被否決。JT808 可以改 encoder 讓每筆命令拿一個流水號，但 GT06 / H02 / Teltonika
+的回應沒有等價欄位，配對規則會變成「兩種協議兩套」，而且 encoder 不在 PR-4 的檔案邊界內。等「命令的可靠性」
+那條獨立 PR 一起做（見 README 的下一步）。
 
 ## Appendix C. Risks
 
@@ -377,12 +424,23 @@ PR-3 風險是 bcrypt 拖慢 login，以及 migration 0006 在舊資料上的相
 實測把這個風險變成了事實：login p95 740 ms，perf 規則沒過（見 PR-3 的 perf 格）。migration 0006 只加一個
 可為 NULL 的欄位，舊帳號不動，但 lane 5 在沙箱裡跑不了，所以「在已經有資料的 DB 上跑 0006」仍未實測。
 PR-4 風險是 ACK 對不上請求，JT808 的回應沒有序號可以配對，可能要用時間窗配對。owner 要看的是 lane 4 與 lane 5 在同一時間窗內只影響一列。
+這個風險落地成事實：JT808 encoder 一律送流水號 0，GT06 回應裡的是該幀自己的序號，兩邊都沒有能對回請求的
+識別碼，所以配對規則是「該裝置最新一列 `sent`」。它只會動一列，但當前一筆一直沒回應時，被回應的會是
+後送的那筆（見 README「已知限制」與「下一步」第 2 條）。
 偏差一，lane 的產物是 `.log` 與 SQL 輸出，不是 `.png`，因為這個服務沒有 GUI。偏差二，`git show origin/main:` 的讀法在 repo 尚未 vendor pstack 前不成立。
 偏差四，PR-3 動了 `go_server/internal/api/server.go` 的一行路由註冊。`Handler()` 是唯一掛路由的地方，
 `handleLogin` 放在同一個 package 的另一個檔案也只能靠它註冊，所以這一行無法留在檔案邊界外。它落在
 認證段，與 PR-4 會改的命令段不同行，rebase 時不會撞。
 偏差五，PR-3 動了 `go_server/internal/storage/postgres/store_test.go`。新增的兩條 SQL 沒有其他行為驗證，
 不補一個 env gated 的整合測試就只剩編譯檢查。這個檔案不屬於 PR-4 的檔案邊界。
+偏差六，PR-4 動了 `go_server/internal/protocol/jt808/message.go`。`0x0001` 這個訊息型別常數跟其他
+`MSG_*` 放在一起，塞進 decoder.go 只為了守檔案邊界會讓它變成孤兒。
+偏差七，PR-4 動了 `go_server/internal/auth/auth.go`，新增 `read:commands` scope。新端點需要一個讀取
+scope，借用 `read:devices` 會讓「只看命令」的 token 順便看到整個裝置清單。這是一行常數加一行 `KnownScopes`。
+偏差八，PR-4 動了 `go_server/cmd/traccar-gateway/main.go`。gateway 的 ack 收尾與 REST 的寫列必須共用
+同一個 store，`main.go` 是唯一把 store 交出去的地方，四行 wiring 沒有別的落點。
+偏差九，`0007_commands.sql` 多了計畫沒列的 `created_at`。`pending` 那列還沒有 `sent_at`，
+沒有 `created_at` 就看不出它停了多久；其他表也都有這一欄。
 
 ## Appendix D. Links and reading list
 

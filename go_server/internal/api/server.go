@@ -27,6 +27,7 @@ const (
 	maxAlertLimit       = 1000
 	maxPositionLimit    = 1000
 	maxDeviceLimit      = 1000
+	maxCommandLimit     = 1000
 )
 
 // AlertQuerier is the storage contract the alerts handler needs.
@@ -38,6 +39,15 @@ type AlertQuerier interface {
 type CommandRouter interface {
 	EncodeCommand(protocol string, command *model.Command) ([]byte, error)
 	Send(protocol string, deviceID int64, payload []byte) error
+}
+
+// CommandStore records the lifecycle of every command and serves the command
+// history. Without it commands are delivered but not recorded.
+type CommandStore interface {
+	CreateCommand(ctx context.Context, command *model.Command) error
+	MarkCommandSent(ctx context.Context, commandID int64) error
+	MarkCommandFailed(ctx context.Context, commandID int64) error
+	QueryCommands(ctx context.Context, filter model.CommandFilter) ([]model.Command, error)
 }
 
 // DeviceProtocols resolves the protocol a device speaks.
@@ -78,6 +88,7 @@ type Server struct {
 	users         UserStore
 	notifications NotificationStore
 	router        CommandRouter
+	commands      CommandStore
 	protocols     DeviceProtocols
 	pinger        Pinger
 	meters        *metrics.Set
@@ -115,6 +126,13 @@ func WithCommands(router CommandRouter, protocols DeviceProtocols) Option {
 		s.router = router
 		s.protocols = protocols
 	}
+}
+
+// WithCommandStore records every command and enables GET /api/commands.
+// Without it commands are still delivered, but their history is empty and the
+// list route reports 501.
+func WithCommandStore(commands CommandStore) Option {
+	return func(s *Server) { s.commands = commands }
 }
 
 // WithPositions enables GET /api/positions. Without it the route reports 501.
@@ -192,6 +210,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("GET /api/positions", s.handlePositions)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	mux.HandleFunc("GET /api/commands", s.handleCommands)
 	mux.HandleFunc("POST /api/commands", s.handleCommand)
 
 	// Account administration. These routes answer 501 when no UserStore is
@@ -709,15 +728,16 @@ type commandRequest struct {
 }
 
 type commandResponse struct {
+	ID       int64  `json:"id,omitempty"`
 	DeviceID int64  `json:"deviceId"`
 	Type     string `json:"type"`
 	Protocol string `json:"protocol"`
 	Queued   bool   `json:"queued"`
 }
 
-// handleCommand encodes a device command and writes it to the device
-// connection. Status codes are stable: 404 unknown device, 409 offline or
-// unknown protocol, 400 unsupported command, 501 commands not configured.
+// handleCommand encodes a device command, records it and writes it to the
+// device connection. Status codes are stable: 404 unknown device, 409 offline
+// or unknown protocol, 400 unsupported command, 501 commands not configured.
 func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	if s.router == nil || s.protocols == nil {
 		writeError(w, http.StatusNotImplemented, errors.New("commands are not configured"))
@@ -782,7 +802,22 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The row exists before the payload does, so a crash between the two
+	// leaves a pending command that was never sent rather than an untraceable
+	// send. Nothing is written when the row cannot be created: a caller that
+	// gets 202 can then always find the command afterwards.
+	if s.commands != nil {
+		if err := s.commands.CreateCommand(ctx, command); err != nil {
+			s.logf("api: record command %s for device %d: %v", request.Type, request.DeviceID, err)
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return
+		}
+	}
+
 	if err := s.router.Send(protocol, request.DeviceID, payload); err != nil {
+		if s.commands != nil {
+			s.markCommand(ctx, command.ID, false)
+		}
 		if errors.Is(err, gateway.ErrDeviceOffline) {
 			writeError(w, http.StatusConflict, fmt.Errorf("device %d is offline", request.DeviceID))
 			return
@@ -792,12 +827,130 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.commands != nil {
+		s.markCommand(ctx, command.ID, true)
+	}
+
 	writeJSON(w, http.StatusAccepted, commandResponse{
+		ID:       command.ID,
 		DeviceID: request.DeviceID,
 		Type:     request.Type,
 		Protocol: protocol,
 		Queued:   true,
 	})
+}
+
+// markCommand closes the send half of a command record. A failure here cannot
+// change the answer to the caller: the payload either reached the device or it
+// did not, and the row keeps its previous status.
+func (s *Server) markCommand(ctx context.Context, commandID int64, sent bool) {
+	var err error
+	if sent {
+		err = s.commands.MarkCommandSent(ctx, commandID)
+	} else {
+		err = s.commands.MarkCommandFailed(ctx, commandID)
+	}
+	if err != nil {
+		s.logf("api: finish command %d (sent=%v): %v", commandID, sent, err)
+	}
+}
+
+type commandView struct {
+	ID         int64          `json:"id"`
+	DeviceID   int64          `json:"deviceId"`
+	Type       string         `json:"type"`
+	Attributes map[string]any `json:"attributes"`
+	Status     string         `json:"status"`
+	ResultCode *int           `json:"resultCode,omitempty"`
+	CreatedAt  time.Time      `json:"createdAt"`
+	SentAt     *time.Time     `json:"sentAt,omitempty"`
+	DoneAt     *time.Time     `json:"doneAt,omitempty"`
+}
+
+type commandsResponse struct {
+	Commands []commandView `json:"commands"`
+	Count    int           `json:"count"`
+}
+
+// handleCommands lists the commands of the devices the caller may see.
+func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
+	if s.commands == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("commands are not configured"))
+		return
+	}
+	if !s.authorize(w, r, auth.ScopeReadCommands) {
+		return
+	}
+
+	filter, err := commandFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	filter.DeviceIDs = s.deviceScope(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	commands, err := s.commands.QueryCommands(ctx, filter)
+	if err != nil {
+		s.logf("api: query commands: %v", err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+
+	response := commandsResponse{
+		Commands: make([]commandView, 0, len(commands)),
+		Count:    len(commands),
+	}
+	for _, command := range commands {
+		attributes := command.Attributes
+		if attributes == nil {
+			attributes = map[string]any{}
+		}
+		view := commandView{
+			ID:         command.ID,
+			DeviceID:   command.DeviceID,
+			Type:       command.Type,
+			Attributes: attributes,
+			Status:     command.Status,
+			ResultCode: command.ResultCode,
+			CreatedAt:  command.CreatedAt.UTC(),
+		}
+		if !command.SentAt.IsZero() {
+			sentAt := command.SentAt.UTC()
+			view.SentAt = &sentAt
+		}
+		if !command.DoneAt.IsZero() {
+			doneAt := command.DoneAt.UTC()
+			view.DoneAt = &doneAt
+		}
+		response.Commands = append(response.Commands, view)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// commandFilter parses and validates the query string:
+//
+//	deviceId=7&limit=50&offset=0
+func commandFilter(r *http.Request) (model.CommandFilter, error) {
+	query := r.URL.Query()
+	var filter model.CommandFilter
+
+	deviceID, err := parseDeviceID(query)
+	if err != nil {
+		return filter, err
+	}
+	filter.DeviceID = deviceID
+
+	if filter.Limit, err = parseLimit(query, maxCommandLimit); err != nil {
+		return filter, err
+	}
+	if filter.Offset, err = parseOffset(query); err != nil {
+		return filter, err
+	}
+
+	return filter, nil
 }
 
 // alertFilter parses and validates the query string:

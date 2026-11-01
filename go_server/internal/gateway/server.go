@@ -16,6 +16,16 @@ import (
 // defaultMaxFrameSize caps the per connection reassembly buffer.
 const defaultMaxFrameSize = 1 << 20
 
+// CommandTracker records the device's answer to a command this server sent.
+// The storage layer implements it, so the gateway never imports it. A nil
+// tracker leaves acknowledgements unrecorded.
+type CommandTracker interface {
+	// AcknowledgeCommand closes the newest command of device that is still
+	// waiting for an answer. An unknown device or an empty queue is a no-op,
+	// not an error.
+	AcknowledgeCommand(ctx context.Context, deviceID int64, resultCode int) error
+}
+
 // Server accepts connections for a single protocol.
 type Server struct {
 	protocolName string
@@ -25,6 +35,7 @@ type Server struct {
 	sink         Sink
 	locations    *LocationCache
 	conns        *connectionSet
+	commands     CommandTracker
 	logf         func(format string, args ...any)
 	maxFrameSize int
 	readTimeout  time.Duration
@@ -67,6 +78,15 @@ func WithReadTimeout(timeout time.Duration) Option {
 // implementing DeviceRegistrar).
 func WithAutoRegister() Option {
 	return func(s *Server) { s.autoRegister = true }
+}
+
+// WithCommandTracker records device acknowledgements as commands ending.
+func WithCommandTracker(tracker CommandTracker) Option {
+	return func(s *Server) {
+		if tracker != nil {
+			s.commands = tracker
+		}
+	}
 }
 
 // WithMetrics publishes connection, frame and position counters.
@@ -195,7 +215,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 				if frame == nil {
 					break
 				}
-				if err := s.handleFrame(dc, decoder, frame, &session); err != nil {
+				if err := s.handleFrame(ctx, dc, decoder, frame, &session); err != nil {
 					s.logf("%s: %v", s.protocolName, err)
 					return
 				}
@@ -217,7 +237,8 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 }
 
 func (s *Server) handleFrame(
-	conn *deviceConn, decoder codec.Decoder, frame []byte, session **codec.DeviceSession,
+	ctx context.Context, conn *deviceConn, decoder codec.Decoder, frame []byte,
+	session **codec.DeviceSession,
 ) error {
 
 	result, err := decodeFrame(decoder, frame, *session)
@@ -263,6 +284,16 @@ func (s *Server) handleFrame(
 	for _, response := range result.Responses {
 		if err := conn.write(response); err != nil {
 			return fmt.Errorf("write response: %w", err)
+		}
+	}
+
+	// An answer to a command is a database write: log a failure instead of
+	// dropping the connection the device is still using for positions.
+	if result.CommandAck != nil && s.commands != nil && *session != nil {
+		if err := s.commands.AcknowledgeCommand(
+			ctx, (*session).DeviceID, result.CommandAck.Code,
+		); err != nil {
+			s.logf("%s: acknowledge command: %v", s.protocolName, err)
 		}
 	}
 

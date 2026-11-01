@@ -215,6 +215,11 @@ func main() {
 		if *autoRegister {
 			options = append(options, gateway.WithAutoRegister())
 		}
+		if store != nil {
+			// Device acknowledgements close the command rows the REST layer
+			// wrote, so the gateway needs the same store.
+			options = append(options, gateway.WithCommandTracker(store))
+		}
 
 		server, err := gateway.NewServer(registry, name, directory, sink, options...)
 		if err != nil {
@@ -249,6 +254,7 @@ func main() {
 				api.WithUsers(store),
 				api.WithNotifications(store),
 				api.WithCommands(router, store),
+				api.WithCommandStore(store),
 				api.WithMetrics(meters),
 				api.WithHealthPinger(store),
 				api.WithLogger(log.Printf),

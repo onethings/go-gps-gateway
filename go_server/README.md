@@ -8,7 +8,7 @@
 - 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 告警規則 / 地理圍欄 / 告警通知（webhook / email，
   含使用者訂閱）
   - REST（裝置管理、位置查詢、告警查詢、健康檢查、命令下發、`/metrics`、使用者 token / 裝置擁有權、
-    帳號與 token 管理、通知訂閱）全部可編譯、`go test ./...` 全綠。
+    帳號與 token 管理、密碼登入、通知訂閱）全部可編譯、`go test ./...` 全綠。
 
 ## 架構
 
@@ -28,13 +28,15 @@ device ──TCP──▶ gateway.Server (每連線一個 goroutine)
                         └─ postgres.BatchSink  positions 批次落地
 
 client ──HTTP──▶ api.Server (RequireAuth)
-                   ├─ 憑證：-api-key（admin）或 api_tokens（scope + user_devices）
+                   ├─ 憑證：-api-key（admin）、api_tokens（scope + user_devices）或 /api/login 換發的 token
                    ├─ GET /api/devices   ──▶ devices 查詢 / 新增 / 修改 / 刪除
                    ├─ GET /api/positions ──▶ positions 查詢（自動加裝置條件）
                    ├─ GET /api/alerts    ──▶ alerts 查詢（自動加裝置條件）
                    ├─ GET /api/health
+                   ├─ POST /api/login    ──▶ email + 密碼換發一組 token（唯一不用帶憑證的路由）
                    ├─ GET /metrics       ──▶ Prometheus 文字格式
-                   ├─ POST /api/commands ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
+                   ├─ POST /api/commands ──▶ commands 落一列 ──▶ gateway.Router ──▶ 該協議 encoder ──▶ 設備連線
+                   ├─ GET /api/commands  ──▶ commands 查詢（自動加裝置條件）
                    ├─ /api/users/*       ──▶ 帳號 / token / 裝置授權 / 通知訂閱（admin 或本人）
                    └─ /api/notifications ──▶ 通知範本（admin 維護，任何帳號可讀）
 ```
@@ -44,7 +46,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | 路徑                             | 說明                                                                                                                                       |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `internal/model`                 | 統一資料模型：`Position` / `Network` / `CellTower` / `Command` / `User` / `Notification`                                                    |
-| `internal/auth`                  | 權限模型：scope、`Principal`、token 產生 / SHA-256 雜湊                                                                                     |
+| `internal/auth`                  | 權限模型：scope、`Principal`、token 產生 / SHA-256 雜湊、密碼 bcrypt 雜湊                                                                   |
 | `internal/codec`                 | 協議介面：`FrameDecoder`、`Decoder`、`SessionDecoder`、`Encoder`、`Base`                                                                   |
 | `internal/helper`                | Java helper 的移植：`Buffer`(Netty ByteBuf)、`PatternBuilder`、`Parser`、BCD、DateBuilder、CRC16/X25、CRC16/IBM、XOR、Luhn                 |
 | `internal/protocol/h02`          | H02 / TK102 系                                                                                                                             |
@@ -56,7 +58,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                      |
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線                                                            |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                            |
-| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`GET /metrics`、`POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`；認證 / scope / 裝置擁有權 |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`、`GET /api/positions`、`GET /api/alerts`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`；認證 / scope / 裝置擁有權 |
 | `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                  |
 | `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                               |
 | `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                               |
@@ -136,12 +138,15 @@ REST 預設需要憑證（`-api-key` 或資料庫 token）；本機想直接 cur
 - `positions(id, device_id, protocol, device_time, server_time, valid, latitude, longitude, altitude, speed, course, accuracy, attributes)`
 - `alerts(id, device_id, position_id, type, alert_time, geofence_id, attributes)`（`0002_alerts.sql`）
 - `geofences(id, name, area, attributes, created_at)`（`0002_alerts.sql`）
-- `users(id, email, name, admin, disabled, created_at)`（`0003_users.sql`；`disabled` 由
-  `0004_users_disabled.sql` 補上）
+- `users(id, email, name, admin, disabled, created_at, password_hash)`（`0003_users.sql`；`disabled` 由
+  `0004_users_disabled.sql` 補上，`password_hash` 由 `0006_users_password.sql` 補上，預設 NULL =
+  只能用 token 登入）
 - `user_devices(user_id, device_id)`（`0003_users.sql`，多對多）
 - `api_tokens(id, user_id, token_hash, scopes, expires_at, created_at)`（`0003_users.sql`）
 - `notifications(id, type, notificators, description, created_at)`（`0005_notifications.sql`）
 - `user_notifications(user_id, notification_id)`（`0005_notifications.sql`，多對多）
+- `commands(id, device_id, type, attributes, status, result_code, sent_at, done_at, created_at)`
+  （`0007_commands.sql`；`status` 只接受 pending / sent / done / failed）
 - `schema_migrations(version, applied_at)`
 
 寫入路徑：`BatchSink`（非阻塞佇列 + 每批一個 multi-row `INSERT`）。
@@ -374,18 +379,21 @@ Webhook 的 body 固定為一份 JSON：
 
 ## 認證與權限
 
-除了 `/api/health`，REST 每個請求都要帶憑證，放在 `X-Api-Key` 或
+除了 `/api/health` 與 `POST /api/login`，REST 每個請求都要帶憑證，放在 `X-Api-Key` 或
 `Authorization: Bearer <token>`（兩者等價）：
 
 | 憑證         | 來源                                  | 權限                         |
 | ------------ | ------------------------------------- | ---------------------------- |
 | 共用 API key | `-api-key` / `TRACCAR_API_KEY`        | admin：所有 scope、所有裝置  |
 | 使用者 token | `api_tokens` 表，用 `-issue-token` 發 | 依 `scopes` + `user_devices` |
+| 密碼登入     | `POST /api/login`（email + 密碼）     | 換發一組帶 `*` 的新 token    |
+
+密碼只以 bcrypt（cost 12）雜湊存在 `users.password_hash`，登入請求和任何 user JSON 都不會出現它。
 
 憑證以常數時間比較；token 只存 SHA-256（`api_tokens.token_hash`），資料庫外洩也拿不到原值。
 缺憑證或不符回 `401`（帶 `WWW-Authenticate: Bearer`），scope 不足或裝置未授權回 `403`。
 接了 `-dsn` 之後 token 認證一律啟用：**沒設 `-api-key` 又沒有任何有效 token 時，REST 是全關的**
-（只有 `/api/health` 例外）。舊的 `-api-key` 仍然可用，等於 admin。
+（只有 `/api/health` 與 `/api/login` 例外）。舊的 `-api-key` 仍然可用，等於 admin。
 本機開發若不想每次帶憑證，可以加 `-allow-anonymous`（啟動會印警告，不要用在對外環境）。
 
 ```bash
@@ -403,9 +411,13 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 | `read:devices`    | `GET /api/devices`               |
 | `read:alerts`     | `GET /api/alerts`                |
 | `read:metrics`    | `GET /metrics`                   |
+| `read:commands`   | `GET /api/commands`              |
 | `write:devices`   | `POST/PUT/DELETE /api/devices`   |
 | `write:commands`  | `POST /api/commands`             |
-| `*`               | 全部（給機器用，等同舊 API key） |
+| `*`               | 全部（給機器用，等同舊 API key），另外是列出 / 撤銷自己 token 的必要條件 |
+
+`*` 不等於 admin：帳號管理（建 / 改 / 刪帳號、發 token）仍然只認 `users.admin = true`，
+所以帶 `*` 的 token 不會提權，只能管自己的 token。
 
 ### 使用者與裝置擁有權
 
@@ -421,22 +433,24 @@ admin key 建的裝置不會自動綁定，要另外授權（見下節）。
 ### 帳號管理 API
 
 帳號相關路由全部需要 **admin 憑證**（`-api-key`，或 `users.admin = true` 的使用者 token），
-不看 scope：即使 token 帶 `*` 也不能管理帳號，避免提權。沒有配置 `-dsn` 時這些路由回 `501`；
-`-allow-anonymous` 時也會一併開放，只適合本機。通知訂閱的兩條 `/api/users/{id}/notifications/...`
-路由是例外：帳號本人或 admin 都可以操作（見「使用者訂閱」）。
+不看 scope：即使 token 帶 `*` 也不能建 / 改 / 刪帳號或發 token，避免提權。沒有配置 `-dsn` 時這些
+路由回 `501`；`-allow-anonymous` 時也會一併開放，只適合本機。
+兩處例外，兩者都只碰「自己的」資料：
+token 的列出與撤銷對帳號本人開放，但本人手上那組 token 必須帶 `*`（見「密碼登入」）；
+通知訂閱的 `/api/users/{id}/notifications/...` 對帳號本人開放，不看 scope（見「使用者訂閱」）。
 
 | 路由                                       | 說明                                                               |
 | ------------------------------------------ | ------------------------------------------------------------------ |
 | `GET /api/users`                           | 列出帳號（`limit` 1–1000、`offset`），含 `deviceCount` / `tokenCount` |
 | `POST /api/users`                          | 建立帳號，body `{"email","name","admin"}`；email 重複回 `409`      |
-| `PUT /api/users/{id}`                      | 局部更新 `name` / `admin` / `disabled`，省略的欄位不動             |
+| `PUT /api/users/{id}`                      | 局部更新 `name` / `admin` / `disabled` / `password`，省略的欄位不動    |
 | `DELETE /api/users/{id}`                   | 刪除帳號（token 與裝置授權 cascade）                               |
 | `GET /api/users/{id}/devices`              | 列出已授權的裝置（格式同 `GET /api/devices`）                      |
 | `PUT /api/users/{id}/devices/{deviceId}`   | 授權裝置（重複呼叫不會出錯）                                       |
 | `DELETE /api/users/{id}/devices/{deviceId}` | 撤銷授權（原本就沒有也回 `204`）                                  |
-| `GET /api/users/{id}/tokens`               | 列出 token 中繼資料，**不含**明文與雜湊                            |
-| `POST /api/users/{id}/tokens`              | 發 token，body `{"scopes":[...],"expiresIn":"720h"}`，明文只回這一次 |
-| `DELETE /api/users/{id}/tokens/{tokenId}`  | 撤銷 token                                                         |
+| `GET /api/users/{id}/tokens`               | 列出 token 中繼資料，**不含**明文與雜湊（admin，或本人帶 `*` 的 token） |
+| `POST /api/users/{id}/tokens`              | 發 token，body `{"scopes":[...],"expiresIn":"720h"}`，明文只回這一次（僅 admin） |
+| `DELETE /api/users/{id}/tokens/{tokenId}`  | 撤銷 token（admin，或本人帶 `*` 的 token）                          |
 | `GET /api/users/{id}/notifications`        | 列出通知訂閱（本人或 admin）                                       |
 | `PUT /api/users/{id}/notifications/{notificationId}` | 訂閱通知範本（本人或 admin）                              |
 | `DELETE /api/users/{id}/notifications/{notificationId}` | 取消訂閱（本人或 admin）                               |
@@ -444,6 +458,38 @@ admin key 建的裝置不會自動綁定，要另外授權（見下節）。
 `expiresIn` 是 Go duration（`720h`、`30m`），空字串表示永不過期；scopes 依上表驗證，
 未知 scope 回 `400`。停用自己、撤掉自己的 admin、刪除自己都回 `409`，避免把唯一的
 管理員鎖在門外。
+
+### 密碼登入
+
+`POST /api/login` 收 `{"email","password"}`，換一組新的 token（回應格式同發 token，
+`token` 只在這個回應出現一次）。除了 `/api/health`，這是唯一不用帶憑證的路由，
+否則一個還沒有 token 的呼叫者拿不到第一組。
+
+- 密碼由 admin 用 `PUT /api/users/{id}` 的 `password` 欄位設定；帳號本人目前不能改自己的密碼。
+- 沒設密碼（`password_hash` 是 NULL）和密碼打錯都回 `401`，連花的時間也一樣（沒設密碼仍跑一次 bcrypt），
+  所以回應碼與延遲都不會洩漏哪些帳號存在、哪些還沒有密碼。
+- 停用帳號在密碼正確時回 `403`；密碼打錯時仍是 `401`，狀態碼不能用來探測哪些帳號存在。
+- email 要與 `users.email` **完全相同**（大小寫敏感）。查無此帳號時仍會跑一次 bcrypt，
+  讓回應時間不洩漏帳號是否存在。
+- 換發的 token 帶 `*`、不過期，可以直接列出與撤銷同帳號的其他 token；發新 token 仍然只有
+  admin 能做，所以帶 `*` 的 token 提不了權。
+- 密碼長度上限 72 bytes（bcrypt 的輸入上限），空字串與超長都在 `PUT` 回 `400`，不會靜默截短。
+- 密碼以 bcrypt cost 12 儲存，一次登入就是一次 bcrypt：本機 i5-4200U 量到 p50 594 ms、
+  p95 740 ms。登入（和設密碼的 `PUT`）要當成慢端點看待，前面不要放太短的 timeout。
+
+```bash
+# 設定密碼（admin）
+curl -X PUT localhost:8082/api/users/2 -H 'X-Api-Key: please-change-me' \
+  -H 'Content-Type: application/json' -d '{"password":"s3cret"}'
+
+# 用密碼換 token
+curl -X POST localhost:8082/api/login \
+  -H 'Content-Type: application/json' -d '{"email":"bob@example.com","password":"s3cret"}'
+# {"id":7,"userId":2,"scopes":["*"],"createdAt":"2026-11-01T...","token":"trc_..."}
+
+# 之後就能拿它列出 / 撤銷自己的 token
+curl -H "Authorization: Bearer $TOKEN" localhost:8082/api/users/2/tokens
+```
 
 第一次使用（資料庫還沒有任何帳號）先用共用 key 引導：
 
@@ -461,6 +507,12 @@ curl -X POST localhost:8082/api/users/1/tokens -H 'X-Api-Key: please-change-me' 
 curl -X POST localhost:8082/api/users -H 'X-Api-Key: please-change-me' \
   -H 'Content-Type: application/json' -d '{"email":"bob@example.com","name":"Bob"}'
 curl -X PUT localhost:8082/api/users/2/devices/7 -H 'X-Api-Key: please-change-me'
+
+# 4) 給業務帳號一個密碼，之後他自己換 token（`*` 讓它能管理自己的 token）
+curl -X PUT localhost:8082/api/users/2 -H 'X-Api-Key: please-change-me' \
+  -H 'Content-Type: application/json' -d '{"password":"s3cret"}'
+curl -X POST localhost:8082/api/login -H 'Content-Type: application/json' \
+  -d '{"email":"bob@example.com","password":"s3cret"}'
 ```
 
 之後就能用 Alice 的 token 取代 `-api-key`。沒有 HTTP 存取的環境仍可從 CLI 發 token：
@@ -570,8 +622,8 @@ curl 'localhost:8082/api/positions?deviceId=7&limit=2'
 
 ## 命令下發
 
-`POST /api/commands` 把命令編碼成該協議的位元組，直接寫進裝置目前那條 TCP 連線
-（需要 `-dsn`，因為要靠 `devices.protocol` 選 encoder）：
+`POST /api/commands` 把命令編碼成該協議的位元組，先落一列 `commands`，再寫進裝置目前那條 TCP
+連線（需要 `-dsn`，因為要靠 `devices.protocol` 選 encoder 與寫紀錄）：
 
 ```bash
 curl -i -X POST localhost:8082/api/commands \
@@ -579,17 +631,17 @@ curl -i -X POST localhost:8082/api/commands \
   -d '{"deviceId":7,"type":"engineStop","attributes":{}}'
 
 # HTTP/1.1 202 Accepted
-# {"deviceId":7,"type":"engineStop","protocol":"gt06","queued":true}
+# {"id":41,"deviceId":7,"type":"engineStop","protocol":"gt06","queued":true}
 ```
 
-| 狀態  | 意義                                                        |
-| ----- | ----------------------------------------------------------- |
-| `202` | 已寫入設備連線                                              |
-| `400` | body 不合法，或該協議不支援這個命令                         |
-| `403` | 缺少 `write:commands`，或該裝置不在 `user_devices` 內        |
-| `404` | 裝置不存在                                                  |
-| `409` | 裝置離線，或 `devices.protocol` 還是 NULL（讓設備重連一次） |
-| `501` | 沒有配置命令路由                                            |
+| 狀態  | 意義                                                                 |
+| ----- | -------------------------------------------------------------------- |
+| `202` | 已記錄並寫入設備連線                                                 |
+| `400` | body 不合法，或該協議不支援這個命令（都不會留下 `commands` 列）      |
+| `403` | 缺少 `write:commands`，或該裝置不在 `user_devices` 內                 |
+| `404` | 裝置不存在                                                           |
+| `409` | 裝置離線，或 `devices.protocol` 還是 NULL（讓設備重連一次）          |
+| `501` | 沒有配置命令路由                                                     |
 
 各協議支援的命令以 encoder 為準：H02 `alarmArm` / `alarmDisarm` / `engineStop` / `engineResume` /
 `positionPeriodic`；GT06 `engineStop` / `engineResume` / `custom`；JT808 `positionSingle` /
@@ -603,6 +655,42 @@ curl -i -X POST localhost:8082/api/commands \
 裝置與連線的綁定時機：GT06 / JT808 / Teltonika 在握手（登入 / IMEI 封包）時綁定；
 H02 沒有握手，第一筆能解析出裝置的訊息就會綁定。因此對「從未上報過」或「尚未登入」的裝置
 下命令會得到 `409`。
+
+### 命令狀態
+
+每一筆命令在 `commands` 表裡走四種狀態之一：
+
+| status    | 何時                                                        | `result_code` |
+| --------- | ----------------------------------------------------------- | ------------- |
+| `pending` | 已記錄，還沒寫進連線                                        | NULL          |
+| `sent`    | 已寫進連線，等裝置回應                                      | NULL          |
+| `done`    | 裝置回應且結果是 0（GT06 只要有回應就算）                   | 0             |
+| `failed`  | 離線 / 寫入失敗，或裝置回報非 0                             | 失敗時是 NULL；裝置拒絕時是它回的值 |
+
+`GET /api/commands` 列出命令，參數是 `deviceId`、`limit`（1–1000，預設 100）與 `offset`，
+排序是 `id DESC`。需要 `read:commands`；非 admin 只看得到自己授權裝置的命令：
+
+```bash
+curl -s 'localhost:8082/api/commands?deviceId=7&limit=2' -H 'Authorization: Bearer trc_...'
+# {"commands":[{"id":41,"deviceId":7,"type":"engineStop","attributes":{},"status":"done",
+#               "resultCode":0,"createdAt":"2026-11-01T01:02:03.123Z",
+#               "sentAt":"2026-11-01T01:02:03.130Z","doneAt":"2026-11-01T01:02:05.402Z"}],
+#  "count":1}
+```
+
+`resultCode` / `sentAt` / `doneAt` 沒有值時不會出現。用 `psql -c 'select * from commands'`
+看到的內容與這個端點一致。
+
+### 回應配對
+
+JT808 終端用 `0x0001` 終端一般回應回答下行訊息，payload 是「被回應的流水號、被回應的訊息 ID、
+結果碼」；GT06 用 `0x80` / `0x81` / `0x82` 命令回應回答，沒有結果碼，有回應就算成功。這兩個
+回應都不會被回覆，否則裝置會收到「回應的回應」。
+
+兩者都沒有可以對回請求的識別碼 — JT808 encoder 一律送流水號 0，GT06 回應裡的是該幀自己的序號 —
+所以 gateway 收到回應時，把**該裝置最新一列 `sent`** 收成 `done` 或 `failed`。連續送出時同一個
+裝置可能有好幾列在等回應，一次回應只收掉最新那列；若前一筆一直沒回應，後送的那筆被回應時，
+被蓋掉的是後送的那列（見「已知限制」）。
 
 ## 開發
 
@@ -676,12 +764,12 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 
 | 來源                     | 內容                                                                                                                                                                 |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`                                   |
+| `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`、`<protocol>: acknowledge command: <err>`（裝置回應已到但 `commands` 寫不回去，連線不受影響） |
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                       |
 | `alert.Pipeline` log     | `alert: write (<n> alerts): <err>`、`alert: queue full, dropped <type> for device <id>`                                                                              |
 | `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...` |
 | `notify.Dispatcher` log  | `notify: webhook, mail enabled`、`notify: <channel>: <err>`、`notify: lookup device <id>: <err>`、`notify: lookup subscriptions for device <id>: <err>`、`notify: queue full, dropped <type> for device <id>` |
-| `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: send command <type> to device <id>: <err>` |
+| `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query alerts: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: query commands: <err>`、`api: record command <type> for device <id>: <err>`、`api: send command <type> to device <id>: <err>` |
 | CLI 關閉時               | `dropped <n> positions because the queue was full`、`dropped <n> alerts because the queue was full`、`dropped <n> notifications because the queue was full`          |
 | `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                     |
 | 記憶體模式 sink          | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`）                                                                                                          |
@@ -700,6 +788,11 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
    再確認 `-notify-types` 與裝置的 `notifyTypes` 沒有把它濾掉，裝置的 `notifyWebhook` /
    `notifyEmail` 沒有被設成 `false`；若有帳號訂閱，確認訂閱的 `notificators` 含該管道，
    且 `user_devices` 有授權該裝置（`notify: lookup subscriptions...` 是查詢失敗）。
+6. **命令一直停在 `pending` 或 `sent`** → `pending` 表示紀錄寫了但 payload 沒送到（gateway 在
+   中間掛掉或磁碟滿），`sent` 表示送出去了但裝置沒回：看裝置是否回 `0x80` / `0x0001`，
+   以及 `acknowledge command:` 有沒有寫入錯誤。用
+   `select id, status, result_code, sent_at, done_at from commands order by id desc limit 5` 看現況；
+   gateway 重啟不會重送，也不會補收尾。
 
 `GET /metrics` 以 Prometheus 文字格式輸出（手寫實作，沒有額外依賴）：
 
@@ -743,12 +836,16 @@ scrape_configs:
   `/api/health` 以外的請求都會回 401。第一次使用先帶 `-api-key` 啟動，用 `POST /api/users`
   建立管理員並發 token（見「帳號管理 API」），或直接用 `-issue-token`；`-allow-anonymous`
   只適合本機。對外仍建議加 TLS / 反代。
-- 帳號 API 只有分頁，沒有搜尋／排序；沒有密碼登入（只有 token），email 建立後不可修改。
+- 帳號 API 只有分頁，沒有搜尋／排序；email 建立後不可修改。密碼只能由 admin 設定，本人沒有
+  改密碼或忘記密碼的流程，也沒有登入失敗次數限制；bcrypt cost 12 讓一次登入約 0.6 秒（見「密碼登入」）。
   每個請求都會查一次 token 與裝置清單，撤銷立即生效但也多一次 DB round trip。
 - 裝置的 `attributes` 只能以 SQL 維護；`PUT` 只改 `name` / `model`，`protocol` 建立後不可改。
   裝置仍會由登入自動建立（`-auto-register`），與 `POST /api/devices` 併用。
-- 命令只寫進設備連線，不等 ACK、不落地，也沒有 Java 版的 `commands` 表與派送佇列；
-  `devices.protocol` 為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
+- 命令會落地（`commands` 表）並依裝置回應收尾，但配對規則是「該裝置最新一列 `sent`」：
+  JT808 的終端一般回應與 GT06 的 0x80 都沒有能對回請求的識別碼，連續送出多筆時，回應只會收掉
+  最新那一列，沒被回應的留在 `sent`。沒有重送、沒有派送佇列：`pending` 卡住代表
+  gateway 在寫進連線前就掛了，`sent` 卡住代表裝置沒回，兩者都只能人工判讀。`devices.protocol`
+  為 NULL 的舊裝置會回 `409`，讓它重連一次即可。
 - 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知只有 webhook 與 email 兩種。使用者訂閱只決定
   類型與管道：email 收件者是帳號 email，webhook 仍共用 `-notify-webhook` 的 URL。門檻可用
   裝置 / 圍欄 attributes 覆寫，但只能以 SQL 維護。
@@ -760,5 +857,7 @@ scrape_configs:
 
 ## 下一步
 
-1. 把 `device model` 注入 `codec.Base`，打開各協議被延後的車型分支。
-2. 非 admin 的 token 自我管理（列出 / 撤銷自己的 token）與密碼登入。
+1. 密碼自助：本人改密碼、忘記密碼流程、登入失敗次數限制；目前只有 admin 能設密碼。
+2. 命令的可靠性：重送與派送佇列、以 JT808 流水號配對（encoder 要改成每筆一個號碼）、
+   `commands` 的保留期限與清理。
+3. GT06 `NT_MODELS` 的 LBS2 / DRIVER 版面差異（Java 的 `modelNT`），計畫附錄 C 記錄了為什麼延後。

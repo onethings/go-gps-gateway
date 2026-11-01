@@ -161,6 +161,27 @@ func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 	return &user, nil
 }
 
+// CredentialByEmail returns what a password login needs for an email. The
+// match is exact: users.email is UNIQUE and case sensitive, so one address can
+// only ever resolve to one account.
+//
+// An account without a password comes back with an empty PasswordHash, which
+// auth.VerifyPassword always rejects.
+func (s *Store) CredentialByEmail(ctx context.Context, email string) (*auth.Credential, error) {
+	var credential auth.Credential
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, COALESCE(password_hash, ''), disabled FROM users WHERE email = $1`,
+		email,
+	).Scan(&credential.UserID, &credential.PasswordHash, &credential.Disabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: credential for user %q: %w", email, err)
+	}
+	return &credential, nil
+}
+
 // CreateUser inserts an account. An email that already exists returns
 // model.ErrDuplicateUser instead of touching the row.
 func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model.User, error) {
@@ -199,6 +220,26 @@ func (s *Store) UpdateUser(ctx context.Context, userID int64, update model.UserU
 		return nil, fmt.Errorf("postgres: update user %d: %w", userID, err)
 	}
 	return s.User(ctx, updatedID)
+}
+
+// SetPassword replaces the stored bcrypt hash of an account. It is a separate
+// statement from UpdateUser because a password arrives hashed, not as a model
+// field the REST layer could echo back.
+func (s *Store) SetPassword(ctx context.Context, userID int64, passwordHash string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE users SET password_hash = $2 WHERE id = $1`, userID, passwordHash)
+	if err != nil {
+		return fmt.Errorf("postgres: set password of user %d: %w", userID, err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("postgres: set password of user %d: %w", userID, err)
+	}
+	if affected == 0 {
+		return model.ErrUserNotFound
+	}
+	return nil
 }
 
 // DeleteUser removes an account. Grants and tokens cascade.

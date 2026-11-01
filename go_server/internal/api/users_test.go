@@ -20,23 +20,25 @@ const testAdminKey = "admin-key"
 // fakeUsers is an in-memory UserStore. It keeps just enough state to exercise
 // the handlers: accounts, device grants and tokens.
 type fakeUsers struct {
-	mu       sync.Mutex
-	users    map[int64]*model.User
-	grants   map[int64][]int64
-	tokens   map[int64][]model.APIToken
-	nextID   int64
-	nextTok  int64
-	err      error
-	lastList model.UserFilter
+	mu        sync.Mutex
+	users     map[int64]*model.User
+	grants    map[int64][]int64
+	tokens    map[int64][]model.APIToken
+	passwords map[int64]string
+	nextID    int64
+	nextTok   int64
+	err       error
+	lastList  model.UserFilter
 }
 
 func newFakeUsers(users ...*model.User) *fakeUsers {
 	store := &fakeUsers{
-		users:   make(map[int64]*model.User, len(users)),
-		grants:  make(map[int64][]int64),
-		tokens:  make(map[int64][]model.APIToken),
-		nextID:  int64(len(users)),
-		nextTok: 1,
+		users:     make(map[int64]*model.User, len(users)),
+		grants:    make(map[int64][]int64),
+		tokens:    make(map[int64][]model.APIToken),
+		passwords: make(map[int64]string),
+		nextID:    int64(len(users)),
+		nextTok:   1,
 	}
 	for _, user := range users {
 		copied := *user
@@ -147,6 +149,38 @@ func (f *fakeUsers) DeleteUser(_ context.Context, userID int64) error {
 	delete(f.users, userID)
 	delete(f.grants, userID)
 	delete(f.tokens, userID)
+	delete(f.passwords, userID)
+	return nil
+}
+
+func (f *fakeUsers) CredentialByEmail(_ context.Context, email string) (*auth.Credential, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return nil, err
+	}
+	for _, user := range f.users {
+		if user.Email == email {
+			return &auth.Credential{
+				UserID:       user.ID,
+				PasswordHash: f.passwords[user.ID],
+				Disabled:     user.Disabled,
+			}, nil
+		}
+	}
+	return nil, model.ErrUserNotFound
+}
+
+func (f *fakeUsers) SetPassword(_ context.Context, userID int64, passwordHash string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail(); err != nil {
+		return err
+	}
+	if _, ok := f.users[userID]; !ok {
+		return model.ErrUserNotFound
+	}
+	f.passwords[userID] = passwordHash
 	return nil
 }
 
@@ -272,12 +306,35 @@ func decodeBody[T any](t *testing.T, recorder *httptest.ResponseRecorder) T {
 	return payload
 }
 
+const (
+	testEmail    = "alice@example.test"
+	testPassword = "correct horse battery staple"
+)
+
+// testPasswordHash hashes the shared test password once per test binary. bcrypt
+// at cost 12 is slow enough that hashing it per test would dominate the run.
+var testPasswordHash = sync.OnceValue(func() string {
+	hash, err := auth.HashPassword(testPassword)
+	if err != nil {
+		panic(err)
+	}
+	return hash
+})
+
 func sampleUser(id int64, email string) *model.User {
 	return &model.User{
 		ID:        id,
 		Email:     email,
 		Name:      "User " + email,
 		CreatedAt: time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC),
+	}
+}
+
+// withPassword seeds the fake store with the shared test password.
+func withPassword(t *testing.T, store *fakeUsers, userID int64) {
+	t.Helper()
+	if err := store.SetPassword(context.Background(), userID, testPasswordHash()); err != nil {
+		t.Fatalf("SetPassword: %v", err)
 	}
 }
 
@@ -298,6 +355,7 @@ func TestUserRoutesReportNotConfigured(t *testing.T) {
 		{http.MethodGet, "/api/users/1/tokens"},
 		{http.MethodPost, "/api/users/1/tokens"},
 		{http.MethodDelete, "/api/users/1/tokens/2"},
+		{http.MethodPost, "/api/login"},
 	}
 	for _, test := range tests {
 		recorder := apiRequest(t, handler, test.method, test.target, "", "")
@@ -324,9 +382,8 @@ func TestUserRoutesRequireAdmin(t *testing.T) {
 		{http.MethodPut, "/api/users/1", `{"name":"x"}`},
 		{http.MethodDelete, "/api/users/1", ""},
 		{http.MethodGet, "/api/users/1/devices", ""},
-		{http.MethodGet, "/api/users/1/tokens", ""},
 		{http.MethodPost, "/api/users/1/tokens", `{"scopes":["read:positions"]}`},
-		{http.MethodDelete, "/api/users/1/tokens/1", ""},
+		{http.MethodGet, "/api/users/2/tokens", ""},
 	}
 	for _, test := range tests {
 		recorder := withToken(t, handler, test.method, test.target, test.body)
@@ -661,5 +718,125 @@ func TestHealthFailsWhenDatabaseIsDown(t *testing.T) {
 	}
 	if logged.Len() == 0 {
 		t.Error("ping failure was not logged")
+	}
+}
+
+func TestUpdateUserSetsPassword(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, "alice@example.test"))
+	handler := adminUsersHandler(store, nil)
+
+	recorder := apiRequest(t, handler, http.MethodPut, "/api/users/1",
+		`{"name":"Alice","password":"`+testPassword+`"}`, testAdminKey)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	if strings.Contains(strings.ToLower(recorder.Body.String()), "password") {
+		t.Errorf("user JSON carries a password field: %s", recorder.Body)
+	}
+	if store.users[1].Name != "Alice" {
+		t.Errorf("name = %q, want the other fields still applied", store.users[1].Name)
+	}
+
+	// The stored value is a hash, not the password, and it verifies.
+	stored := store.passwords[1]
+	if stored == "" || stored == testPassword {
+		t.Fatalf("stored password = %q, want a hash", stored)
+	}
+	if !auth.VerifyPassword(stored, testPassword) {
+		t.Error("stored hash does not verify the password that was set")
+	}
+
+	// The account can now log in with it.
+	loginRecorder := apiRequest(t, handler, http.MethodPost, "/api/login",
+		`{"email":"alice@example.test","password":"`+testPassword+`"}`, "")
+	if loginRecorder.Code != http.StatusOK {
+		t.Errorf("login after setting a password = %d (body %s)",
+			loginRecorder.Code, loginRecorder.Body)
+	}
+}
+
+func TestUpdateUserRejectsEmptyPassword(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, "alice@example.test"))
+	withPassword(t, store, 1)
+	before := store.passwords[1]
+	beforeName := store.users[1].Name
+	handler := adminUsersHandler(store, nil)
+
+	recorder := apiRequest(t, handler, http.MethodPut, "/api/users/1",
+		`{"name":"Alice","password":""}`, testAdminKey)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", recorder.Code, recorder.Body)
+	}
+	if store.passwords[1] != before {
+		t.Error("a rejected password changed the stored hash")
+	}
+	if store.users[1].Name != beforeName {
+		t.Errorf("name = %q, want the rejected request to change nothing", store.users[1].Name)
+	}
+}
+
+func TestUpdateUserRejectsLongPassword(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, "alice@example.test"))
+	handler := adminUsersHandler(store, nil)
+
+	// bcrypt stops at 72 bytes, so a longer password is a bad request rather
+	// than a server error.
+	recorder := apiRequest(t, handler, http.MethodPut, "/api/users/1",
+		`{"password":"`+strings.Repeat("a", 73)+`"}`, testAdminKey)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", recorder.Code, recorder.Body)
+	}
+	if store.passwords[1] != "" {
+		t.Error("an over-long password was stored")
+	}
+}
+
+func TestTokenRoutesAllowOwnTokens(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, "alice@example.test"), sampleUser(2, "bob@example.test"))
+	if _, _, err := store.IssueTokenForUser(context.Background(), 1,
+		[]string{string(auth.ScopeAll)}, nil); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		scopes []auth.Scope
+		method string
+		target string
+		want   int
+	}{
+		{"own tokens", []auth.Scope{auth.ScopeAll}, http.MethodGet, "/api/users/1/tokens", http.StatusOK},
+		{"other account", []auth.Scope{auth.ScopeAll}, http.MethodGet, "/api/users/2/tokens", http.StatusForbidden},
+		{"narrow scope", []auth.Scope{auth.ScopeReadPositions}, http.MethodGet, "/api/users/1/tokens", http.StatusForbidden},
+		{"revoke own", []auth.Scope{auth.ScopeAll}, http.MethodDelete, "/api/users/1/tokens/1", http.StatusNoContent},
+		{"revoke other account", []auth.Scope{auth.ScopeAll}, http.MethodDelete, "/api/users/2/tokens/1", http.StatusForbidden},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			principal := auth.NewPrincipal(1, false, test.scopes, nil)
+			handler := NewServer(nil, WithUsers(store), withTestToken(principal)).Handler()
+
+			recorder := withToken(t, handler, test.method, test.target, "")
+			if recorder.Code != test.want {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, test.want, recorder.Body)
+			}
+		})
+	}
+
+	// Issuing stays admin-only even for the account itself: a token that could
+	// mint scopes it does not hold would be an escalation.
+	principal := auth.NewPrincipal(1, false, []auth.Scope{auth.ScopeAll}, nil)
+	handler := NewServer(nil, WithUsers(store), withTestToken(principal)).Handler()
+	recorder := withToken(t, handler, http.MethodPost, "/api/users/1/tokens", `{"scopes":["*"]}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Errorf("self issuing a token = %d, want 403 (body %s)", recorder.Code, recorder.Body)
+	}
+
+	// Listing one's own tokens must not leak the hash or the plaintext.
+	handler = NewServer(nil, WithUsers(store), withTestToken(principal)).Handler()
+	recorder = withToken(t, handler, http.MethodGet, "/api/users/1/tokens", "")
+	if body := recorder.Body.String(); strings.Contains(strings.ToLower(body), "hash") ||
+		!strings.Contains(body, `"tokens"`) {
+		t.Errorf("token list body = %s", body)
 	}
 }

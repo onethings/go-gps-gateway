@@ -34,6 +34,11 @@ type UserStore interface {
 	Tokens(ctx context.Context, userID int64) ([]model.APIToken, error)
 	IssueTokenForUser(ctx context.Context, userID int64, scopes []string, expiresAt *time.Time) (*model.APIToken, string, error)
 	RevokeToken(ctx context.Context, userID, tokenID int64) error
+	// CredentialByEmail backs POST /api/login and SetPassword backs the
+	// password field of PUT /api/users/{id}. The hash never leaves storage as
+	// part of a model.User.
+	CredentialByEmail(ctx context.Context, email string) (*auth.Credential, error)
+	SetPassword(ctx context.Context, userID int64, passwordHash string) error
 }
 
 type userResponse struct {
@@ -82,6 +87,9 @@ type userUpdateRequest struct {
 	Name     *string `json:"name"`
 	Admin    *bool   `json:"admin"`
 	Disabled *bool   `json:"disabled"`
+	// Password is written straight to users.password_hash; it is never echoed
+	// back and an empty string is rejected rather than stored.
+	Password *string `json:"password"`
 }
 
 type tokenIssueRequest struct {
@@ -154,6 +162,26 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 func (s *Server) isSelf(r *http.Request, userID int64) bool {
 	principal := auth.FromContext(r.Context())
 	return principal != nil && principal.UserID != 0 && principal.UserID == userID
+}
+
+// requireTokenAccess guards listing and revoking the tokens of one account. An
+// administrator reaches every account; a non-admin reaches only its own, and
+// only with a token carrying "*", so a narrowly scoped token cannot enumerate
+// or revoke the account's other credentials.
+//
+// Issuing a token is not included: that stays admin-only, because a caller
+// could otherwise mint scopes it does not hold itself.
+func (s *Server) requireTokenAccess(w http.ResponseWriter, r *http.Request, userID int64) bool {
+	if s.isAdmin(r) {
+		return true
+	}
+	principal := auth.FromContext(r.Context())
+	if s.isSelf(r, userID) && principal.Has(auth.ScopeAll) {
+		return true
+	}
+	writeError(w, http.StatusForbidden,
+		errors.New(`only an administrator, or a "*" token of that account, may list or revoke its tokens`))
+	return false
 }
 
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
@@ -259,6 +287,23 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		update.Name = &name
 	}
 
+	// Hashed before the row is touched: bcrypt takes a noticeable moment, and a
+	// rejected password must not leave the other fields already changed.
+	var passwordHash string
+	if request.Password != nil {
+		hash, err := auth.HashPassword(*request.Password)
+		if errors.Is(err, auth.ErrEmptyPassword) || errors.Is(err, auth.ErrPasswordTooLong) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err != nil {
+			s.logf("api: hash password of user %d: %v", userID, err)
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return
+		}
+		passwordHash = hash
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
@@ -271,6 +316,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		s.logf("api: update user %d: %v", userID, err)
 		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
 		return
+	}
+
+	if passwordHash != "" {
+		if err := s.users.SetPassword(ctx, userID, passwordHash); err != nil {
+			s.logf("api: set password of user %d: %v", userID, err)
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, newUserResponse(*user))
@@ -425,13 +478,16 @@ func (s *Server) handleUnassignDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
+	if !s.usersConfigured(w) {
 		return
 	}
 
 	userID, err := positiveID(r, "id")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !s.requireTokenAccess(w, r, userID) {
 		return
 	}
 
@@ -517,7 +573,7 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
+	if !s.usersConfigured(w) {
 		return
 	}
 
@@ -529,6 +585,9 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	tokenID, err := positiveID(r, "tokenId")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !s.requireTokenAccess(w, r, userID) {
 		return
 	}
 

@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // Command types, matching org.traccar.model.Command.TYPE_*.
 const (
 	CommandCustom           = "custom"
@@ -69,11 +71,48 @@ const (
 	CmdKeyPort           = "port"
 )
 
-// Command is a device independent instruction, the input of every encoder.
+// Command lifecycle states, matching the commands.status column. A command is
+// pending from the moment it is recorded, becomes sent once the payload reached
+// the device socket, and ends either done (the device answered) or failed (the
+// send never got out or the device refused it).
+const (
+	CommandStatusPending = "pending"
+	CommandStatusSent    = "sent"
+	CommandStatusDone    = "done"
+	CommandStatusFailed  = "failed"
+)
+
+// Command is a device independent instruction, the input of every encoder, and
+// the record the commands table keeps of what was sent.
 type Command struct {
+	// ID is the commands row id, zero until the command has been recorded.
+	ID int64
+	// DeviceID, Type and Attributes are the request as the caller wrote it.
 	DeviceID   int64
 	Type       string
 	Attributes map[string]any
+	// Status is one of the CommandStatus* values. An encoder ignores it.
+	Status string
+	// ResultCode is the result the device reported with its acknowledgement.
+	// It stays nil for commands that were never answered, which is why a zero
+	// code and no code are different values.
+	ResultCode *int
+	SentAt     time.Time
+	DoneAt     time.Time
+	// CreatedAt is when the row was written, before the payload was sent.
+	CreatedAt time.Time
+}
+
+// CommandFilter selects commands for a query. Zero values mean "no
+// restriction"; Limit and Offset are clamped by the storage layer.
+type CommandFilter struct {
+	DeviceID int64
+	// DeviceIDs restricts the result to a set of devices. Nil means "no
+	// restriction"; a non-nil empty slice matches nothing, which is how a
+	// token without device grants stays isolated.
+	DeviceIDs []int64
+	Limit     int
+	Offset    int
 }
 
 // NewCommand creates a command with an initialised attribute map.

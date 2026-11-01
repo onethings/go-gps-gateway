@@ -928,4 +928,16 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/commands/send", s.handleCommandSend)
 	mux.HandleFunc("POST /api/commands/bulk", s.handleCommandBulk)
 	mux.HandleFunc("GET /api/commands/types", s.handleCommandTypes)
+
+	mux.HandleFunc("GET /api/reports/route", s.handleReportRoute)
+	mux.HandleFunc("GET /api/reports/trips", s.handleReportTrips)
+	mux.HandleFunc("GET /api/reports/stops", s.handleReportStops)
+	mux.HandleFunc("GET /api/reports/summary", s.handleReportSummary)
+	mux.HandleFunc("GET /api/reports/events", s.handleReportEvents)
+	mux.HandleFunc("GET /api/reports/geofences", s.handleReportGeofences)
+	mux.HandleFunc("GET /api/reports/devices", s.handleReportDevices)
+	mux.HandleFunc("GET /api/reports/combined", s.handleReportCombined)
+	for _, name := range []string{"route", "trips", "stops", "summary", "events", "geofences", "devices"} {
+		mux.HandleFunc("GET /api/reports/"+name+"/{type}", s.handleReportExport(name))
+	}
 }

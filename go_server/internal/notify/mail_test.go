@@ -222,7 +222,7 @@ func TestMailSanitizesHeaders(t *testing.T) {
 	encoded := mailer.encode(Message{
 		Subject: "hello\r\nBcc: evil@example.com",
 		Body:    "line",
-	}, []string{"ops@example.com"})
+	}, []string{"ops@example.com"}, nil)
 
 	if strings.Contains(string(encoded), "\r\nBcc:") {
 		t.Errorf("header injection survived:\n%s", encoded)

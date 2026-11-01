@@ -1629,8 +1629,34 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
 
 ### M5 報表與外送（M）
 
-- [ ] **M5-1 報表**：route / trips / stops / summary / events / geofence / devices / combined，加 CSV / GPX / KML 匯出與 `xlsx|mail` 變體。
-  - 驗收：同一份 positions 的報表輸出與母本 `reports/` 的測試向量一致（時間、距離、油耗欄位）。
+- [x] **M5-1 報表**：route / trips / stops / summary / events / geofence / devices / combined，加 CSV / GPX / KML 匯出與 `xlsx|mail` 變體。
+  - 落地：新增 `internal/report`（`report.go` / `trips.go` / `export.go` / `xlsx.go`），儲存層只讀
+    `QueryPositions` / `QueryEvents` / `Devices` / `LatestPositions` / `QueryGeofences` / `Drivers`。
+    位置查詢用 `device_time` 升序、每次 1000 筆分頁，總數受 `report.maxPositions`（預設 50000）限制；
+    `report.periodLimit` 有設就擋超過的區間。
+  - trips / stops：移植母本舊版 `MotionProcessor` 狀態機（motion / no-data gap / minDuration /
+    minDistance / parking duration / ignition），事件端點對回位置索引；`maxSpeed` 取該段內最高速
+    （母本把結束事件的 running max 當成 trip 最大值，會拿到停止段的數值，這裡刻意修正）。
+    距離優先用 odometer（`report.ignoreOdometer` 可關），其次 totalDistance，都沒有就對範圍內
+    相鄰有效位置做 haversine 加總；油耗用 `fuelUsed` / `fuel` / `fuelLevel` × `fuelCapacity`。
+  - summary 支援 `daily=true` 逐日切；events 支援 `type` / `alarm`；geofences 用 enter/exit 配對
+    並只回報 `geofenceId` 指定的圍欄；combined 回 route（`[lon,lat]`）、事件（排除 deviceMoving）
+    與事件位置；devices 回 device + 最新位置。
+  - 匯出：每個報表都有 `/{csv|xlsx}`，route 另有 `/{gpx|kml}`，`/{mail}` 把 XLSX 當附件寄給
+    請求者（`notify.Mail.SendAttachment`）。XLSX 是自寫的最小 OOXML（`archive/zip` + inline
+    string，無外部依賴）；CSV 欄位順序固定並套用 `= + - @` 防護。
+  - 權限：`read:positions`；`server_settings.disableReports` 或帳號 `disableReports` 屬性會回
+    403；deviceId / groupId 會跟 token 的裝置範圍取交集。每次執行寫一列 `report` action。
+  - 設定：`report.maxPositions`、`report.periodLimit`、`report.trip.minimalTripDistance` /
+    `minimalTripDuration` / `minimalParkingDuration` / `minimalNoDataDuration`、
+    `report.ignoreOdometer`（走設定檔 / 環境變數，沒有旗標）。
+  - 測試：`internal/report/report_test.go`（trip / stop 狀態機、maxSpeed、summary daily、events
+    過濾、geofence 配對、combined、CSV / GPX / KML / XLSX、period limit）；
+    `internal/api/reports_test.go`（route JSON、CSV / GPX 下載標頭、缺 from/to、停用報表、
+    mail 變體）。
+  - 偏差：油耗沒有加回 `deviceFuelIncrease` / `deviceFuelDrop` 事件的差值（只讀位置屬性）；
+    `calendarId` 不參與；報表不產生 Java 的多 sheet 活頁簿（單一 sheet）。
+  - 驗收備註：`reports/` 的 Java 測試向量還沒逐欄比對，現有測試是自己構造的位置序列。
 - [ ] **M5-2 forwarder**：position 與 event 兩條，先 json / url / mqtt，再 amqp / kafka / redis / wialon。
   - 驗收：斷線重連與佇列滿的行為有測試（母本沒有，這裡要贏）。
 

@@ -97,6 +97,16 @@ const (
 	SMSAWSSecret            = "sms.aws.secret"
 	SMSAWSRegion            = "sms.aws.region"
 	SMSAWSEndpoint          = "sms.aws.endpoint" // Go only: an SNS compatible endpoint
+
+	// Report limits and trip detection. They match the Java Keys names and are
+	// read from the configuration file without a flag.
+	ReportMaxPositions        = "report.maxPositions"
+	ReportPeriodLimit         = "report.periodLimit"
+	ReportTripMinDistance     = "report.trip.minimalTripDistance"
+	ReportTripMinDuration     = "report.trip.minimalTripDuration"
+	ReportTripParkingDuration = "report.trip.minimalParkingDuration"
+	ReportTripNoDataDuration  = "report.trip.minimalNoDataDuration"
+	ReportIgnoreOdometer      = "report.ignoreOdometer"
 )
 
 // ConfigDefault is the key the Java server uses to chain a second file. The
@@ -188,6 +198,14 @@ var KnownKeys = []string{
 	SMSAWSSecret,
 	SMSAWSRegion,
 	SMSAWSEndpoint,
+
+	ReportMaxPositions,
+	ReportPeriodLimit,
+	ReportTripMinDistance,
+	ReportTripMinDuration,
+	ReportTripParkingDuration,
+	ReportTripNoDataDuration,
+	ReportIgnoreOdometer,
 }
 
 // Keys a protocol section may set. They are resolved through Protocol, which

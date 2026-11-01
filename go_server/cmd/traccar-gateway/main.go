@@ -29,6 +29,7 @@ import (
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/notify"
+	"traccar-server_go/go_server/internal/report"
 	"traccar-server_go/go_server/internal/session"
 	"traccar-server_go/go_server/internal/storage/postgres"
 )
@@ -403,12 +404,14 @@ func main() {
 				api.WithAudit(store),
 				api.WithNotificators(notifyChannelList(channels)),
 				api.WithNotifierSender(notifierService{channels: channels}),
+				api.WithReports(report.New(store, reportConfig(settings.Config))),
 				api.WithVersion(version),
 				api.WithWebPath(settings.WebPath),
 				api.WithReboot(stop),
 			}
 			if mailer != nil {
 				options = append(options, api.WithPasswordReset(notify.NewPasswordResetMail(mailer)))
+				options = append(options, api.WithReportMailer(reportMailer{mail: mailer}))
 			} else {
 				log.Print("api: no SMTP relay configured; password reset email is unavailable")
 			}

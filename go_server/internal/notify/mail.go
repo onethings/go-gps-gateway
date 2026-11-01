@@ -101,6 +101,27 @@ func (m *Mail) Name() string { return "mail" }
 // Send implements Notifier. Every recipient is part of the same SMTP
 // transaction, so either the whole message is accepted or the call fails.
 func (m *Mail) Send(ctx context.Context, message Message, recipients []string) error {
+	return m.send(ctx, message, recipients, nil)
+}
+
+// Attachment is one file attached to a report email.
+type Attachment struct {
+	Filename    string
+	ContentType string
+	Data        []byte
+}
+
+// SendAttachment sends the body with one file attached. It is what the report
+// mail variant uses; alert mail keeps the plain text path.
+func (m *Mail) SendAttachment(
+	ctx context.Context, message Message, recipients []string, attachment Attachment,
+) error {
+	return m.send(ctx, message, recipients, &attachment)
+}
+
+func (m *Mail) send(
+	ctx context.Context, message Message, recipients []string, attachment *Attachment,
+) error {
 	addresses, err := validRecipients(recipients)
 	if err != nil {
 		return err
@@ -144,7 +165,7 @@ func (m *Mail) Send(ctx context.Context, message Message, recipients []string) e
 	if err != nil {
 		return fmt.Errorf("mail: data: %w", err)
 	}
-	if _, err := writer.Write(m.encode(message, addresses)); err != nil {
+	if _, err := writer.Write(m.encode(message, addresses, attachment)); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("mail: write: %w", err)
 	}
@@ -208,7 +229,7 @@ func (m *Mail) upgrade(client *smtp.Client) error {
 
 // encode renders the message with a base64 body so that UTF-8 and long lines
 // survive every relay.
-func (m *Mail) encode(message Message, recipients []string) []byte {
+func (m *Mail) encode(message Message, recipients []string, attachment *Attachment) []byte {
 	var buffer bytes.Buffer
 	writeMailHeader(&buffer, "From", m.config.From)
 	writeMailHeader(&buffer, "To", strings.Join(recipients, ", "))
@@ -216,11 +237,36 @@ func (m *Mail) encode(message Message, recipients []string) []byte {
 	writeMailHeader(&buffer, "Date", time.Now().Format(time.RFC1123Z))
 	writeMailHeader(&buffer, "Message-ID", m.messageID())
 	writeMailHeader(&buffer, "MIME-Version", "1.0")
-	writeMailHeader(&buffer, "Content-Type", "text/plain; charset=utf-8")
-	writeMailHeader(&buffer, "Content-Transfer-Encoding", "base64")
-	buffer.WriteString("\r\n")
 
-	encoded := base64.StdEncoding.EncodeToString([]byte(message.Body))
+	if attachment == nil {
+		writeMailHeader(&buffer, "Content-Type", "text/plain; charset=utf-8")
+		writeMailHeader(&buffer, "Content-Transfer-Encoding", "base64")
+		buffer.WriteString("\r\n")
+		writeBase64Body(&buffer, []byte(message.Body))
+		return buffer.Bytes()
+	}
+
+	boundary := m.messageID()[1 : len(m.messageID())-1]
+	writeMailHeader(&buffer, "Content-Type", "multipart/mixed; boundary=\""+boundary+"\"")
+	buffer.WriteString("\r\n")
+	buffer.WriteString("--" + boundary + "\r\n")
+	buffer.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	buffer.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+	writeBase64Body(&buffer, []byte(message.Body))
+	buffer.WriteString("--" + boundary + "\r\n")
+	buffer.WriteString("Content-Type: " + sanitizeHeader(attachment.ContentType) +
+		"; name=\"" + sanitizeHeader(attachment.Filename) + "\"\r\n")
+	buffer.WriteString("Content-Disposition: attachment; filename=\"" +
+		sanitizeHeader(attachment.Filename) + "\"\r\n")
+	buffer.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+	writeBase64Body(&buffer, attachment.Data)
+	buffer.WriteString("--" + boundary + "--\r\n")
+	return buffer.Bytes()
+}
+
+// writeBase64Body writes a base64 payload wrapped at 76 characters.
+func writeBase64Body(buffer *bytes.Buffer, data []byte) {
+	encoded := base64.StdEncoding.EncodeToString(data)
 	for len(encoded) > 76 {
 		buffer.WriteString(encoded[:76])
 		buffer.WriteString("\r\n")
@@ -230,7 +276,6 @@ func (m *Mail) encode(message Message, recipients []string) []byte {
 		buffer.WriteString(encoded)
 		buffer.WriteString("\r\n")
 	}
-	return buffer.Bytes()
 }
 
 func (m *Mail) messageID() string {

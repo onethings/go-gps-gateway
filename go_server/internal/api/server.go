@@ -22,6 +22,7 @@ import (
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/permissions"
+	"traccar-server_go/go_server/internal/report"
 )
 
 const (
@@ -138,9 +139,13 @@ type Server struct {
 	reboot           func()
 	notificators     []string
 	notifierSender   NotificationSender
-	version          string
-	webPath          string
-	textEnabled      bool
+	// reports computes the historical reports and the reportMailer sends the
+	// "mail" flavour of an export.
+	reports      *report.Service
+	reportMailer ReportMailer
+	version      string
+	webPath      string
+	textEnabled  bool
 	// socketHub and latestPositions back GET /api/socket.
 	socketHub       *SocketHub
 	latestPositions LatestPositionQuerier

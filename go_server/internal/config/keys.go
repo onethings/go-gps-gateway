@@ -155,6 +155,13 @@ const (
 	GeolocationKey    = "geolocation.key"
 	GeolocationCache  = "geolocation.cache"
 
+	// Scheduled maintenance. The intervals are durations; zero turns a task off.
+	ScheduleExpiration      = "schedule.expiration.interval"
+	ScheduleCleanup         = "schedule.cleanup.interval"
+	ScheduleActionRetention = "schedule.cleanup.actionRetention"
+	ScheduleReports         = "schedule.reports.interval"
+	ScheduleHealth          = "schedule.health.interval"
+
 	// TLS certificates for the protocol listeners. The Java server configures
 	// these on the web server only, so this is a Go addition.
 	ServerTLSCertificate = "server.tls.certificate"
@@ -303,6 +310,12 @@ var KnownKeys = []string{
 	GeolocationURL,
 	GeolocationKey,
 	GeolocationCache,
+
+	ScheduleExpiration,
+	ScheduleCleanup,
+	ScheduleActionRetention,
+	ScheduleReports,
+	ScheduleHealth,
 }
 
 // Keys a protocol section may set. They are resolved through Protocol, which

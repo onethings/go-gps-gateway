@@ -32,6 +32,7 @@ import (
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/notify"
 	"traccar-server_go/go_server/internal/report"
+	"traccar-server_go/go_server/internal/schedule"
 	"traccar-server_go/go_server/internal/session"
 	"traccar-server_go/go_server/internal/storage/postgres"
 )
@@ -109,6 +110,7 @@ func main() {
 		forwarder   *forward.Service
 		speedLimit  *geo.SpeedLimits
 		locator     *geo.Locator
+		scheduler   *schedule.Scheduler
 		geoSettings = geo.ReadSettings(settings.Config)
 	)
 
@@ -380,6 +382,22 @@ func main() {
 		}
 	}
 
+	// The scheduled maintenance runs whether or not the REST layer is enabled: it
+	// is about the data, not about serving requests.
+	if store != nil {
+		schedulerSettings := readSchedulerSettings(settings.Config)
+		generator := schedule.Generator(reportGenerator{service: report.New(store, reportConfig(settings.Config))})
+		var reporter schedule.Mailer
+		if mailer != nil {
+			reporter = scheduledReportMailer{mail: mailer}
+		}
+		scheduler = buildScheduler(schedulerSettings, store, generator, reporter, log.Printf)
+		if names := scheduler.Tasks(); len(names) > 0 {
+			log.Printf("schedule: %v", names)
+			go scheduler.Run(ctx)
+		}
+	}
+
 	// The protocol settings table starts from the configured listeners, so an
 	// administrator sees one editable row per shipped protocol, and a row edited
 	// earlier wins over the configuration file.
@@ -533,6 +551,11 @@ func main() {
 		if dropped := pipeline.Dropped(); dropped > 0 {
 			log.Printf("dropped %d alerts because the queue was full", dropped)
 		}
+	}
+
+	if scheduler != nil {
+		// Run returns when ctx is cancelled, which the shutdown path already did.
+		scheduler.Close()
 	}
 
 	// The speed limit stage sits in the chain the pipeline closes, so its

@@ -74,6 +74,7 @@ client ──HTTP──▶ api.Server (RequireAuth)
 | `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
 | `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
 | `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）、`GET /api/socket`（WebSocket 推播）；認證 / scope / 裝置擁有權 |
+| `internal/schedule`              | 週期性維護：到期停用帳號、清過期 token / 重設碼 / audit、排程報表（CSV 附件 email）、DB health check                                                                                                                     |
 | `internal/geo`                   | 地理加值：TTL + 檔案快取、反向地理編碼（Nominatim / Google）、速限（Overpass）、地圖吸附（Mapbox）、基地台定位（Google）                                                                                                |
 | `internal/report`                | 報表：route / trips / stops / summary / events / geofences / devices / combined，CSV / GPX / KML / XLSX 匯出                                                                                                          |
 | `internal/websocket`             | RFC 6455 伺服器端子集：握手、文字 / 二進位訊息與 fragmentation、ping / pong、close（無 extension）  |
@@ -1355,7 +1356,7 @@ scrape_configs:
 | 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email + telegram / pushover / sms（HTTP / SNS）/ firebase / traccar push / whatsapp + Velocity 子集模板 | `command` notificator（告警轉命令）還沒接                                                              |
 | 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | json / url / mqtt / redis / wialon（`internal/forward`，每個目的地一條佇列 + 退避重試） | amqp / kafka                                                                                                           |
 | 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | route / trips / stops / summary / events / geofences / devices / combined + CSV / GPX / KML / XLSX | 油耗事件差值、calendar 過濾                                                                                            |
-| 排程     | `schedule/` 8 個 task                                                                               | 無                                                           | 全部                                                                                                                   |
+| 排程     | `schedule/` 8 個 task                                                                               | expiration / cleanup / reports / health 四個 task（`internal/schedule`，間隔可設、預設關閉） | database export、media cleanup                                                                                          |
 | 地理加值 | 28 個 geocoder 檔、`speedlimit/`、`mapmatcher/`、`geolocation/`                                     | Nominatim / Google geocoder、Overpass 速限、Mapbox 吸附、Google 基地台定位，全部有 TTL + 檔案快取 | geocoder 只剩 2 家；matcher 沒有消費端                                                                                 |
 | 設定     | `Config` + 267 個 `Keys`，支援 `protocol.<name>.<key>`                                              | 38 個 command line flag                                      | 無設定檔、無 per-protocol、無動態重載                                                                                  |
 | 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | `internal/websocket` + `/api/socket`：位置 / 事件 / 裝置狀態  | 沒有 log 串流與 multi-node broadcast（母本 `BaseBroadcastService`）                                                    |
@@ -1759,7 +1760,27 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
 
 ### M7 運維與規模（M）
 
-- [ ] **M7-1 schedule**：device inactivity、expirations、session timeout、reports、health check、delete temporary。
+- [x] **M7-1 schedule**：device inactivity、expirations、session timeout、reports、health check、delete temporary。
+  - `internal/schedule`：`Scheduler` 每個 task 一條 goroutine + 自己的 ticker，失敗只記錄與計數（
+    `WithObserver`）不會讓其他 task 停擺；`Add(task, interval, runOnStart)` 的 interval <= 0 等於關閉，
+    所有 task 預設都是關的，沒設定就不會有東西偷偷刪資料。
+  - `Expiration`：`users.attributes.expirationTime`（ISO 8601）過了就 `SetUserDisabled`。不刪列，
+    歷史留著。
+  - `Cleanup`：刪過期 `api_tokens`、過期/已用的 `password_resets`，`schedule.cleanup.actionRetention`
+    有設才刪 `actions`。
+  - `Reports`：`reports` 表裡 `attributes.schedule`（duration）到期就跑，`period` 決定回溯視窗，
+    `devices` / `email` 決定範圍與收件人，產生 CSV 後用 `notify.Mail.SendAttachment` 寄出，最後把
+    `lastRun` 寫回 attributes（沒收件人時只更新 stamp，避免每個 tick 重跑）。
+  - `Health`：`store.Ping`，結果丟給 `OnResult`（接 metrics 用）。
+  - session timeout 與 device inactivity 不是新 task：`internal/session` 的讀取逾時與
+    `devices.status` 轉換本來就負責這件事，M7-1 不重複實作。
+  - 設定：`schedule.expiration.interval`、`schedule.cleanup.interval`、`schedule.cleanup.actionRetention`、
+    `schedule.reports.interval`、`schedule.health.interval`（duration，0 = 關）。
+  - 測試：`internal/schedule/schedule_test.go`（到期停用、store 失敗、清理計數、health、
+    排程報表 due / 剛跑過 / 沒 schedule、scheduler 的 runOnStart + tick + 停止、關閉的 task、
+    `RunOnce` 與未知 task）。排程報表的產生器 / 寄信都是注入的 fake。
+  - 偏差：報表的排程用 attributes 的 duration，不是母本的 `calendars` iCalendar 規則；沒有
+    `DatabaseExportTask` / media cleanup（M7-3 再談）。
 - [ ] **M7-2 `tc_statistics`**：每 device / protocol 的訊息量寫 DB，補上 `/api/statistics` 的歷史查詢（`/metrics` 只管即時）。
 - [ ] **M7-3 媒體**：`media/`、`MediaEventHandler`、`VideoStreamResource`。優先度最低，等 M1–M5 都穩定再談。
 

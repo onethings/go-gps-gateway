@@ -46,6 +46,16 @@ const (
 // user yields (nil, nil) so the HTTP layer can answer 401 without
 // distinguishing the cases.
 func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Principal, error) {
+	// The cache serves a resolved principal (or a known miss) without touching
+	// the database. A nil cache is the disabled path; the generation passed to
+	// get is only meaningful against the cache that owns it, so when there is no
+	// cache the lookups always fall through.
+	if cache := s.tokens; cache != nil {
+		if principal, present, stale := cache.get(tokenHash, cache.generation()); present && !stale {
+			return principal, nil
+		}
+	}
+
 	var (
 		tokenID     int64
 		userID      int64
@@ -73,6 +83,12 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 		tokenHash,
 	).Scan(&tokenID, &userID, &admin, &scopesJSON, &devicesJSON, &groupsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
+		if cache := s.tokens; cache != nil {
+			// Cache the miss so an unknown token does not hammer the database;
+			// IssueToken bumps the generation, so a later issue is never hidden
+			// by this entry.
+			cache.put(tokenHash, cache.generation(), nil)
+		}
 		return nil, nil
 	}
 	if err != nil {
@@ -111,6 +127,9 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 	}
 	principal := auth.NewPrincipal(userID, admin, scopes, deviceIDs)
 	principal.TokenID = tokenID
+	if cache := s.tokens; cache != nil {
+		cache.put(tokenHash, cache.generation(), principal)
+	}
 	return principal, nil
 }
 
@@ -338,6 +357,7 @@ func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model
 	if err != nil {
 		return nil, fmt.Errorf("postgres: create user %q: %w", create.Email, err)
 	}
+	s.invalidateTokenCache()
 	return s.User(ctx, userID)
 }
 
@@ -369,6 +389,7 @@ func (s *Store) UpdateUser(ctx context.Context, userID int64, update model.UserU
 	if err != nil {
 		return nil, fmt.Errorf("postgres: update user %d: %w", userID, err)
 	}
+	s.invalidateTokenCache()
 	return s.User(ctx, updatedID)
 }
 
@@ -450,6 +471,7 @@ func (s *Store) AssignDevice(ctx context.Context, userID, deviceID int64) error 
 	if err != nil {
 		return fmt.Errorf("postgres: assign device %d to user %d: %w", deviceID, userID, err)
 	}
+	s.invalidateTokenCache()
 	return nil
 }
 
@@ -464,6 +486,7 @@ func (s *Store) UnassignDevice(ctx context.Context, userID, deviceID int64) erro
 	if err != nil {
 		return fmt.Errorf("postgres: unassign device %d from user %d: %w", deviceID, userID, err)
 	}
+	s.invalidateTokenCache()
 	return nil
 }
 
@@ -541,6 +564,7 @@ func (s *Store) issueToken(ctx context.Context, predicate string, userArg any, s
 	if err != nil {
 		return nil, "", fmt.Errorf("postgres: issue token: %w", err)
 	}
+	s.invalidateTokenCache()
 	return record, token, nil
 }
 
@@ -560,6 +584,7 @@ func (s *Store) RevokeToken(ctx context.Context, userID, tokenID int64) error {
 	if affected == 0 {
 		return model.ErrTokenNotFound
 	}
+	s.invalidateTokenCache()
 	return nil
 }
 
@@ -572,6 +597,7 @@ func (s *Store) RevokeTokensExcept(ctx context.Context, userID, keepTokenID int6
 	if err != nil {
 		return fmt.Errorf("postgres: revoke tokens of user %d: %w", userID, err)
 	}
+	s.invalidateTokenCache()
 	return nil
 }
 

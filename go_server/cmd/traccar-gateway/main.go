@@ -379,14 +379,30 @@ func main() {
 	// device flushes what was waiting for it.
 	var commands *gateway.Dispatcher
 	if store != nil {
-		commands = gateway.NewDispatcher(router, store,
+		options := []gateway.DispatchOption{
 			gateway.WithCommandRetry(settings.CommandRetry),
 			gateway.WithCommandAttempts(settings.CommandAttempts),
 			gateway.WithCommandQueue(settings.CommandQueue),
 			gateway.WithCommandQueueTTL(settings.CommandQueueTTL),
 			gateway.WithDispatcherLogger(log.Printf),
 			gateway.WithDispatcherMetrics(meters),
-		)
+		}
+		// Externalise the live retry bookkeeping to Redis when configured, so a
+		// restart restores exact timing and multi-node deployments share the
+		// queue view. The store is best-effort: if Redis is unreachable the
+		// dispatcher still delivers from its in-memory queue.
+		if url := settings.Config.String(config.DispatchRedisURL); url != "" {
+			dispatchState, err := gateway.NewRedisDispatchStore(gateway.RedisDispatchConfig{
+				URL: url,
+			})
+			if err != nil {
+				log.Printf("dispatch: redis state disabled: %v", err)
+			} else {
+				dispatchState.SetLogger(log.Printf)
+				options = append(options, gateway.WithDispatchState(dispatchState))
+			}
+		}
+		commands = gateway.NewDispatcher(router, store, options...)
 		go commands.Run(ctx)
 
 		if settings.CommandRetention > 0 {

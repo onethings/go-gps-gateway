@@ -54,6 +54,13 @@ const (
 	CommandQueueTTL  = "command.queueTimeout" // Go only
 	CommandRetention = "command.retention"    // Go only
 
+	// Command dispatch live-state externalisation (Go only). When
+	// dispatch.redis.url is set, the retry bookkeeping is mirrored to Redis so
+	// multi-node deployments share the queue view and a restart restores exact
+	// timing.
+	DispatchRedisURL       = "dispatch.redis.url"
+	DispatchRedisKeyPrefix = "dispatch.redis.keyPrefix"
+
 	// Notification.
 	NotifyWebhook     = "notify.webhook"              // Go only
 	NotifyWebhookAuth = "notify.webhookAuthorization" // Go only
@@ -227,6 +234,8 @@ var KnownKeys = []string{
 	CommandQueue,
 	CommandQueueTTL,
 	CommandRetention,
+	DispatchRedisURL,
+	DispatchRedisKeyPrefix,
 
 	NotifyWebhook,
 	NotifyWebhookAuth,

@@ -204,6 +204,7 @@ func (s *Store) CreateDevice(ctx context.Context, create model.DeviceCreate) (*m
 	if err != nil {
 		return nil, fmt.Errorf("postgres: create device %q: %w", create.UniqueID, err)
 	}
+	s.invalidateTokenCache()
 	return device, nil
 }
 
@@ -232,6 +233,7 @@ func (s *Store) UpdateDevice(ctx context.Context, deviceID int64, update model.D
 	if err != nil {
 		return nil, fmt.Errorf("postgres: update device %d: %w", deviceID, err)
 	}
+	s.invalidateTokenCache()
 	return device, nil
 }
 

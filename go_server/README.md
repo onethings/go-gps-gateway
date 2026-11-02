@@ -1895,7 +1895,7 @@ M2 與 M6-2 都是「一直往裡加」的長工，適合跟其他里程碑交�
 
 效益：擴大支援的硬體生態系。
 
-[ ] 4. 生產環境架構演進（命令佇列外部化 / 效能快取）
+[x]4. 生產環境架構演進（命令佇列外部化 / 效能快取） **已完成（2026-11-03）**：Token 驗證加上帶版本號的記憶體快取（`internal/storage/postgres/cache.go`，`LookupToken` 走快取、所有變更路徑失效），大幅減少資料庫 Round Trip；命令派送的即時重試簿記（attempts / next / expires）以 raw-RESP 方式外部化到 Redis（`internal/gateway/redispatch.go` 的 `RedisDispatchStore`），dispatcher 可跨節點共享佇列視圖、重啟恢復精確計時，Redis 不可用時自動退化成純記憶體派送。命令列本身本就持久化在 PostgreSQL，重啟不丟失的承諾由資料庫承擔；Redis 補充的是即時派送狀態。設定鍵：`dispatch.redis.url`、`dispatch.redis.keyPrefix`。
 內容：
 
 命令佇列外部化：將目前存在記憶體的命令佇列與派送狀態搬到 Redis / NATS，支援多節點橫向擴展與重啟不丟失。

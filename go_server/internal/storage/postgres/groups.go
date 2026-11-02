@@ -40,12 +40,20 @@ var groupSpec = resourceSpec[model.Group]{
 
 // CreateGroup inserts a group and fills its ID.
 func (s *Store) CreateGroup(ctx context.Context, group *model.Group) error {
-	return createResource(ctx, s.db, groupSpec, group)
+	if err := createResource(ctx, s.db, groupSpec, group); err != nil {
+		return err
+	}
+	s.invalidateTokenCache()
+	return nil
 }
 
 // UpdateGroup replaces the mutable columns of a group.
 func (s *Store) UpdateGroup(ctx context.Context, group *model.Group) error {
-	return updateResource(ctx, s.db, groupSpec, group)
+	if err := updateResource(ctx, s.db, groupSpec, group); err != nil {
+		return err
+	}
+	s.invalidateTokenCache()
+	return nil
 }
 
 // DeleteGroup removes a group. Child groups keep their rows and lose the

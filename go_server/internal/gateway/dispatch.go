@@ -110,6 +110,17 @@ func WithDispatcherMetrics(set *metrics.Set) DispatchOption {
 	}
 }
 
+// WithDispatchState attaches an external mirror of the live retry bookkeeping.
+// Enqueue/Remove/Load are best-effort; a nil or default store is a no-op so the
+// dispatcher behaves exactly as it did before externalisation.
+func WithDispatchState(state dispatchState) DispatchOption {
+	return func(d *Dispatcher) {
+		if state != nil {
+			d.state = state
+		}
+	}
+}
+
 // Dispatcher delivers commands to devices and keeps the ones that cannot be
 // delivered yet. It owns every status change of a command once the row exists:
 // sent when the payload reached the socket, done or failed when the device
@@ -133,6 +144,11 @@ type Dispatcher struct {
 	mu      sync.Mutex
 	devices map[int64]*deviceQueue
 	ctx     context.Context
+
+	// state mirrors the live retry bookkeeping to a shared store (Redis) so a
+	// restart restores exact timing and other nodes share the queue view. A
+	// noDispatchState is the default: pure in-memory, as before externalisation.
+	state dispatchState
 
 	// countMu guards the size of the whole queue, which the gauge needs and
 	// which is read without holding a device lock.
@@ -186,6 +202,7 @@ func NewDispatcher(sender CommandSender, store CommandLog, options ...DispatchOp
 		devices:  make(map[int64]*deviceQueue),
 		ctx:      context.Background(),
 		now:      time.Now,
+		state:    noDispatchState{},
 	}
 	for _, option := range options {
 		option(d)
@@ -242,6 +259,7 @@ func (d *Dispatcher) DeviceConnected(protocol string, deviceID int64) {
 	if !queue.recovered {
 		queue.recovered = true
 		d.recover(ctx, protocol, deviceID, queue)
+		d.restore(ctx, deviceID, queue)
 	}
 
 	for _, entry := range queue.entries {
@@ -252,6 +270,24 @@ func (d *Dispatcher) DeviceConnected(protocol string, deviceID int64) {
 		}
 	}
 	d.publishQueued()
+}
+
+// restore overlays the shared bookkeeping (Redis) onto the entries that were
+// just re-created from the store, so exact retry timing survives a restart. It
+// must be called with the queue locked. A command the shared store holds that is
+// not in the queue was already answered or given up on, so it is ignored.
+func (d *Dispatcher) restore(ctx context.Context, deviceID int64, queue *deviceQueue) {
+	for _, remote := range d.state.Load(deviceID) {
+		for _, entry := range queue.entries {
+			if entry.command.ID == remote.command.ID {
+				entry.protocol = remote.protocol
+				entry.attempts = remote.attempts
+				entry.next = remote.next
+				entry.expires = remote.expires
+				break
+			}
+		}
+	}
 }
 
 // recover re-encodes the rows the device never received and queues them. It
@@ -333,6 +369,7 @@ func (d *Dispatcher) sweep(ctx context.Context) {
 					entry.command.ID, deviceID, entry.attempts)
 				queue.remove(entry.command.ID)
 				d.counted(-1)
+				d.state.Remove(entry.command.DeviceID, entry.command.ID)
 				d.fail(ctx, entry.command.ID)
 				continue
 			}
@@ -380,6 +417,7 @@ func (d *Dispatcher) write(
 		// No server listens for this protocol, so no reconnect can help.
 		queue.remove(entry.command.ID)
 		d.counted(-1)
+		d.state.Remove(entry.command.DeviceID, entry.command.ID)
 		d.fail(ctx, entry.command.ID)
 		return false, err
 	}
@@ -398,6 +436,10 @@ func (d *Dispatcher) write(
 	} else {
 		increment(d.retried)
 	}
+
+	// The entry changed (attempts, next): refresh the mirror so a restart
+	// restores the retry schedule rather than re-writing an answered command.
+	d.state.Enqueue(entry.command.DeviceID, entry.command.ID, *entry)
 
 	if err := d.store.MarkCommandSent(ctx, entry.command.ID); err != nil {
 		// The row stays pending and will be written again after a restart. That
@@ -434,6 +476,11 @@ func (d *Dispatcher) enqueue(queue *deviceQueue, entry *dispatchEntry) error {
 
 	queue.entries = append(queue.entries, entry)
 	d.counted(1)
+
+	// Mirror the live bookkeeping so a restart (or another node) can restore
+	// the exact timing and queue membership. Best-effort: a store failure never
+	// blocks delivery.
+	d.state.Enqueue(entry.command.DeviceID, entry.command.ID, *entry)
 	return nil
 }
 
@@ -466,6 +513,7 @@ func (d *Dispatcher) retire(deviceID int64, serial *int) {
 
 	queue.remove(match.command.ID)
 	d.counted(-1)
+	d.state.Remove(deviceID, match.command.ID)
 }
 
 // queue returns the queue of one device, creating an empty one on first use.

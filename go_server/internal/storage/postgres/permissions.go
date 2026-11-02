@@ -214,6 +214,7 @@ func (s *Store) AddPermission(ctx context.Context, permission permissions.Permis
 	if err != nil {
 		return fmt.Errorf("postgres: add permission %s: %w", permission, err)
 	}
+	s.invalidateTokenCache()
 	return nil
 }
 
@@ -231,6 +232,7 @@ func (s *Store) RemovePermission(ctx context.Context, permission permissions.Per
 	if err != nil {
 		return fmt.Errorf("postgres: remove permission %s: %w", permission, err)
 	}
+	s.invalidateTokenCache()
 	return nil
 }
 
@@ -246,5 +248,6 @@ func (s *Store) ClearPermissions(ctx context.Context, object permissions.Object,
 	if err != nil {
 		return fmt.Errorf("postgres: clear permissions of %s %d: %w", object, objectID, err)
 	}
+	s.invalidateTokenCache()
 	return nil
 }

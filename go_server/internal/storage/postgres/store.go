@@ -37,7 +37,16 @@ var migrationsFS embed.FS
 // Store is the PostgreSQL persistence layer.
 type Store struct {
 	db *sql.DB
+	// tokens caches LookupToken behind a generation version, so the high
+	// frequency token-authorisation path does not hit the database on every
+	// request.
+	tokens *tokenCache
 }
+
+// tokenCacheCapacity bounds the token cache. At this many live entries the next
+// miss drops the whole cache; reads refill it, so this is a memory cap, not a
+// correctness boundary.
+const tokenCacheCapacity = 4096
 
 // New opens the database, verifies connectivity and applies pending
 // migrations.
@@ -59,6 +68,7 @@ func New(ctx context.Context, dsn string) (*Store, error) {
 	}
 
 	store := &Store{db: db}
+	store.tokens = newTokenCache(tokenCacheCapacity)
 	if err := store.Migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err

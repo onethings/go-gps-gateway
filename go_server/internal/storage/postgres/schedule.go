@@ -53,6 +53,9 @@ func (s *Store) DeleteExpiredTokens(ctx context.Context, before time.Time) (int6
 	if err != nil {
 		return 0, fmt.Errorf("postgres: delete expired tokens: %w", err)
 	}
+	if deleted > 0 {
+		s.invalidateTokenCache()
+	}
 	return deleted, nil
 }
 

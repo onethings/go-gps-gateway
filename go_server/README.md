@@ -44,28 +44,28 @@ client ──HTTP──▶ api.Server（RequireAuth）
 
 ## 目錄
 
-| 路徑 | 說明 |
-| --- | --- |
-| `cmd/traccar-gateway` | 主要進入點：設定綁定、listener 啟動、API server |
-| `cmd/device-sim` | 開發用設備模擬器（Live lanes） |
-| `internal/model` | 統一資料模型：`Position` / `Network` / `Command` / `User` / `Notification`… |
-| `internal/auth` | 權限模型：scope、`Principal`、token 產生 / SHA-256、密碼 bcrypt |
-| `internal/codec` | 協議介面：`FrameDecoder` / `Decoder` / `SessionDecoder` / `Encoder` / `Base` |
-| `internal/protocol/*` | 各協議 codec（純函式），`protocaltest` 是共用測試斷言 |
-| `internal/gateway` | 網關：listener、切幀、解碼、Router、Dispatcher（命令） |
-| `internal/handler` | `ProcessingHandler` 處理鏈（filter…media） |
-| `internal/alert` | 告警規則評估（超速 / 斷電 / 復電 / 圍欄） |
-| `internal/geofence` | 地理圍欄 |
-| `internal/notify` | 通知管道：webhook、SMTP，及 Telegram / Pushover / Firebase / WhatsApp / SMS 等 notificator |
-| `internal/api` | REST API server 與各路由 handler |
-| `internal/storage/postgres` | PostgreSQL store + 16 支 migration（pgx v5） |
-| `internal/report` + `internal/schedule` | 報表與排程寄送 |
-| `internal/forward` | 位置 / 事件外送（HTTP、MQTT、Redis、Wialon…） |
-| `internal/media` | 媒體檔案上傳 / 下載 |
-| `internal/config` | 三層設定 + flag 綁定 |
-| `internal/metrics` / `internal/stats` | Prometheus `/metrics` 與統計寫入 |
-| `internal/session` / `internal/websocket` | 連線登錄 / WebSocket hub |
-| `scripts/` | `smoke.sh`、`rest-e2e.sh` 開發腳本 |
+| 路徑                                      | 說明                                                                                       |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `cmd/traccar-gateway`                     | 主要進入點：設定綁定、listener 啟動、API server                                            |
+| `cmd/device-sim`                          | 開發用設備模擬器（Live lanes）                                                             |
+| `internal/model`                          | 統一資料模型：`Position` / `Network` / `Command` / `User` / `Notification`…                |
+| `internal/auth`                           | 權限模型：scope、`Principal`、token 產生 / SHA-256、密碼 bcrypt                            |
+| `internal/codec`                          | 協議介面：`FrameDecoder` / `Decoder` / `SessionDecoder` / `Encoder` / `Base`               |
+| `internal/protocol/*`                     | 各協議 codec（純函式），`protocaltest` 是共用測試斷言                                      |
+| `internal/gateway`                        | 網關：listener、切幀、解碼、Router、Dispatcher（命令）                                     |
+| `internal/handler`                        | `ProcessingHandler` 處理鏈（filter…media）                                                 |
+| `internal/alert`                          | 告警規則評估（超速 / 斷電 / 復電 / 圍欄）                                                  |
+| `internal/geofence`                       | 地理圍欄                                                                                   |
+| `internal/notify`                         | 通知管道：webhook、SMTP，及 Telegram / Pushover / Firebase / WhatsApp / SMS 等 notificator |
+| `internal/api`                            | REST API server 與各路由 handler                                                           |
+| `internal/storage/postgres`               | PostgreSQL store + 16 支 migration（pgx v5）                                               |
+| `internal/report` + `internal/schedule`   | 報表與排程寄送                                                                             |
+| `internal/forward`                        | 位置 / 事件外送（HTTP、MQTT、Redis、Wialon…）                                              |
+| `internal/media`                          | 媒體檔案上傳 / 下載                                                                        |
+| `internal/config`                         | 三層設定 + flag 綁定                                                                       |
+| `internal/metrics` / `internal/stats`     | Prometheus `/metrics` 與統計寫入                                                           |
+| `internal/session` / `internal/websocket` | 連線登錄 / WebSocket hub                                                                   |
+| `scripts/`                                | `smoke.sh`、`rest-e2e.sh` 開發腳本                                                         |
 
 ## 快速開始
 
@@ -122,19 +122,19 @@ docker compose down -v
 
 預設監聽（同名 flag 可覆寫，傳空字串關閉該協議）：
 
-| 協議 / 服務 | Flag | 預設位址 |
-| --- | --- | --- |
-| H02 | `-h02` | `0.0.0.0:5013` |
-| GT06 | `-gt06` | `0.0.0.0:5023` |
-| JT808 | `-jt808` | `0.0.0.0:8610` |
-| Teltonika | `-teltonika` | `0.0.0.0:5027` |
-| OsmAnd | `-osmand` | `0.0.0.0:5055`（transport 預設 `http`） |
-| MQTT | `-mqtt` | `0.0.0.0:1883` |
-| GPS103 | `-gps103` | `0.0.0.0:5002` |
-| TK103 | `-tk103` | `0.0.0.0:5001` |
-| Meitrack | `-meitrack` | `0.0.0.0:5020` |
-| Wondex | `-wondex` | `0.0.0.0:5006` |
-| REST | `-http` | `0.0.0.0:8082`（需 `-dsn`；空 = 關閉） |
+| 協議 / 服務 | Flag         | 預設位址                                |
+| ----------- | ------------ | --------------------------------------- |
+| H02         | `-h02`       | `0.0.0.0:5013`                          |
+| GT06        | `-gt06`      | `0.0.0.0:5023`                          |
+| JT808       | `-jt808`     | `0.0.0.0:8610`                          |
+| Teltonika   | `-teltonika` | `0.0.0.0:5027`                          |
+| OsmAnd      | `-osmand`    | `0.0.0.0:5055`（transport 預設 `http`） |
+| MQTT        | `-mqtt`      | `0.0.0.0:1883`                          |
+| GPS103      | `-gps103`    | `0.0.0.0:5002`                          |
+| TK103       | `-tk103`     | `0.0.0.0:5001`                          |
+| Meitrack    | `-meitrack`  | `0.0.0.0:5020`                          |
+| Wondex      | `-wondex`    | `0.0.0.0:5006`                          |
+| REST        | `-http`      | `0.0.0.0:8082`（需 `-dsn`；空 = 關閉）  |
 
 常用 flag（預設都可先用設定檔 / 環境變數給）：`-dsn`、`-api-key`、`-allow-anonymous`（本機關
 REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batch-interval`(1s)、
@@ -184,22 +184,22 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
 `/api/health`、`/api/login`、密碼自助路由與 `/api/socket` 是例外。scope 控制能讀寫的資源，
 非 admin 只能存取自己被授權的裝置（`user_devices`）。本機可用 `-allow-anonymous` 關閉認證。
 
-| 區塊 | 路由 |
-| --- | --- |
-| 事件 | `GET /api/events`、`GET /api/events/{id}`（`/api/alerts` 為舊名別名） |
-| 裝置 | `GET/POST /api/devices`、`GET/PUT/DELETE /api/devices/{id}` |
-| 位置 | `GET /api/positions`、`GET /api/positions/{kml,kmz,csv,gpx}` |
-| 命令 | `GET/POST /api/commands`（落 commands 表 → Router → encoder → 設備連線）、`GET /api/commands/send` |
-| 健康/指標 | `GET /api/health`、`GET /metrics`（Prometheus） |
-| WebSocket | `GET /api/socket`（位置 / 事件 / 裝置狀態，token 走 query string） |
-| 帳號 | `GET/POST /api/users`、`PUT/DELETE /api/users/{id}`、`/api/users/{id}/devices`、`/api/users/{id}/tokens` |
-| 認證 | `POST /api/login`、`POST /api/password/forgot`、`POST /api/password/reset`、`PUT /api/users/me/password` |
-| 通知 | `GET/POST/PUT/DELETE /api/notifications`、`/api/users/{id}/notifications`、`GET /api/notificators`、`GET /api/notifications/types`、`POST /api/notifications/test|send/{notificator}` |
-| 權限/分享 | `/api/permissions`、`POST /api/share/device`、`POST /api/share/group`（`-disable-share` 可關） |
-| 資源 CRUD | `/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed` |
-| 管理 | `/api/protocols`、`/api/server`（含 timezones / geocode / speedlimit / geolocation / gc / reboot / file）、`/api/statistics`、`/api/statistics/devices`、`/api/audit` |
-| 會話 | `GET/POST/DELETE /api/session`、`/api/session/{id}`、`/api/session/token`、`/api/session/token/revoke` |
-| 媒體 | `GET/POST /api/media`、`GET/DELETE /api/media/{id}` |
+| 區塊      | 路由                                                                                                                                                                  |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| 事件      | `GET /api/events`、`GET /api/events/{id}`（`/api/alerts` 為舊名別名）                                                                                                 |
+| 裝置      | `GET/POST /api/devices`、`GET/PUT/DELETE /api/devices/{id}`                                                                                                           |
+| 位置      | `GET /api/positions`、`GET /api/positions/{kml,kmz,csv,gpx}`                                                                                                          |
+| 命令      | `GET/POST /api/commands`（落 commands 表 → Router → encoder → 設備連線）、`GET /api/commands/send`                                                                    |
+| 健康/指標 | `GET /api/health`、`GET /metrics`（Prometheus）                                                                                                                       |
+| WebSocket | `GET /api/socket`（位置 / 事件 / 裝置狀態，token 走 query string）                                                                                                    |
+| 帳號      | `GET/POST /api/users`、`PUT/DELETE /api/users/{id}`、`/api/users/{id}/devices`、`/api/users/{id}/tokens`                                                              |
+| 認證      | `POST /api/login`、`POST /api/password/forgot`、`POST /api/password/reset`、`PUT /api/users/me/password`                                                              |
+| 通知      | `GET/POST/PUT/DELETE /api/notifications`、`/api/users/{id}/notifications`、`GET /api/notificators`、`GET /api/notifications/types`、`POST /api/notifications/test     | send/{notificator}` |
+| 權限/分享 | `/api/permissions`、`POST /api/share/device`、`POST /api/share/group`（`-disable-share` 可關）                                                                        |
+| 資源 CRUD | `/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`                   |
+| 管理      | `/api/protocols`、`/api/server`（含 timezones / geocode / speedlimit / geolocation / gc / reboot / file）、`/api/statistics`、`/api/statistics/devices`、`/api/audit` |
+| 會話      | `GET/POST/DELETE /api/session`、`/api/session/{id}`、`/api/session/token`、`/api/session/token/revoke`                                                                |
+| 媒體      | `GET/POST /api/media`、`GET/DELETE /api/media/{id}`                                                                                                                   |
 
 資源型路由（groups / geofences / …）是同一組 Simple/ExtendedObjectResource handler 的 CRUD；
 `PUT` 是整欄取代。未啟用對應 store 的路由回 501。
@@ -240,3 +240,10 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
 - `/api/socket` 的 token 放 query string（瀏覽器無法對 WebSocket 設 header），會出現在存取紀錄裡。
 - `suntech` / `ruptela` codec 已存在但未納入預設啟動清單；`suntech` 目前有未通過的測試（見「現況」）。
 - 記憶體目錄（無 `-dsn`）僅適合開發；正式環境請用 PostgreSQL。
+
+## Roadmap & 未完成事項
+
+- [ ] **ProcessingHandler**：補齊 Filter（過濾漂移）、Geocoder（逆地理編碼）、EngineHours/Trips 計算。
+- [ ] **協議層**：修復 `suntech` 縮放測試失敗；實作 Queclink 協議；擴充各協議命令下發 Encoder。
+- [ ] **集群與擴展**：引進 Redis 分散式 Session 與 WebSocket 推播廣播，支援多網關節點水平擴展。
+- [ ] **前端對接**：提供完整 WebSocket JSON 訂閱協定文檔。

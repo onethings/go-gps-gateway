@@ -23,6 +23,10 @@ type eventState struct {
 	// devices is the row each position and event is rendered with by the
 	// forwarders, so forwarding never queries the database.
 	devices map[int64]*model.Device
+	// attributes are the computed attribute rows the processing chain
+	// evaluates for every position. They are global, so the same snapshot
+	// answers for every device.
+	attributes []*model.Attribute
 }
 
 func newEventState() *eventState {
@@ -66,6 +70,17 @@ func (s *eventState) Device(deviceID int64) *model.Device {
 	return s.devices[deviceID]
 }
 
+// Attributes returns the computed attribute snapshot. The chain evaluates it
+// for every position, so the caller must treat the slice as read only.
+func (s *eventState) Attributes(int64) []*model.Attribute {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.attributes
+}
+
 // setPosition keeps the newest position, which the proximity rule compares the
 // linked devices against and which the distance and filter stages use as the
 // previous position. An older row never replaces a newer one, so a periodic
@@ -99,12 +114,20 @@ func (s *eventState) reload(ctx context.Context, store *postgres.Store) error {
 	if err != nil {
 		return err
 	}
+	// A failing attribute read must not also drop the links and the devices:
+	// the rest of the snapshot is still usable, so it is applied and the error
+	// is reported afterwards.
+	attributes, attributesErr := store.Attributes(ctx, model.ResourceFilter{})
 
 	s.mu.Lock()
 	s.maintenances = maintenances
 	s.links = links
 	s.devices = devices
+	s.attributes = attributes
 	s.mu.Unlock()
+	if attributesErr != nil {
+		return attributesErr
+	}
 
 	// Seed the last position of every linked device, so a proximity check
 	// right after a restart has something to compare with. The refresh must not

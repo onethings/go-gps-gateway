@@ -110,6 +110,18 @@ func WithDispatcherMetrics(set *metrics.Set) DispatchOption {
 	}
 }
 
+// WithQueuedSentHook reports a command that waited in the queue and was only
+// written after its device came back. It is how the queuedCommandSent event
+// gets raised: the dispatcher is the only place that knows a command had been
+// waiting.
+func WithQueuedSentHook(hook func(deviceID, commandID int64)) DispatchOption {
+	return func(d *Dispatcher) {
+		if hook != nil {
+			d.onQueuedSent = hook
+		}
+	}
+}
+
 // WithDispatchState attaches an external mirror of the live retry bookkeeping.
 // Enqueue/Remove/Load are best-effort; a nil or default store is a no-op so the
 // dispatcher behaves exactly as it did before externalisation.
@@ -144,6 +156,9 @@ type Dispatcher struct {
 	mu      sync.Mutex
 	devices map[int64]*deviceQueue
 	ctx     context.Context
+
+	// onQueuedSent reports a command written after it had waited in the queue.
+	onQueuedSent func(deviceID, commandID int64)
 
 	// state mirrors the live retry bookkeeping to a shared store (Redis) so a
 	// restart restores exact timing and other nodes share the queue view. A
@@ -441,6 +456,10 @@ func (d *Dispatcher) write(
 	// restores the retry schedule rather than re-writing an answered command.
 	d.state.Enqueue(entry.command.DeviceID, entry.command.ID, *entry)
 
+	if entry.attempts == 1 && d.onQueuedSent != nil && !entry.command.CreatedAt.IsZero() &&
+		d.now().Sub(entry.command.CreatedAt) > d.retry {
+		d.onQueuedSent(deviceID, entry.command.ID)
+	}
 	if err := d.store.MarkCommandSent(ctx, entry.command.ID); err != nil {
 		// The row stays pending and will be written again after a restart. That
 		// is a duplicate the device may see, the price of not losing it.

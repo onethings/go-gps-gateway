@@ -11,10 +11,12 @@
 
 - 12 個協議：H02、GT06、JT808、Teltonika、OsmAnd、MQTT、GPS103、TK103、Meitrack、Wondex、
   Suntech、Ruptela（後兩者 5011 / 5046 預設啟動）。純函式 codec + TCP / UDP / TLS / HTTP / poll 五種傳輸基底。
-- 處理鏈：`ProcessingHandler` 宣告 15 個階段，已實作 12 個：
-  `distance`（OutdatedHandler + DistanceHandler）、`filter`（FilterHandler）、`motion`、`mapMatcher`、
-  `geofence`、`speedLimit`、`alertEvent`、`business`、`fuel`、`driver`、`maintenance`、`media`；
-  `defaultData`、`position`、`computedAttributes` 仍為 placeholder。
+- 處理鏈：`ProcessingHandler` 宣告 15 個階段，15 個都已有實作：
+  `distance`（OutdatedHandler + DistanceHandler）、`filter`（FilterHandler）、
+  `defaultData`（TimeHandler + HemisphereHandler）、`position`（GeolocationHandler + GeocoderHandler +
+  EngineHoursHandler）、`motion`、`mapMatcher`、`geofence`、`computedAttributes`（`internal/expr`
+  的運算式求值）、`speedLimit`、`alertEvent`（含 ProximityRule）、`business`、`fuel`、`driver`、
+  `maintenance`、`media`。`CopyAttributesHandler` 也已實作，由需要複製欄位的協議掛進 `position`。
   順序上 `distance` 在 `filter` 之前，與母本一致（Filter 的 distance / maxSpeed 規則要讀剛算好的里程）。
   `business` = `alert.Pipeline`（規則評估 → events 與 position 同交易落地）→
   `notify.Dispatcher`（webhook / SMTP，背景傳送）；`terminal` = `postgres.BatchSink` 批次落地。
@@ -148,6 +150,20 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
 `-command-queue-ttl`(5m) / `-command-retention`(168h)、`-disable-share`、
 `-notify-webhook` / `-notify-email-smtp` 等通知 flag。
 
+只走設定檔 / 環境變數的服務（沒有 flag，避免命令列愈長）：
+
+| 功能 | Key | 說明 |
+| --- | --- | --- |
+| 位置屬性複製 | `position.copyAttributes`（逗號分隔） | 掛上 CopyAttributesHandler；空 = 關閉 |
+| 帳號影像 | `deviceImage.path` | 預設 `<media.path>/devices`；空且沒有 media 時路由回 501 |
+| HLS 串流 | `stream.path` | 外部產生器寫 `<stream.path>/<deviceId>/index.m3u8`；路由唯讀 |
+| Redis 推播 | `redis.url`、`redis.channel`（預設 `traccar`） | 跨節點分享 WebSocket 位置 / 事件 / 裝置狀態 |
+| OpenID Connect | `openid.enable`、`openid.issuer`、`openid.clientId`、`openid.clientSecret`、`openid.redirectUrl`、`openid.scopes`、`openid.createMissing`、`openid.successUrl` | 端點由 issuer 的 discovery document 取得 |
+| LDAP | `ldap.url`、`ldap.user`、`ldap.password`、`ldap.base`、`ldap.userFilter`、`ldap.nameAttribute`、`ldap.mailAttribute`、`ldap.timeout` | `userFilter` 的 `{0}` 會做 RFC 4515 escaping |
+| 網路外送 | `forward.network.address`、`forward.network.protocol`（`tcp` / `udp`） | 每個位置 / 事件一行 JSON |
+| 地理服務 | `geocoder.type`（nominatim / google / opencage / here / locationiq / mapbox / tomtom / photon / pelias）、`geolocation.type`（google / mozilla / opencellid / unwired / here） | 其餘 provider 用 `geocoder.url` / `geolocation.url` 接 |
+| 排程 | `schedule.inactive.interval`、`schedule.deviceExpiration.interval`、`schedule.events.interval` / `.retention`、`schedule.positions.interval` / `.retention`、`schedule.commands.interval` / `.retention` | retention 為 0 時不刪資料 |
+
 ## 協議支援矩陣
 
 - **H02**：文字 `V1/V3/V4/V5/V6/V8/V19`、`NBR`、`LINK`、`VP1`、`HTBT`、`SMS`、心跳；
@@ -199,14 +215,16 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
 | 命令      | `GET/POST /api/commands`（落 commands 表 → Router → encoder → 設備連線）、`GET /api/commands/send`                                                                    |
 | 健康/指標 | `GET /api/health`、`GET /metrics`（Prometheus）                                                                                                                       |
 | WebSocket | `GET /api/socket`（位置 / 事件 / 裝置狀態，token 走 query string）                                                                                                    |
-| 帳號      | `GET/POST /api/users`、`PUT/DELETE /api/users/{id}`、`/api/users/{id}/devices`、`/api/users/{id}/tokens`                                                              |
-| 認證      | `POST /api/login`、`POST /api/password/forgot`、`POST /api/password/reset`、`PUT /api/users/me/password`                                                              |
+| 帳號      | `GET/POST /api/users`、`PUT/DELETE /api/users/{id}`、`/api/users/{id}/devices`、`/api/users/{id}/tokens`、`GET/POST/PUT/DELETE /api/users/{id}/totp`、`POST /api/users/totp` |
+| 認證      | `POST /api/login`（可帶 TOTP `code`）、`POST /api/password/forgot`、`POST /api/password/reset`、`POST /api/password/update`、`PUT /api/users/me/password`、`GET /api/session/openid/auth`、`GET /api/session/openid/callback` |
 | 通知      | `GET/POST/PUT/DELETE /api/notifications`、`/api/users/{id}/notifications`、`GET /api/notificators`、`GET /api/notifications/types`、`POST /api/notifications/test`、`/api/notifications/send/{notificator}` |
-| 權限/分享 | `/api/permissions`、`POST /api/share/device`、`POST /api/share/group`（`-disable-share` 可關）                                                                        |
-| 資源 CRUD | `/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`                   |
-| 管理      | `/api/protocols`、`/api/server`（含 timezones / geocode / speedlimit / geolocation / gc / reboot / file）、`/api/statistics`、`/api/statistics/devices`、`/api/audit` |
+| 權限/分享 | `/api/permissions`、`POST/DELETE /api/permissions/bulk`、`POST /api/share/device`、`POST /api/share/group`（`-disable-share` 可關）                                                                    |
+| 資源 CRUD | `/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`、`GET/POST /api/attributes/computed/test`           |
+| 管理      | `/api/protocols`、`/api/server`（含 timezones / geocode / speedlimit / geolocation / gc / reboot / file）、`GET /api/server/cache`、`/api/statistics`、`/api/statistics/devices`、`/api/audit`          |
 | 會話      | `GET/POST/DELETE /api/session`、`/api/session/{id}`、`/api/session/token`、`/api/session/token/revoke`                                                                |
 | 媒體      | `GET/POST /api/media`、`GET/DELETE /api/media/{id}`                                                                                                                   |
+| 裝置附屬  | `GET/PUT /api/devices/{id}/accumulators`、`GET/POST/DELETE /api/devices/{id}/image`                                                                                    |
+| 串流      | `GET /api/stream/{deviceId}`、`GET /api/stream/{deviceId}/{file...}`（HLS playlist / segment）                                                                         |
 
 資源型路由（groups / geofences / …）是同一組 Simple/ExtendedObjectResource handler 的 CRUD；
 `PUT` 是整欄取代。未啟用對應 store 的路由回 501。
@@ -249,8 +267,10 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
 - `/api/socket` 的 token 放 query string（瀏覽器無法對 WebSocket 設 header），會出現在存取紀錄裡。
 - `suntech` / `ruptela` 已納入預設啟動清單；`suntech` 沒有 Encoder，只能收不能下命令。
 - 記憶體目錄（無 `-dsn`）僅適合開發；正式環境請用 PostgreSQL。
+- TOTP / OpenID / LDAP / HLS / 裝置影像 / Redis 推播都要在設定檔或環境變數開啟；沒設定的路由回
+  501，不會默默使用不安全預設。
 
-## 與母本差距（還要重寫的部分）
+## 與母本差距
 
 母本 `../traccar-master` 的規模與 Go 版現況（`0e35d75` 之後實測）：
 
@@ -258,16 +278,16 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
 | --- | --- | --- | --- |
 | 協議解碼器 | 268 | 12 | 256 |
 | 命令 Encoder | 65 | 5 | 60（gps103 / tk103 / meitrack / wondex / suntech 只收不下） |
-| 位置處理 handler | 19 | 11（Go 用 15 個 stage 表達） | 8 個 entry（7 個 handler） |
-| 事件處理器 | 12 | 11 | Proximity（規則已寫，未接進鏈） |
-| OpenAPI 路徑 | 76 | 66（另有 Go 專屬別名） | 10 |
-| 地理服務 provider | geocoder 24 / geolocation 4 / speedlimit 1 / mapmatcher 1 | 2 / 1 / 1 / 1 | geocoder 22、geolocation 3 |
-| 外送 | JSON、URL、MQTT、Redis、Wialon、AMQP、Kafka、NetworkForwarder | JSON、URL、MQTT、Redis、Wialon | AMQP、Kafka、NetworkForwarder |
+| 位置處理 handler | 19 | 19（Go 用 15 個 stage 表達，另有 CopyAttributesHandler） | 0 |
+| 事件處理器 | 12 | 12（Proximity 已接進 `alertEvent`） | 0 |
+| OpenAPI 路徑 | 76 | 76（另有 Go 專屬別名） | 0 |
+| 地理服務 provider | geocoder 24 / geolocation 4 / speedlimit 1 / mapmatcher 1 | 9 / 5 / 1 / 1 | geocoder 15 |
+| 外送 | JSON、URL、MQTT、Redis、Wialon、AMQP、Kafka、NetworkForwarder | JSON、URL、MQTT、Redis、Wialon、NetworkForwarder | AMQP、Kafka |
 | 資料庫 | PostgreSQL / MySQL / H2 | PostgreSQL | 兩種 DB；schema 自成一格，不能接母本資料庫 |
-| 認證 | 密碼、TOTP、OpenID Connect、LDAP | 密碼、token、scope、分享 | TOTP、OpenID、LDAP |
-| 水平擴展 | Redis broadcast / multicast | 單節點 | 跨節點 session 與推播 |
-| 影像 | JT1078 協議 + HLS 串流 | 媒體上傳 / 下載 | JT1078、HLS |
-| 排程任務 | 8 | 4（cleanup / expiration / health / reports） | 5（cleanup 沒有涵蓋 temporary 帳號） |
+| 認證 | 密碼、TOTP、OpenID Connect、LDAP | 密碼、token、scope、分享、TOTP、OpenID Connect、LDAP | 0 |
+| 水平擴展 | Redis broadcast / multicast | Redis pub/sub 跨節點推播；裝置 session 仍為單節點 | multicast；跨節點 session 檢視 |
+| 影像 | JT1078 協議 + HLS 串流 | 媒體上傳 / 下載、HLS 端點 | JT1078 解碼與切片 |
+| 排程任務 | 8 | 9（cleanup / expiration / health / reports / inactive / deviceExpiration / events / positions / commands） | temporary 帳號到期刪除 |
 
 ### 1. 協議層（最大缺口）
 
@@ -278,54 +298,53 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
   Watch、Eseal、Topflytech。
 - 已做的協議仍有子功能缺口，逐條列在「協議支援矩陣」的「待補」。
 
-### 2. 處理鏈（7 個 handler 未接）
+### 2. 處理鏈（已完成）
 
-| 母本 handler | Go 現況 | 影響 |
-| --- | --- | --- |
-| TimeHandler | 缺（`defaultData` 仍是 placeholder） | 裝置時間與伺服器時間的偏差修正 |
-| HemisphereHandler | 缺（同上） | 南半球 / 西半球的座標修正 |
-| ComputedAttributesHandler（Early / Late） | 缺（`computedAttributes` 仍是 placeholder） | `/api/attributes/computed` 只能 CRUD，不會實際計算 |
-| GeolocationHandler | 缺 | 只有 CellTower、沒有座標時無法補點 |
-| GeocoderHandler | 缺（`geo.Geocoder` 有實作，未接鏈） | position 不帶 `address` |
-| CopyAttributesHandler | 缺 | 母本 `copyAttributes` 的欄位複製行為 |
-| EngineHoursHandler | 缺 | 引擎運轉時數不累積 |
+TimeHandler、HemisphereHandler、ComputedAttributesHandler、GeolocationHandler、GeocoderHandler、
+CopyAttributesHandler、EngineHoursHandler 都已實作並接進對應 stage；`computedAttributes` 由
+`internal/expr` 求值，支援算術、比較、邏輯、三元運算與 `abs` / `min` / `max` / `pow` / `coalesce`
+等函式。position 的欄位與屬性都可當變數使用。`GET /api/attributes/computed/test` 走同一個求值器。
 
-`StagePosition` 也是 placeholder：最後位置與有效性目前由 gateway 的 LocationCache 代勞。
+仍與母本不同的地方：
 
-### 3. REST API 未實作
+- `CopyAttributesHandler` 只有在 `position.copyAttributes` 列出 key 時才掛進鏈；要複製哪些 key
+  是協議決定的，所以沒有預設值。
+- 事件規則的歷史各自保存（每條規則一份 last position），母本共用一個 handler state；結果相同，
+  記憶體用量略高。
+- 地址與 cell tower 查詢在 ingest 路徑上同步執行，設 3 秒上限；母本用 cache + 非同步佇列。
 
-```
-POST /api/attributes/computed/test
-GET  /api/devices/{id}/accumulators
-POST /api/devices/{id}/image
-POST /api/permissions/bulk
-POST /api/users/totp
-GET  /api/session/openid/auth
-GET  /api/session/openid/callback
-GET  /api/server/cache
-GET  /api/stream/{deviceId}/{channel}/live.m3u8
-GET  /api/stream/{deviceId}/{channel}/{index}.ts
-```
+### 3. REST API（已完成）
 
-另有路徑命名差異：母本用 `POST /api/password/update`（憑 reset token 設新密碼），Go 版是
-`POST /api/password/reset`。官方 Web 介面直接呼叫前者，要接母本前端就得補別名。
+上一輪列出的 10 條路徑都已補上：`/api/attributes/computed/test`、`/api/devices/{id}/accumulators`、
+`/api/devices/{id}/image`、`/api/permissions/bulk`、`/api/users/{id}/totp` 與 `/api/users/totp`、
+`/api/session/openid/auth`、`/api/session/openid/callback`、`/api/server/cache`、
+`/api/stream/{deviceId}` 與 `/api/stream/{deviceId}/{file...}`。`POST /api/password/update` 也已補上，
+官方 Web 介面不必改路徑。
+
+- `accumulators` 存在裝置的 `attributes.totalDistance` / `attributes.hours`，PUT 只改有帶的欄位。
+- `image` 支援 multipart 的 `file` 欄位或直接 body，內容必須是 `image/*`，上限 5 MiB。
+- HLS 是唯讀視圖：外部產生器（例如 MediaMTX）寫檔，Go 只做授權與 content type。
+- TOTP secret 存在 `users.totp_key`，`totp_enabled` 要驗過一次 code 才會打開；登入時 `/api/login`
+  與 `/api/session` 都可帶 `code`。
 
 ### 4. 其他基礎設施
 
-- 地理服務 provider 少：geocoder 只有 nominatim / google，geolocation 只有 google。
-- 外送缺 AMQP、Kafka 與 NetworkForwarder。
-- 只有 PostgreSQL，且 schema 與母本不相容（不能直接接母本資料庫）。
-- 單節點：沒有 Redis 分散式 session、沒有跨節點 WebSocket 廣播、沒有 multicast。
-- 沒有 JT1078 影像協議與 HLS 串流端點（`VideoStreamResource`）。
-- 沒有 TOTP、OpenID Connect、LDAP。
-- 排程缺 5 個任務：分享帳號到期刪除、`deviceInactive` 判定、device 狀態清除、session 逾時清理、
-  WebSocket keepalive。`deviceInactive` 與 `queuedCommandSent` 兩個事件型別已宣告但沒有地方產生。
-- 母本 `web/` 的 console、well-known、MCP server 都沒有對應；前端本來就是獨立專案。
+- 地理服務：geocoder 9 個 provider、geolocation 5 個，其餘用 `geocoder.url` / `geolocation.url`
+  接自訂端點。
+- 外送：NetworkForwarder（TCP / UDP JSON line）已補；AMQP 與 Kafka 仍未實作。
+- 只有 PostgreSQL，schema 與母本不相容。
+- 水平擴展：`redis.url` 開啟跨節點 WebSocket 推播；認證 token 本來就在資料庫，所以登入狀態已共享。
+  裝置 session 清單仍是單節點記憶體。
+- JT1078 影像協議未實作；HLS 端點與媒體上傳已完成。
+- TOTP、OpenID Connect、LDAP 都已完成；LDAP 走 BER，不引入外部 driver。
+- 排程補了 `deviceInactive`、`deviceExpiration`、events / positions / commands retention；
+  `queuedCommandSent` 由 dispatcher 在「排隊後第一次送出」時產生。
 
 ### 建議順序
 
 1. 依實際客戶設備清單補協議（不要追 268 支），每支補完順手補 Encoder。
-2. 接 ComputedAttributes、Time、Hemisphere、Geocoder 四個 handler，把處理鏈補完整。
-3. 補官方 Web 介面會用到的路由：`/api/password/update`、`/api/permissions/bulk`、
-   `/api/devices/{id}/accumulators`、`/api/devices/{id}/image`。
-4. 要水平擴展時才做 Redis session / broadcast；單節點先撐著。
+2. 需要第三方訊息匯流排時再補 AMQP / Kafka producer；目前 HTTP、MQTT、Redis、Wialon、
+   NetworkForwarder 已足夠單一服務消費。
+3. 要接母本既有資料庫或 MySQL / H2 時，先做 storage 介面層與 schema 對照，不要直接改 PostgreSQL
+   的 migration。
+4. 需要即時影像時再實作 JT1078 解碼與切片；HLS 端點已可接外部產生器。

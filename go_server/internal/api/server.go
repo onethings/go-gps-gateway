@@ -158,6 +158,14 @@ type Server struct {
 	// disables the lockout.
 	loginMaxFailures  int
 	loginLockDuration time.Duration
+	// Optional services behind the routes this milestone added.
+	computedAttributes AttributeStore
+	deviceImages       string
+	streamDir          string
+	totp               DeviceTOTPStore
+	openID             *openIDClient
+	ldap               LDAPAuthenticator
+	geoCaches          []NamedCache
 }
 
 // Option customises a Server.
@@ -342,6 +350,7 @@ func (s *Server) Handler() http.Handler {
 
 	s.registerAdminRoutes(mux)
 	s.registerMediaRoutes(mux)
+	s.registerExtensionRoutes(mux)
 
 	var handler http.Handler = mux
 	if s.apiKey != "" || s.tokens != nil {

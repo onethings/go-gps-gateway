@@ -29,10 +29,7 @@ type Geocoder struct {
 func NewGeocoder(settings Settings, client *http.Client) *Geocoder {
 	baseURL := settings.Geocoder.URL
 	if baseURL == "" {
-		baseURL = nominatimURL
-		if strings.EqualFold(settings.Geocoder.Type, "google") {
-			baseURL = googleURL
-		}
+		baseURL = defaultGeocoderURL(settings.Geocoder.Type)
 	}
 	if client == nil {
 		client = &http.Client{Timeout: settings.Timeout}
@@ -79,6 +76,20 @@ func (g *Geocoder) lookup(ctx context.Context, latitude, longitude float64) (str
 		return g.nominatim(ctx, latitude, longitude)
 	case "google":
 		return g.google(ctx, latitude, longitude)
+	case "opencage":
+		return g.openCage(ctx, latitude, longitude)
+	case "here":
+		return g.hereGeocode(ctx, latitude, longitude)
+	case "locationiq":
+		return g.locationIQ(ctx, latitude, longitude)
+	case "mapbox":
+		return g.mapbox(ctx, latitude, longitude)
+	case "tomtom":
+		return g.tomtom(ctx, latitude, longitude)
+	case "photon":
+		return g.photon(ctx, latitude, longitude)
+	case "pelias":
+		return g.pelias(ctx, latitude, longitude)
 	default:
 		return "", fmt.Errorf("geo: unknown geocoder type %q", g.provider)
 	}

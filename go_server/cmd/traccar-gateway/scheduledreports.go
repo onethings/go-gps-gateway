@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"traccar-server_go/go_server/internal/config"
+	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/notify"
 	"traccar-server_go/go_server/internal/report"
 	"traccar-server_go/go_server/internal/schedule"
@@ -79,7 +80,7 @@ func (g reportGenerator) Generate(
 // buildScheduler registers the maintenance tasks the configuration enables.
 func buildScheduler(
 	settings schedulerSettings, store schedulerStore, generator schedule.Generator,
-	mailer schedule.Mailer, logf func(string, ...any),
+	mailer schedule.Mailer, onEvent func(*model.Event), logf func(string, ...any),
 ) *schedule.Scheduler {
 	scheduler := schedule.New(schedule.WithLogger(logf))
 	if store == nil {
@@ -108,6 +109,52 @@ func buildScheduler(
 	}
 	if settings.Health > 0 {
 		scheduler.Add(&schedule.Health{Pinger: store}, settings.Health, false)
+	}
+	if settings.Inactive > 0 {
+		scheduler.Add(&schedule.DeviceInactive{
+			Store:   store,
+			Timeout: settings.InactiveTimeout,
+			OnEvent: onEvent,
+		}, settings.Inactive, false)
+	}
+	if settings.DeviceExpiration > 0 {
+		scheduler.Add(&schedule.DeviceExpiration{Store: store}, settings.DeviceExpiration, false)
+	}
+	if settings.Events > 0 {
+		scheduler.Add(&schedule.Retention{
+			Label:  "events",
+			Keep:   settings.EventRetention,
+			Delete: store.DeleteEventsBefore,
+			Report: func(kind string, deleted int64) {
+				logf("schedule: deleted %d old %s", deleted, kind)
+			},
+		}, settings.Events, false)
+	}
+	if settings.Positions > 0 {
+		scheduler.Add(&schedule.Retention{
+			Label:  "positions",
+			Keep:   settings.PositionRetention,
+			Delete: store.DeletePositionsBefore,
+			Report: func(kind string, deleted int64) {
+				logf("schedule: deleted %d old %s", deleted, kind)
+			},
+		}, settings.Positions, false)
+	}
+	if settings.Commands > 0 {
+		scheduler.Add(&schedule.Retention{
+			Label: "commands",
+			Keep:  settings.CommandRetention,
+			Delete: func(ctx context.Context, before time.Time) (int64, error) {
+				age := time.Since(before)
+				if age <= 0 {
+					return 0, nil
+				}
+				return store.DeleteCommandsBefore(ctx, age)
+			},
+			Report: func(kind string, deleted int64) {
+				logf("schedule: deleted %d old %s", deleted, kind)
+			},
+		}, settings.Commands, false)
 	}
 	return scheduler
 }
@@ -148,16 +195,34 @@ func readSchedulerSettings(cfg *config.Config) schedulerSettings {
 	read(config.ScheduleActionRetention, &settings.ActionRetention)
 	read(config.ScheduleReports, &settings.Reports)
 	read(config.ScheduleHealth, &settings.Health)
+	read(config.ScheduleInactive, &settings.Inactive)
+	read(config.ScheduleDeviceExpiration, &settings.DeviceExpiration)
+	read(config.ScheduleEventRetention, &settings.EventRetention)
+	read(config.ScheduleEvents, &settings.Events)
+	read(config.SchedulePositionRetention, &settings.PositionRetention)
+	read(config.SchedulePositions, &settings.Positions)
+	read(config.ScheduleCommandRetention, &settings.CommandRetention)
+	read(config.ScheduleCommands, &settings.Commands)
+	read(config.ServerTimeout, &settings.InactiveTimeout)
 	return settings
 }
 
 // schedulerSettings is the resolved task intervals.
 type schedulerSettings struct {
-	Expiration      time.Duration
-	Cleanup         time.Duration
-	ActionRetention time.Duration
-	Reports         time.Duration
-	Health          time.Duration
+	Expiration        time.Duration
+	Cleanup           time.Duration
+	ActionRetention   time.Duration
+	Reports           time.Duration
+	Health            time.Duration
+	Inactive          time.Duration
+	InactiveTimeout   time.Duration
+	DeviceExpiration  time.Duration
+	EventRetention    time.Duration
+	Events            time.Duration
+	PositionRetention time.Duration
+	Positions         time.Duration
+	CommandRetention  time.Duration
+	Commands          time.Duration
 }
 
 // schedulerStore is what every task needs together. The postgres store satisfies
@@ -167,4 +232,7 @@ type schedulerStore interface {
 	schedule.CleanupStore
 	schedule.ReportStore
 	schedule.Pinger
+	schedule.InactiveStore
+	schedule.DeviceExpirationStore
+	schedule.RetentionStore
 }

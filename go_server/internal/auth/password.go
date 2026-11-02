@@ -73,4 +73,9 @@ type Credential struct {
 	// LockedUntil is when failed logins stop refusing the account. nil means
 	// no lock is active.
 	LockedUntil *time.Time
+	// TOTPSecret is the shared two factor secret, empty when the account has
+	// none. TOTPEnabled reports whether a code is required in addition to the
+	// password.
+	TOTPSecret  string
+	TOTPEnabled bool
 }

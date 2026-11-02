@@ -61,6 +61,12 @@ const (
 	DispatchRedisURL       = "dispatch.redis.url"
 	DispatchRedisKeyPrefix = "dispatch.redis.keyPrefix"
 
+	// Redis pub/sub shares the live socket feed between gateway nodes. Auth
+	// sessions already live in the database, so this is the only per-process
+	// state a second node has to see.
+	RedisURL     = "redis.url"     // Go only
+	RedisChannel = "redis.channel" // Go only
+
 	// Notification.
 	NotifyWebhook     = "notify.webhook"              // Go only
 	NotifyWebhookAuth = "notify.webhookAuthorization" // Go only
@@ -118,66 +124,114 @@ const (
 	// Forwarding. forward.url and event.forward.url are the Java keys; the
 	// mqtt, redis and wialon sections are Go only, because the Java server
 	// forwards through its protocol modules instead of a dedicated transport.
-	ForwardURL            = "forward.url"
-	ForwardType           = "forward.type"
-	ForwardHeader         = "forward.header"
-	EventForwardURL       = "event.forward.url"
-	EventForwardType      = "event.forward.type"
-	EventForwardHeader    = "event.forward.header"
-	ForwardMQTTBroker     = "forward.mqtt.broker"
-	ForwardMQTTTopic      = "forward.mqtt.topic"
-	ForwardMQTTClientID   = "forward.mqtt.clientId"
-	ForwardMQTTUser       = "forward.mqtt.username"
-	ForwardMQTTPassword   = "forward.mqtt.password"
-	ForwardRedisURL       = "forward.redis.url"
-	ForwardRedisKeyPrefix = "forward.redis.keyPrefix"
-	ForwardWialonAddress  = "forward.wialon.address"
-	ForwardWialonVersion  = "forward.wialon.version"
-	ForwardKind           = "forward.kind"
-	ForwardQueue          = "forward.queue"
-	ForwardAttempts       = "forward.attempts"
-	ForwardBackoff        = "forward.backoff"
-	ForwardTimeout        = "forward.timeout"
+	ForwardURL             = "forward.url"
+	ForwardType            = "forward.type"
+	ForwardHeader          = "forward.header"
+	EventForwardURL        = "event.forward.url"
+	EventForwardType       = "event.forward.type"
+	EventForwardHeader     = "event.forward.header"
+	ForwardMQTTBroker      = "forward.mqtt.broker"
+	ForwardMQTTTopic       = "forward.mqtt.topic"
+	ForwardMQTTClientID    = "forward.mqtt.clientId"
+	ForwardMQTTUser        = "forward.mqtt.username"
+	ForwardMQTTPassword    = "forward.mqtt.password"
+	ForwardRedisURL        = "forward.redis.url"
+	ForwardRedisKeyPrefix  = "forward.redis.keyPrefix"
+	ForwardWialonAddress   = "forward.wialon.address"
+	ForwardWialonVersion   = "forward.wialon.version"
+	ForwardNetworkAddress  = "forward.network.address"
+	ForwardNetworkProtocol = "forward.network.protocol"
+	ForwardKind            = "forward.kind"
+	ForwardQueue           = "forward.queue"
+	ForwardAttempts        = "forward.attempts"
+	ForwardBackoff         = "forward.backoff"
+	ForwardTimeout         = "forward.timeout"
 
 	// Geographic services. They are read through their own helper because a
 	// service is only enabled when it has everything it needs.
-	GeocoderEnable    = "geocoder.enable"
-	GeocoderType      = "geocoder.type"
-	GeocoderURL       = "geocoder.url"
-	GeocoderKey       = "geocoder.key"
-	GeocoderLanguage  = "geocoder.language"
-	GeocoderCache     = "geocoder.cache"
-	GeocoderCacheFile = "geocoder.cache.file"
-	GeocoderTimeout   = "geocoder.timeout"
-	SpeedLimitEnable  = "speedlimit.enable"
-	SpeedLimitURL     = "speedlimit.url"
-	SpeedLimitRadius  = "speedlimit.radius"
-	SpeedLimitCache   = "speedlimit.cache"
-	MapMatcherEnable  = "mapmatcher.enable"
-	MapMatcherURL     = "mapmatcher.url"
-	MapMatcherKey     = "mapmatcher.key"
-	MapMatcherRadius  = "mapmatcher.radius"
-	MapMatcherCache   = "mapmatcher.cache"
+	GeocoderEnable      = "geocoder.enable"
+	GeocoderType        = "geocoder.type"
+	GeocoderURL         = "geocoder.url"
+	GeocoderKey         = "geocoder.key"
+	GeocoderLanguage    = "geocoder.language"
+	GeocoderCache       = "geocoder.cache"
+	GeocoderCacheFile   = "geocoder.cache.file"
+	GeocoderTimeout     = "geocoder.timeout"
+	SpeedLimitEnable    = "speedlimit.enable"
+	SpeedLimitURL       = "speedlimit.url"
+	SpeedLimitRadius    = "speedlimit.radius"
+	SpeedLimitCache     = "speedlimit.cache"
+	MapMatcherEnable    = "mapmatcher.enable"
+	MapMatcherURL       = "mapmatcher.url"
+	MapMatcherKey       = "mapmatcher.key"
+	MapMatcherRadius    = "mapmatcher.radius"
+	MapMatcherCache     = "mapmatcher.cache"
 	MapMatcherCacheFile = "mapmatcher.cache.file"
-	GeolocationEnable = "geolocation.enable"
-	GeolocationURL    = "geolocation.url"
-	GeolocationKey    = "geolocation.key"
-	GeolocationCache  = "geolocation.cache"
+	GeolocationEnable   = "geolocation.enable"
+	GeolocationType     = "geolocation.type"
+	GeolocationURL      = "geolocation.url"
+	GeolocationKey      = "geolocation.key"
+	GeolocationCache    = "geolocation.cache"
 
 	// StatisticsInterval is how often a row is written to the statistics table.
 	// Zero disables the history while /metrics keeps working.
 	StatisticsInterval = "statistics.interval"
 
 	// Scheduled maintenance. The intervals are durations; zero turns a task off.
-	ScheduleExpiration      = "schedule.expiration.interval"
-	ScheduleCleanup         = "schedule.cleanup.interval"
-	ScheduleActionRetention = "schedule.cleanup.actionRetention"
-	ScheduleReports         = "schedule.reports.interval"
-	ScheduleHealth          = "schedule.health.interval"
+	ScheduleExpiration        = "schedule.expiration.interval"
+	ScheduleCleanup           = "schedule.cleanup.interval"
+	ScheduleActionRetention   = "schedule.cleanup.actionRetention"
+	ScheduleReports           = "schedule.reports.interval"
+	ScheduleHealth            = "schedule.health.interval"
+	ScheduleInactive          = "schedule.inactive.interval"
+	ScheduleDeviceExpiration  = "schedule.deviceExpiration.interval"
+	ScheduleEventRetention    = "schedule.events.retention"
+	ScheduleEvents            = "schedule.events.interval"
+	SchedulePositionRetention = "schedule.positions.retention"
+	SchedulePositions         = "schedule.positions.interval"
+	ScheduleCommandRetention  = "schedule.commands.retention"
+	ScheduleCommands          = "schedule.commands.interval"
 
 	// MediaPath is where the uploaded files are stored. An empty path disables
 	// the media routes.
 	MediaPath = "media.path"
+
+	// DeviceImagePath is where the per-device images are kept. An empty path
+	// falls back to <media.path>/devices and disables the route when media is
+	// off too.
+	DeviceImagePath = "deviceImage.path" // Go only
+	// StreamPath is the root an external HLS producer writes into. The layout
+	// is <stream.path>/<deviceId>/index.m3u8.
+	StreamPath = "stream.path" // Go only
+
+	// PositionCopyAttributes lists the attribute keys the position stage copies
+	// from the previous position when the frame does not carry them. It is the
+	// Go spelling of the Java CopyAttributesHandler, which a protocol installs
+	// per device model.
+	PositionCopyAttributes = "position.copyAttributes" // Go only
+
+	// OpenID Connect single sign-on. The endpoints are read from the issuer's
+	// discovery document.
+	OpenIDEnable        = "openid.enable"
+	OpenIDIssuer        = "openid.issuer"
+	OpenIDClientID      = "openid.clientId"
+	OpenIDClientSecret  = "openid.clientSecret"
+	OpenIDRedirectURL   = "openid.redirectUrl"
+	OpenIDScopes        = "openid.scopes"
+	OpenIDCreateMissing = "openid.createMissing"
+	OpenIDSuccessURL    = "openid.successUrl"
+	OpenIDButtonName    = "openid.buttonName"
+
+	// LDAP authentication. The directory is the password authority; the local
+	// account keeps the devices, grants and preferences.
+	LDAPURL           = "ldap.url"
+	LDAPUser          = "ldap.user"
+	LDAPPassword      = "ldap.password"
+	LDAPBase          = "ldap.base"
+	LDAPUserFilter    = "ldap.userFilter"
+	LDAPNameAttribute = "ldap.nameAttribute"
+	LDAPMailAttribute = "ldap.mailAttribute"
+	LDAPTimeout       = "ldap.timeout"
 
 	// TLS certificates for the protocol listeners. The Java server configures
 	// these on the web server only, so this is a Go addition.
@@ -236,6 +290,8 @@ var KnownKeys = []string{
 	CommandRetention,
 	DispatchRedisURL,
 	DispatchRedisKeyPrefix,
+	RedisURL,
+	RedisChannel,
 
 	NotifyWebhook,
 	NotifyWebhookAuth,
@@ -300,6 +356,8 @@ var KnownKeys = []string{
 	ForwardRedisKeyPrefix,
 	ForwardWialonAddress,
 	ForwardWialonVersion,
+	ForwardNetworkAddress,
+	ForwardNetworkProtocol,
 	ForwardKind,
 	ForwardQueue,
 	ForwardAttempts,
@@ -328,17 +386,46 @@ var KnownKeys = []string{
 	MapMatcherCache,
 	MapMatcherCacheFile,
 	GeolocationEnable,
+	GeolocationType,
 	GeolocationURL,
 	GeolocationKey,
 	GeolocationCache,
 
 	StatisticsInterval,
 	MediaPath,
+	DeviceImagePath,
+	StreamPath,
+	PositionCopyAttributes,
+	OpenIDEnable,
+	OpenIDIssuer,
+	OpenIDClientID,
+	OpenIDClientSecret,
+	OpenIDRedirectURL,
+	OpenIDScopes,
+	OpenIDCreateMissing,
+	OpenIDSuccessURL,
+	OpenIDButtonName,
+	LDAPURL,
+	LDAPUser,
+	LDAPPassword,
+	LDAPBase,
+	LDAPUserFilter,
+	LDAPNameAttribute,
+	LDAPMailAttribute,
+	LDAPTimeout,
 	ScheduleExpiration,
 	ScheduleCleanup,
 	ScheduleActionRetention,
 	ScheduleReports,
 	ScheduleHealth,
+	ScheduleInactive,
+	ScheduleDeviceExpiration,
+	ScheduleEventRetention,
+	ScheduleEvents,
+	SchedulePositionRetention,
+	SchedulePositions,
+	ScheduleCommandRetention,
+	ScheduleCommands,
 }
 
 // Keys a protocol section may set. They are resolved through Protocol, which
@@ -396,6 +483,12 @@ var defaults = map[string]string{
 
 	EventIgnoreDuplicateAlerts: "true",
 
+	RedisChannel: "traccar",
+
+	OpenIDCreateMissing: "false",
+	OpenIDScopes:        "openid,email,profile",
+	OpenIDSuccessURL:    "/",
+
 	CommandRetry:     "30s",
 	CommandAttempts:  "3",
 	CommandQueue:     "32",
@@ -408,6 +501,12 @@ var defaults = map[string]string{
 
 	// protocol.<key> is the shared protocol default: a section that does not
 	// set its own timeout keeps the connection open for ten minutes.
+	ScheduleInactive:         "1h",
+	ScheduleDeviceExpiration: "1h",
+	ScheduleEvents:           "24h",
+	SchedulePositions:        "24h",
+	ScheduleCommands:         "24h",
+
 	"protocol." + ProtocolTimeout: "10m",
 }
 

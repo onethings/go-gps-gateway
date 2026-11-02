@@ -17,20 +17,21 @@ import (
 // sessionCredentials reads the login form fields. The web interface posts
 // application/x-www-form-urlencoded, which is what the Java server consumes;
 // JSON is accepted as well so API clients can use one body shape.
-func sessionCredentials(r *http.Request) (email, password string, err error) {
+func sessionCredentials(r *http.Request) (email, password, code string, err error) {
 	contentType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	switch contentType {
 	case "application/x-www-form-urlencoded", "multipart/form-data":
 		if err := r.ParseForm(); err != nil {
-			return "", "", fmt.Errorf("invalid form: %w", err)
+			return "", "", "", fmt.Errorf("invalid form: %w", err)
 		}
-		return strings.TrimSpace(r.PostFormValue("email")), r.PostFormValue("password"), nil
+		return strings.TrimSpace(r.PostFormValue("email")), r.PostFormValue("password"),
+			strings.TrimSpace(r.PostFormValue("code")), nil
 	default:
 		var request loginRequest
 		if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxUserBody)).Decode(&request); err != nil {
-			return "", "", fmt.Errorf("invalid body: %w", err)
+			return "", "", "", fmt.Errorf("invalid body: %w", err)
 		}
-		return strings.TrimSpace(request.Email), request.Password, nil
+		return strings.TrimSpace(request.Email), request.Password, strings.TrimSpace(request.Code), nil
 	}
 }
 
@@ -88,7 +89,7 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	if !s.usersConfigured(w) {
 		return
 	}
-	email, password, err := sessionCredentials(r)
+	email, password, code, err := sessionCredentials(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -101,7 +102,7 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
-	token, plaintext, ok := s.passwordLogin(ctx, w, r, email, password)
+	token, plaintext, ok := s.passwordLogin(ctx, w, r, email, password, code)
 	if !ok {
 		return
 	}

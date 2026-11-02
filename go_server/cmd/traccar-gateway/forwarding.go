@@ -125,6 +125,17 @@ func buildForwarders(cfg *config.Config, settings forwardConfig) []forward.Trans
 		add(limited, err)
 	}
 
+	// A plain socket destination receives the same JSON as the HTTP one. It is
+	// the Java NetworkForwarder: useful when the consumer is a small service
+	// that only listens on a port.
+	if address := cfg.String(config.ForwardNetworkAddress); address != "" {
+		transport, err := forward.NewNetwork(forward.NetworkConfig{
+			Address:  address,
+			Protocol: cfg.StringOr(config.ForwardNetworkProtocol, "tcp"),
+		})
+		add(onlyForKind(transport, settings.kind), err)
+	}
+
 	// Wialon IPS carries positions only, so the address alone enables it.
 	if address := cfg.String(config.ForwardWialonAddress); address != "" {
 		transport, err := forward.NewWialon(forward.WialonConfig{

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"traccar-server_go/go_server/internal/model"
 )
@@ -14,10 +15,11 @@ import (
 // Google Geolocation API, which needs a key, and caches the answer per tower so
 // a device that reports the same cell does not cost another request.
 type Locator struct {
-	baseURL string
-	key     string
-	client  *http.Client
-	cache   *Cache
+	provider string
+	baseURL  string
+	key      string
+	client   *http.Client
+	cache    *Cache
 	// OnRequest is called before a remote request, so the caller can count it.
 	OnRequest func()
 }
@@ -28,10 +30,11 @@ func NewLocator(settings Settings, client *http.Client) *Locator {
 		client = &http.Client{Timeout: settings.Timeout}
 	}
 	return &Locator{
-		baseURL: settings.Geolocation.URL,
-		key:     settings.Geolocation.Key,
-		client:  client,
-		cache:   NewCache(settings.Geolocation.Cache, settings.CacheFile),
+		provider: strings.ToLower(settings.Geolocation.Type),
+		baseURL:  settings.Geolocation.URL,
+		key:      settings.Geolocation.Key,
+		client:   client,
+		cache:    NewCache(settings.Geolocation.Cache, settings.CacheFile),
 	}
 }
 
@@ -65,8 +68,24 @@ func (l *Locator) Load() error { return l.cache.Load() }
 // Save writes the persisted cache.
 func (l *Locator) Save() error { return l.cache.Save() }
 
-// query posts the cell towers to the API.
+// query sends the cell tower group to the configured provider.
 func (l *Locator) query(ctx context.Context, network *model.Network) (float64, float64, bool, error) {
+	switch l.provider {
+	case "", "google", "mozilla":
+		return l.google(ctx, network)
+	case "opencellid":
+		return l.openCellID(ctx, network)
+	case "unwired":
+		return l.unwired(ctx, network)
+	case "here":
+		return l.here(ctx, network)
+	default:
+		return 0, 0, false, fmt.Errorf("geo: unknown geolocation type %q", l.provider)
+	}
+}
+
+// google posts the cell towers to the Google (or Mozilla) geolocation API.
+func (l *Locator) google(ctx context.Context, network *model.Network) (float64, float64, bool, error) {
 	type cellTower struct {
 		CellID            int64 `json:"cellId"`
 		LocationAreaCode  int   `json:"locationAreaCode"`

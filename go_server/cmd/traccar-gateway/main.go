@@ -32,6 +32,7 @@ import (
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/notify"
+	"traccar-server_go/go_server/internal/redisbus"
 	"traccar-server_go/go_server/internal/report"
 	"traccar-server_go/go_server/internal/schedule"
 	"traccar-server_go/go_server/internal/session"
@@ -98,6 +99,32 @@ func main() {
 	// The socket hub exists before the sinks so the pipeline can publish while
 	// the API server is still being assembled.
 	socketHub := api.NewSocketHub()
+	// With Redis the live feed is shared between nodes: a browser connected to
+	// one node sees what the other ingested. Authentication needs no such
+	// bridge, because the tokens live in the database.
+	if redisURL := settings.Config.String(config.RedisURL); redisURL != "" {
+		channel := settings.Config.StringOr(config.RedisChannel, "traccar")
+		bus, err := redisbus.New(redisbus.Config{
+			URL:     redisURL,
+			Channel: channel,
+			Logger:  log.Printf,
+		})
+		if err != nil {
+			log.Printf("socket: redis broadcast disabled: %v", err)
+		} else {
+			socketHub.SetRemote(newRedisBridge(ctx, bus, 256))
+			go func() {
+				if err := bus.Subscribe(ctx, func(payload []byte) {
+					if envelope, ok := decodeSocketEnvelope(payload); ok {
+						socketHub.PublishFromRemote(envelope.Channel, envelope.DeviceID, envelope.Payload)
+					}
+				}); err != nil {
+					log.Printf("socket: redis subscribe: %v", err)
+				}
+			}()
+			log.Printf("socket: live feed shared over redis channel %s", channel)
+		}
+	}
 
 	var (
 		directory     gateway.DeviceDirectory
@@ -113,6 +140,7 @@ func main() {
 		speedLimit    *geo.SpeedLimits
 		mapMatcher    *geo.Matcher
 		locator       *geo.Locator
+		geocoder      *geo.Geocoder
 		scheduler     *schedule.Scheduler
 		geoSettings   = geo.ReadSettings(settings.Config)
 		mediaSettings = readMediaSettings(settings.Config)
@@ -241,6 +269,27 @@ func main() {
 			LastPosition:  state.LastPosition,
 		}
 
+		// The geocoder and the cell tower locator serve both the processing
+		// chain and the REST routes, so they are created once here. A service
+		// that failed to load still answers from its empty cache and schedules
+		// the missing entries on demand.
+		if geoSettings.Geocoder.Enabled {
+			geocoder = geo.NewGeocoder(geoSettings, nil)
+			geocoder.OnRequest = meters.GeocoderRequests.Inc
+			if err := geocoder.Load(); err != nil {
+				log.Printf("geo: load geocoder cache: %v", err)
+			}
+			log.Printf("geo: reverse geocoding enabled (%s)", geoSettings.Geocoder.Type)
+		}
+		if geoSettings.Geolocation.Enabled {
+			locator = geo.NewLocator(geoSettings, nil)
+			locator.OnRequest = meters.GeolocationRequests.Inc
+			if err := locator.Load(); err != nil {
+				log.Printf("geo: load geolocation cache: %v", err)
+			}
+			log.Print("geo: cell tower geolocation enabled")
+		}
+
 		// The speed limit service only ever answers from its cache here; a miss
 		// schedules a background request, so a slow third party never delays the
 		// ingest.
@@ -271,6 +320,59 @@ func main() {
 				Stage:     handler.StageGeofence,
 				Geofences: engine.Geofences,
 			},
+		}
+
+		// The default data slot is the Java DefaultDataHandler: the server time
+		// and the hemisphere correction must be applied before anything reads
+		// the coordinates.
+		stages[handler.StageDefaultData] = handler.Pipeline{
+			Stage: handler.StageDefaultData,
+			Handlers: []handler.PositionHandler{
+				handler.TimeHandler{Stage: handler.StageDefaultData},
+				handler.HemisphereHandler{Stage: handler.StageDefaultData},
+			},
+		}
+
+		// The position slot completes and annotates a position: a cell tower
+		// only frame gets an approximate location before the filters look at
+		// it, a valid fix gets its address, and the engine hours accumulate
+		// before the computed attributes can read them.
+		positionStages := make([]handler.PositionHandler, 0, 3)
+		if locator != nil {
+			positionStages = append(positionStages, handler.GeolocationHandler{
+				Stage:   handler.StagePosition,
+				Locator: locator,
+			})
+		}
+		if geocoder != nil {
+			positionStages = append(positionStages, handler.GeocoderHandler{
+				Stage:    handler.StagePosition,
+				Geocoder: geocoder,
+				// The ingest path must not wait for a slow third party longer
+				// than a few seconds; the answer is cached for the next frame.
+				Timeout: 3 * time.Second,
+				Logger:  log.Printf,
+			})
+		}
+		if copyAttributes := readCopyAttributes(settings.Config); len(copyAttributes) > 0 {
+			positionStages = append(positionStages, handler.CopyAttributesHandler{
+				Stage:        handler.StagePosition,
+				Attributes:   copyAttributes,
+				LastPosition: state.LastPosition,
+			})
+		}
+		positionStages = append(positionStages, &handler.EngineHoursHandler{
+			Stage: handler.StagePosition,
+		})
+		stages[handler.StagePosition] = handler.Pipeline{
+			Stage:    handler.StagePosition,
+			Handlers: positionStages,
+		}
+
+		stages[handler.StageComputedAttributes] = handler.ComputedAttributesHandler{
+			Stage:      handler.StageComputedAttributes,
+			Attributes: state.Attributes,
+			Logger:     log.Printf,
 		}
 		if geoSettings.SpeedLimit.Enabled {
 			speedLimit = geo.NewSpeedLimits(geoSettings, nil, log.Printf)
@@ -310,6 +412,7 @@ func main() {
 						&handler.AlarmRule{IgnoreDuplicates: eventConfig.IgnoreDuplicateAlarms},
 						&handler.IgnitionRule{},
 						&handler.BehaviorRule{Config: eventConfig, Providers: providers},
+						&handler.ProximityRule{Config: eventConfig, Providers: providers},
 					},
 				},
 				handler.StageFuel: handler.RuleStage{
@@ -419,6 +522,18 @@ func main() {
 			gateway.WithCommandQueueTTL(settings.CommandQueueTTL),
 			gateway.WithDispatcherLogger(log.Printf),
 			gateway.WithDispatcherMetrics(meters),
+			gateway.WithQueuedSentHook(func(deviceID, commandID int64) {
+				event := &model.Event{
+					DeviceID: deviceID,
+					Type:     model.EventQueuedCommandSent,
+					Time:     time.Now(),
+				}
+				event.Set("commandId", commandID)
+				if err := store.InsertEvents(ctx, []*model.Event{event}); err != nil {
+					log.Printf("dispatch: record queued command %d sent: %v", commandID, err)
+				}
+				socketHub.PublishEvent(event)
+			}),
 		}
 		// Externalise the live retry bookkeeping to Redis when configured, so a
 		// restart restores exact timing and multi-node deployments share the
@@ -452,7 +567,7 @@ func main() {
 		if mailer != nil {
 			reporter = scheduledReportMailer{mail: mailer}
 		}
-		scheduler = buildScheduler(schedulerSettings, store, generator, reporter, log.Printf)
+		scheduler = buildScheduler(schedulerSettings, store, generator, reporter, socketHub.PublishEvent, log.Printf)
 		if names := scheduler.Tasks(); len(names) > 0 {
 			log.Printf("schedule: %v", names)
 			go scheduler.Run(ctx)
@@ -528,6 +643,8 @@ func main() {
 				api.WithLoginLockout(settings.LoginMaxFailures, settings.LoginLockDuration),
 				api.WithPermissions(store),
 				api.WithResources(store),
+				api.WithComputedAttributes(store),
+				api.WithTOTP(store),
 				api.WithShareDisabled(settings.DisableShare),
 				api.WithProtocolSettings(store, listeners),
 				api.WithServerSettings(store),
@@ -543,14 +660,8 @@ func main() {
 			if geoSettings.SpeedLimit.Enabled {
 				options = append(options, api.WithSpeedLimits(speedLimitGetter{speedLimit: speedLimit}))
 			}
-			if geoSettings.Geolocation.Enabled {
-				locator = geo.NewLocator(geoSettings, nil)
-				locator.OnRequest = meters.GeolocationRequests.Inc
-				if err := locator.Load(); err != nil {
-					log.Printf("geo: load geolocation cache: %v", err)
-				}
+			if locator != nil {
 				options = append(options, api.WithGeolocation(locator))
-				log.Print("geo: cell tower geolocation enabled")
 			}
 			options = append(options, api.WithRequestCounter(meters.Requests))
 			if mediaSettings.Enabled {
@@ -558,14 +669,27 @@ func main() {
 				options = append(options, api.WithMedia(store, manager))
 				log.Printf("media: storing uploads in %s", mediaSettings.Directory)
 			}
-			if geoSettings.Geocoder.Enabled {
-				geocoder := geo.NewGeocoder(geoSettings, nil)
-				geocoder.OnRequest = meters.GeocoderRequests.Inc
-				if err := geocoder.Load(); err != nil {
-					log.Printf("geo: load geocoder cache: %v", err)
-				}
+			if geocoder != nil {
 				options = append(options, api.WithGeocoder(geocoder))
-				log.Printf("geo: reverse geocoding enabled (%s)", geoSettings.Geocoder.Type)
+			}
+			if imagePath := deviceImagePath(settings.Config, mediaSettings.Directory); imagePath != "" {
+				options = append(options, api.WithDeviceImages(imagePath))
+				log.Printf("api: device images in %s", imagePath)
+			}
+			if streamPath := settings.Config.String(config.StreamPath); streamPath != "" {
+				options = append(options, api.WithStreams(streamPath))
+				log.Printf("api: HLS streams from %s", streamPath)
+			}
+			if openID := readOpenIDSettings(settings.Config); openID.Enabled {
+				options = append(options, api.WithOpenID(openID))
+				log.Printf("api: OpenID login via %s", openID.IssuerURL)
+			}
+			if directory, ok := readLDAPConfig(settings.Config); ok {
+				options = append(options, api.WithLDAP(directory))
+				log.Printf("api: LDAP login via %s", directory.Config.URL)
+			}
+			if caches := geoCacheList(geocoder, locator, speedLimit, mapMatcher); len(caches) > 0 {
+				options = append(options, api.WithGeoCaches(caches...))
 			}
 			if mailer != nil {
 				options = append(options, api.WithPasswordReset(notify.NewPasswordResetMail(mailer)))

@@ -245,9 +245,12 @@ func (s *Store) credential(ctx context.Context, predicate string, arg any) (*aut
 		lockedUntil sql.NullTime
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, COALESCE(password_hash, ''), disabled, locked_until FROM users `+predicate,
+		`SELECT id, COALESCE(password_hash, ''), disabled, locked_until,
+		        COALESCE(totp_key, ''), totp_enabled
+		   FROM users `+predicate,
 		arg,
-	).Scan(&credential.UserID, &credential.PasswordHash, &credential.Disabled, &lockedUntil)
+	).Scan(&credential.UserID, &credential.PasswordHash, &credential.Disabled, &lockedUntil,
+		&credential.TOTPSecret, &credential.TOTPEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrUserNotFound
 	}
@@ -259,6 +262,49 @@ func (s *Store) credential(ctx context.Context, predicate string, arg any) (*aut
 		credential.LockedUntil = &lock
 	}
 	return &credential, nil
+}
+
+// UserTOTP returns the shared secret and whether a code is currently required.
+func (s *Store) UserTOTP(ctx context.Context, userID int64) (string, bool, error) {
+	var (
+		secret  string
+		enabled bool
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(totp_key, ''), totp_enabled FROM users WHERE id = $1`,
+		userID,
+	).Scan(&secret, &enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, model.ErrUserNotFound
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("postgres: user totp: %w", err)
+	}
+	return secret, enabled, nil
+}
+
+// SetUserTOTP stores the shared secret and the enabled flag. An empty secret
+// disables two factor authentication for the account.
+func (s *Store) SetUserTOTP(ctx context.Context, userID int64, secret string, enabled bool) error {
+	var key *string
+	if secret != "" {
+		key = &secret
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE users SET totp_key = $2, totp_enabled = $3 WHERE id = $1`,
+		userID, key, enabled && secret != "")
+	if err != nil {
+		return fmt.Errorf("postgres: set user totp: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("postgres: set user totp: %w", err)
+	}
+	if affected == 0 {
+		return model.ErrUserNotFound
+	}
+	s.invalidateTokenCache()
+	return nil
 }
 
 // RecordLoginFailure counts one wrong password and locks the account once the

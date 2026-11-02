@@ -14,6 +14,7 @@ import (
 
 	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/totp"
 )
 
 // exemptPaths stay reachable without a key so that liveness probes keep
@@ -28,7 +29,11 @@ var exemptPaths = map[string]struct{}{
 	// asks for the settings before it has one; both handlers do their own
 	// checks.
 	"/api/session": {},
-	"/api/server":  {},
+	// The OpenID routes run before a credential exists: the browser is sent to
+	// the provider and comes back with a code, which is the credential.
+	"/api/session/openid/auth":     {},
+	"/api/session/openid/callback": {},
+	"/api/server":                  {},
 	// A browser cannot set headers on a WebSocket, so /api/socket reads its
 	// token from the query string and authenticates itself.
 	"/api/socket": {},
@@ -116,6 +121,8 @@ func writeUnauthorized(w http.ResponseWriter) {
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	// Code is the two factor code of an account that enabled TOTP.
+	Code string `json:"code"`
 }
 
 // handleLogin trades an email and a password for a new bearer token. The route
@@ -144,7 +151,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
-	token, plaintext, ok := s.passwordLogin(ctx, w, r, email, request.Password)
+	token, plaintext, ok := s.passwordLogin(ctx, w, r, email, request.Password, request.Code)
 	if !ok {
 		return
 	}
@@ -158,10 +165,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // It writes the failure response itself and reports false when the login must
 // not proceed. A successful login is recorded in the audit trail.
 func (s *Server) passwordLogin(
-	ctx context.Context, w http.ResponseWriter, r *http.Request, email, password string,
+	ctx context.Context, w http.ResponseWriter, r *http.Request, email, password, code string,
 ) (*model.APIToken, string, bool) {
 	credential, err := s.users.CredentialByEmail(ctx, email)
 	if errors.Is(err, model.ErrUserNotFound) {
+		// An address that has no local account may still be a directory
+		// account; the lookup is the same login, not an account enumeration.
+		if s.ldap != nil {
+			return s.ldapLogin(ctx, w, r, email, password)
+		}
 		// An empty hash costs the same as a real one, so an unknown address and
 		// a wrong password take the same time to answer.
 		auth.VerifyPassword("", password)
@@ -182,6 +194,12 @@ func (s *Server) passwordLogin(
 		writeLockedOut(w, credential.LockedUntil.Sub(s.now()))
 		return nil, "", false
 	}
+	// An account that never had a password is a directory account: the local
+	// row exists so the account keeps its devices and grants, but the secret
+	// lives in the directory.
+	if credential.PasswordHash == "" && s.ldap != nil {
+		return s.ldapLogin(ctx, w, r, email, password)
+	}
 	// An account that never had a password has an empty hash, which VerifyPassword
 	// charges one bcrypt for, so it answers like a wrong password.
 	if !auth.VerifyPassword(credential.PasswordHash, password) {
@@ -199,6 +217,14 @@ func (s *Server) passwordLogin(
 		writeError(w, http.StatusForbidden, errors.New("account is disabled"))
 		return nil, "", false
 	}
+	// A wrong code is a failed login too, but it does not count against the
+	// password lockout: the password was already right, so counting it would
+	// let someone with the password lock the owner out of their own account.
+	if credential.TOTPEnabled && !totp.Validate(credential.TOTPSecret, code, s.now()) {
+		s.audit(r, model.ActionDenied, "", 0)
+		writeError(w, http.StatusUnauthorized, errors.New("invalid verification code"))
+		return nil, "", false
+	}
 
 	// The password was right, so the failure window starts over.
 	if err := s.users.ResetLoginFailures(ctx, credential.UserID); err != nil {
@@ -212,20 +238,31 @@ func (s *Server) passwordLogin(
 		return nil, "", false
 	}
 
-	// The audit row needs the user id, which only the credential knows before a
-	// principal exists.
-	if s.auditStore != nil {
-		action := &model.Action{
-			ActionTime: s.now(),
-			Address:    requestAddress(r),
-			UserID:     credential.UserID,
-			ActionType: model.ActionLogin,
-		}
-		if err := s.auditStore.RecordAction(ctx, action); err != nil {
-			s.logf("api: record login action: %v", err)
-		}
-	}
+	s.recordLoginContext(ctx, r, credential.UserID)
 	return token, plaintext, true
+}
+
+// recordLoginContext writes the audit row of a successful login. The audit row
+// needs the user id, which only the credential knows before a principal exists.
+func (s *Server) recordLoginContext(ctx context.Context, r *http.Request, userID int64) {
+	if s.auditStore == nil {
+		return
+	}
+	action := &model.Action{
+		ActionTime: s.now(),
+		Address:    requestAddress(r),
+		UserID:     userID,
+		ActionType: model.ActionLogin,
+	}
+	if err := s.auditStore.RecordAction(ctx, action); err != nil {
+		s.logf("api: record login action: %v", err)
+	}
+}
+
+// recordLogin is the background context form used by the directory path, which
+// already holds a request context of its own.
+func (s *Server) recordLogin(r *http.Request, userID int64) {
+	s.recordLoginContext(r.Context(), r, userID)
 }
 
 // recordLoginFailure counts one wrong password and reports whether it locked

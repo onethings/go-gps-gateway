@@ -45,6 +45,35 @@ func WithSocket(hub *SocketHub, latest LatestPositionQuerier) Option {
 // receives the kinds its token carries a read scope for.
 type socketChannel int
 
+// channelName is the stable name the cross node envelope carries. It must not
+// change between versions, because a rolling upgrade has both spellings in
+// flight.
+func channelName(channel socketChannel) string {
+	switch channel {
+	case socketPositions:
+		return "positions"
+	case socketEvents:
+		return "events"
+	case socketDevices:
+		return "devices"
+	default:
+		return ""
+	}
+}
+
+func socketChannelByName(name string) (socketChannel, bool) {
+	switch name {
+	case "positions":
+		return socketPositions, true
+	case "events":
+		return socketEvents, true
+	case "devices":
+		return socketDevices, true
+	default:
+		return 0, false
+	}
+}
+
 const (
 	socketPositions socketChannel = iota
 	socketEvents
@@ -87,6 +116,39 @@ func (c socketChannels) any() bool { return c.positions || c.events || c.devices
 type SocketHub struct {
 	mu      sync.Mutex
 	clients map[*socketClient]struct{}
+	remote  SocketRemote
+}
+
+// SocketRemote is a hub's way out of the process: another node publishes the
+// same payload so a browser connected there sees the update too. Redis pub/sub
+// is the implementation the gateway ships.
+type SocketRemote interface {
+	Publish(channel string, deviceID int64, payload []byte)
+}
+
+// SetRemote attaches the cross node publisher. It is called once, before the
+// listeners start, so later publishes see a stable value.
+func (h *SocketHub) SetRemote(remote SocketRemote) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.remote = remote
+	h.mu.Unlock()
+}
+
+// PublishFromRemote sends a payload another node published to the local
+// clients. It never republishes, which is what stops two nodes from bouncing an
+// update between them.
+func (h *SocketHub) PublishFromRemote(channel string, deviceID int64, payload []byte) {
+	if h == nil || payload == nil || h.empty() {
+		return
+	}
+	channelName, ok := socketChannelByName(channel)
+	if !ok {
+		return
+	}
+	h.broadcast(channelName, deviceID, payload)
 }
 
 // NewSocketHub creates an empty hub. The gateway creates it before the sinks so
@@ -97,7 +159,7 @@ func NewSocketHub() *SocketHub {
 
 // PublishPosition sends a position to every connection that may see its device.
 func (h *SocketHub) PublishPosition(position *model.Position) {
-	if h == nil || position == nil || h.empty() {
+	if h == nil || position == nil || !h.active() {
 		return
 	}
 	payload, err := json.Marshal(map[string]any{
@@ -107,11 +169,12 @@ func (h *SocketHub) PublishPosition(position *model.Position) {
 		return
 	}
 	h.broadcast(socketPositions, position.DeviceID, payload)
+	h.publishRemote(socketPositions, position.DeviceID, payload)
 }
 
 // PublishEvent sends an event to every connection that may see its device.
 func (h *SocketHub) PublishEvent(event *model.Event) {
-	if h == nil || event == nil || h.empty() {
+	if h == nil || event == nil || !h.active() {
 		return
 	}
 	payload, err := json.Marshal(map[string]any{"events": []eventResponse{newEventResponse(*event)}})
@@ -119,11 +182,12 @@ func (h *SocketHub) PublishEvent(event *model.Event) {
 		return
 	}
 	h.broadcast(socketEvents, event.DeviceID, payload)
+	h.publishRemote(socketEvents, event.DeviceID, payload)
 }
 
 // PublishDevice sends a device snapshot to every connection that may see it.
 func (h *SocketHub) PublishDevice(device *model.Device) {
-	if h == nil || device == nil || h.empty() {
+	if h == nil || device == nil || !h.active() {
 		return
 	}
 	payload, err := json.Marshal(map[string]any{
@@ -133,14 +197,32 @@ func (h *SocketHub) PublishDevice(device *model.Device) {
 		return
 	}
 	h.broadcast(socketDevices, device.ID, payload)
+	h.publishRemote(socketDevices, device.ID, payload)
 }
 
-// empty reports whether no connection is open. The publishers use it to skip
-// the JSON encoding entirely on a gateway without a dashboard attached.
+// empty reports whether no connection is open.
 func (h *SocketHub) empty() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.clients) == 0
+}
+
+// active reports whether anybody, locally or on another node, wants the
+// payload. It is what keeps a gateway without a dashboard from encoding every
+// position.
+func (h *SocketHub) active() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.clients) > 0 || h.remote != nil
+}
+
+func (h *SocketHub) publishRemote(channel socketChannel, deviceID int64, payload []byte) {
+	h.mu.Lock()
+	remote := h.remote
+	h.mu.Unlock()
+	if remote != nil {
+		remote.Publish(channelName(channel), deviceID, payload)
+	}
 }
 
 func (h *SocketHub) broadcast(channel socketChannel, deviceID int64, payload []byte) {

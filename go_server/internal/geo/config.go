@@ -22,14 +22,15 @@ const (
 	KeySpeedLimitRadius = config.SpeedLimitRadius
 	KeySpeedLimitCache  = config.SpeedLimitCache
 
-	KeyMapMatcherEnable = config.MapMatcherEnable
-	KeyMapMatcherURL    = config.MapMatcherURL
-	KeyMapMatcherKey    = config.MapMatcherKey
-	KeyMapMatcherRadius = config.MapMatcherRadius
-	KeyMapMatcherCache  = config.MapMatcherCache
+	KeyMapMatcherEnable    = config.MapMatcherEnable
+	KeyMapMatcherURL       = config.MapMatcherURL
+	KeyMapMatcherKey       = config.MapMatcherKey
+	KeyMapMatcherRadius    = config.MapMatcherRadius
+	KeyMapMatcherCache     = config.MapMatcherCache
 	KeyMapMatcherCacheFile = config.MapMatcherCacheFile
 
 	KeyGeolocationEnable = config.GeolocationEnable
+	KeyGeolocationType   = config.GeolocationType
 	KeyGeolocationURL    = config.GeolocationURL
 	KeyGeolocationKey    = config.GeolocationKey
 	KeyGeolocationCache  = config.GeolocationCache
@@ -78,6 +79,7 @@ type Settings struct {
 	}
 	Geolocation struct {
 		Enabled bool
+		Type    string
 		URL     string
 		Key     string
 		Cache   time.Duration
@@ -146,7 +148,8 @@ func ReadSettings(cfg *config.Config) Settings {
 	settings.MapMatcher.CacheFile = cfg.StringOr(KeyMapMatcherCacheFile, settings.CacheFile)
 
 	settings.Geolocation.Enabled = readBool(KeyGeolocationEnable)
-	settings.Geolocation.URL = cfg.StringOr(KeyGeolocationURL, geolocateURL)
+	settings.Geolocation.Type = cfg.StringOr(KeyGeolocationType, "google")
+	settings.Geolocation.URL = cfg.StringOr(KeyGeolocationURL, geolocationProviderURL(settings.Geolocation.Type))
 	settings.Geolocation.Key = cfg.String(KeyGeolocationKey)
 	settings.Geolocation.Cache = readDuration(KeyGeolocationCache, DefaultCacheTTL)
 

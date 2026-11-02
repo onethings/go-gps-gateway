@@ -54,6 +54,11 @@ const (
 	ScopeWriteReports      Scope = "write:reports"
 	ScopeReadAttributes    Scope = "read:attributes"
 	ScopeWriteAttributes   Scope = "write:attributes"
+	// ScopeReadUsers and ScopeWriteUsers cover the account level settings that
+	// are not administration: a user reads and changes its own profile,
+	// password and two factor setup with them.
+	ScopeReadUsers  Scope = "read:users"
+	ScopeWriteUsers Scope = "write:users"
 
 	// ScopeAll grants every current and future scope. It is meant for machine
 	// tokens that have to act like the legacy -api-key.
@@ -89,6 +94,8 @@ var KnownScopes = []Scope{
 	ScopeWriteReports,
 	ScopeReadAttributes,
 	ScopeWriteAttributes,
+	ScopeReadUsers,
+	ScopeWriteUsers,
 	ScopeAll,
 }
 

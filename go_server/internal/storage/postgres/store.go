@@ -29,7 +29,7 @@ var ErrUnknownDevice = errors.New("postgres: unknown device")
 var ErrMissingDevice = errors.New("postgres: position without device id")
 
 // positionColumns is the number of bound values per position row.
-const positionColumns = 11
+const positionColumns = 12
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
@@ -367,7 +367,8 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 		for column := 0; column < positionColumns; column++ {
 			placeholders[column] = fmt.Sprintf("$%d", len(args)+column+1)
 		}
-		// The last value is the JSON encoded attribute map.
+		// The last two values are the JSON encoded geofence ids and attributes.
+		placeholders[positionColumns-2] += "::jsonb"
 		placeholders[positionColumns-1] += "::jsonb"
 
 		values = append(values, "("+strings.Join(placeholders, ", ")+")")
@@ -380,7 +381,7 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 
 	query := `INSERT INTO positions (
 			device_id, protocol, device_time, valid, latitude, longitude,
-			altitude, speed, course, accuracy, attributes
+			altitude, speed, course, accuracy, geofenceids, attributes
 		) VALUES ` + strings.Join(values, ", ")
 
 	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
@@ -418,7 +419,12 @@ func updateLastUpdateWith(ctx context.Context, db execer, touched map[int64]time
 	}
 
 	if _, err := db.ExecContext(ctx,
-		`UPDATE devices AS d SET last_update = v.at
+		`UPDATE devices AS d SET last_update = v.at,
+			position_id = COALESCE((
+				SELECT p.id FROM positions AS p
+				WHERE p.device_id = d.id
+				ORDER BY p.device_time DESC, p.id DESC
+				LIMIT 1), d.position_id)
 		 FROM jsonb_to_recordset($1::jsonb) AS v(id bigint, at timestamptz)
 		 WHERE d.id = v.id AND (d.last_update IS NULL OR d.last_update < v.at)`,
 		string(encoded),
@@ -450,6 +456,11 @@ func positionArgs(position *model.Position) ([]any, error) {
 		return nil, fmt.Errorf("postgres: encode attributes: %w", err)
 	}
 
+	geofenceIDs, err := json.Marshal(position.GeofenceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: encode geofences: %w", err)
+	}
+
 	return []any{
 		position.DeviceID,
 		position.Protocol,
@@ -461,6 +472,7 @@ func positionArgs(position *model.Position) ([]any, error) {
 		position.Speed,
 		position.Course,
 		position.Accuracy,
+		string(geofenceIDs),
 		string(attributes),
 	}, nil
 }

@@ -146,8 +146,8 @@ func TestDecodeBinary(t *testing.T) {
 		"03F834"+ // mask: 2,4,5,11,12,13,14,15,16,17
 		"010001"+ // versionFw 1.0.1
 		"1803050C1E2D"+ // 2024-03-05 12:30:45
-		"0151A340"+ // lat 22123456
-		"06CD6A40"+ // lon 114123456
+		"015193C0"+ // lat 22123456, one millionth of a degree
+		"06CD62C0"+ // lon 114123456, one millionth of a degree
 		"0FB9"+ // speed 4025 (40.25 kph)
 		"2328"+ // course 9000 (90.00)
 		"09"+ // satellites

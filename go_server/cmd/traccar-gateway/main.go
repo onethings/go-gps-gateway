@@ -176,6 +176,12 @@ func main() {
 		if err := state.reload(ctx, store); err != nil {
 			log.Printf("events: load state: %v", err)
 		}
+		// The distance and filter stages compare a position against the last
+		// stored one, so seed it for every device; otherwise every restart
+		// would start each trip and its running total over.
+		if err := state.seedLastPositions(ctx, store); err != nil {
+			log.Printf("events: seed last positions: %v", err)
+		}
 		if settings.DeviceRefresh > 0 {
 			go runEventStateRefresh(ctx, state, store, settings.DeviceRefresh)
 		}
@@ -238,7 +244,34 @@ func main() {
 		// The speed limit service only ever answers from its cache here; a miss
 		// schedules a background request, so a slow third party never delays the
 		// ingest.
-		stages := map[string]handler.PositionHandler{}
+		stages := map[string]handler.PositionHandler{
+			// The distance slot runs the outdated completion first, exactly like
+			// the Java ProcessingHandler orders OutdatedHandler before
+			// DistanceHandler and both before FilterHandler: a frame without a
+			// fix borrows the last known location before it is measured.
+			handler.StageDistance: handler.Pipeline{
+				Stage: handler.StageDistance,
+				Handlers: []handler.PositionHandler{
+					handler.OutdatedHandler{
+						Stage:        handler.StageDistance,
+						LastPosition: state.LastPosition,
+					},
+					handler.DistanceHandler{
+						Stage:        handler.StageDistance,
+						LastPosition: state.LastPosition,
+					},
+				},
+			},
+			handler.StageFilter: handler.FilterHandler{
+				Stage:        handler.StageFilter,
+				Attributes:   engine.DeviceAttributes,
+				LastPosition: state.LastPosition,
+			},
+			handler.StageGeofence: handler.GeofenceHandler{
+				Stage:     handler.StageGeofence,
+				Geofences: engine.Geofences,
+			},
+		}
 		if geoSettings.SpeedLimit.Enabled {
 			speedLimit = geo.NewSpeedLimits(geoSettings, nil, log.Printf)
 			if err := speedLimit.Load(); err != nil {

@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -113,5 +114,82 @@ func TestDeviceQueryKeyword(t *testing.T) {
 	}
 	if len(args) != 3 || args[0] != "%van%" {
 		t.Fatalf("args = %v", args)
+	}
+}
+
+// fakeRow fills the destinations scanDevice asks for, so a column added to
+// deviceColumns without a matching scan target fails here instead of at runtime.
+type deviceRow struct {
+	values   []any
+	assigned int
+}
+
+func (r *deviceRow) Scan(dest ...any) error {
+	r.assigned = len(dest)
+	for index, target := range dest {
+		if index >= len(r.values) {
+			break
+		}
+		switch pointer := target.(type) {
+		case *int64:
+			*pointer = r.values[index].(int64)
+		case *string:
+			*pointer = r.values[index].(string)
+		case *bool:
+			*pointer = r.values[index].(bool)
+		case *time.Time:
+			*pointer = r.values[index].(time.Time)
+		case *[]byte:
+			*pointer = r.values[index].([]byte)
+		case *sql.NullString:
+			*pointer = r.values[index].(sql.NullString)
+		case *sql.NullInt64:
+			*pointer = r.values[index].(sql.NullInt64)
+		case *sql.NullTime:
+			*pointer = r.values[index].(sql.NullTime)
+		default:
+			panic("unsupported scan target")
+		}
+	}
+	return nil
+}
+
+func TestScanDeviceReadsEveryColumn(t *testing.T) {
+	created := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	expires := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	row := &deviceRow{values: []any{
+		int64(7), "864717003283581", "van-7",
+		sql.NullString{String: "GT06N", Valid: true},
+		sql.NullString{String: "gt06", Valid: true},
+		sql.NullInt64{Int64: 4, Valid: true},
+		[]byte(`{"floor":10}`), "online",
+		sql.NullTime{Time: created, Valid: true}, created,
+		sql.NullString{String: "+886912345678", Valid: true},
+		sql.NullString{String: "ops", Valid: true},
+		sql.NullString{String: "van", Valid: true},
+		true,
+		sql.NullTime{Time: expires, Valid: true},
+		int64(3), int64(11),
+	}}
+
+	device, err := scanDevice(row)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if row.assigned != 17 {
+		t.Fatalf("scan targets = %d, want 17", row.assigned)
+	}
+	if device.Phone != "+886912345678" || device.Contact != "ops" || device.Category != "van" {
+		t.Errorf("device = %+v", device)
+	}
+	if !device.Disabled || device.CalendarID != 3 || device.PositionID != 11 {
+		t.Errorf("device = %+v", device)
+	}
+	if !device.ExpirationTime.Equal(expires) || !device.LastUpdate.Equal(created) {
+		t.Errorf("device = %+v", device)
+	}
+	if device.Attributes["floor"] != float64(10) {
+		t.Errorf("attributes = %v", device.Attributes)
 	}
 }

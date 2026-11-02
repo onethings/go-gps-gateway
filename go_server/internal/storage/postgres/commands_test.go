@@ -407,3 +407,15 @@ func TestCommandStoreIntegration(t *testing.T) {
 		t.Fatalf("empty grant returned %d commands", len(unscoped))
 	}
 }
+
+// TestCommandQueryIDs covers the id list GET /api/commands/{id} uses.
+func TestCommandQueryIDs(t *testing.T) {
+	query, args := commandQuery(model.CommandFilter{IDs: []int64{3}})
+
+	if !strings.Contains(query, "id IN ($1)") {
+		t.Errorf("query = %s", query)
+	}
+	if len(args) != 3 || args[0] != int64(3) {
+		t.Fatalf("args = %v", args)
+	}
+}

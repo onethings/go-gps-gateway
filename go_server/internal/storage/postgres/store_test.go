@@ -45,11 +45,19 @@ func TestPositionArgs(t *testing.T) {
 	}
 
 	var attributes map[string]any
-	if err := json.Unmarshal([]byte(args[10].(string)), &attributes); err != nil {
+	if err := json.Unmarshal([]byte(args[positionColumns-1].(string)), &attributes); err != nil {
 		t.Fatalf("attributes are not valid JSON: %v", err)
 	}
 	if attributes["sat"] != float64(9) || attributes["ignition"] != true {
 		t.Errorf("attributes = %#v", attributes)
+	}
+
+	var geofenceIDs []int64
+	if err := json.Unmarshal([]byte(args[positionColumns-2].(string)), &geofenceIDs); err != nil {
+		t.Fatalf("geofence ids are not valid JSON: %v", err)
+	}
+	if len(geofenceIDs) != 0 {
+		t.Errorf("geofence ids = %v, want none", geofenceIDs)
 	}
 }
 

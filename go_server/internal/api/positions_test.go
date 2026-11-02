@@ -192,3 +192,52 @@ func TestPositionsEmptyAttributes(t *testing.T) {
 		t.Errorf("body = %s, want an empty attributes object", recorder.Body)
 	}
 }
+
+// TestPositionSingle covers GET /api/positions/{id} and the geofence ids the
+// geofence stage writes onto a position.
+func TestPositionSingle(t *testing.T) {
+	deviceTime := time.Date(2026, 10, 31, 13, 2, 10, 0, time.UTC)
+	querier := &fakePositions{results: []model.Position{{
+		ID:          11,
+		DeviceID:    7,
+		Protocol:    "gt06",
+		Time:        deviceTime,
+		ServerTime:  deviceTime.Add(time.Second),
+		Valid:       true,
+		Latitude:    54.943,
+		Longitude:   25.206,
+		GeofenceIDs: []int64{5, 9},
+	}}}
+	handler := NewServer(nil, WithPositions(querier)).Handler()
+
+	recorder := get(t, handler, "/api/positions/11")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	position := decodeBodyValue[positionResponse](t, recorder)
+	if position.ID != 11 || position.DeviceID != 7 {
+		t.Errorf("position = %+v", position)
+	}
+	if len(position.GeofenceIDs) != 2 || position.GeofenceIDs[0] != 5 || position.GeofenceIDs[1] != 9 {
+		t.Errorf("geofenceIds = %v, want [5 9]", position.GeofenceIDs)
+	}
+	if filter := querier.lastFilter(t); len(filter.IDs) != 1 || filter.IDs[0] != 11 {
+		t.Errorf("filter ids = %v, want [11]", filter.IDs)
+	}
+
+	if recorder := get(t, handler, "/api/positions/abc"); recorder.Code != http.StatusBadRequest {
+		t.Errorf("bad id status = %d, want 400", recorder.Code)
+	}
+	if recorder := get(t, NewServer(nil).Handler(), "/api/positions/11"); recorder.Code != http.StatusNotImplemented {
+		t.Errorf("unconfigured status = %d, want 501", recorder.Code)
+	}
+}
+
+func TestPositionSingleNotFound(t *testing.T) {
+	querier := &fakePositions{}
+	handler := NewServer(nil, WithPositions(querier)).Handler()
+
+	if recorder := get(t, handler, "/api/positions/11"); recorder.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (body %s)", recorder.Code, recorder.Body)
+	}
+}

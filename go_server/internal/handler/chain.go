@@ -41,7 +41,8 @@ const (
 	StageAlertEvent = "alertEvent"
 	// StageBusiness is the gateway's own rule stage: the alert pipeline.
 	StageBusiness = "business"
-	// StageDistance accumulates the trip distance.
+	// StageDistance accumulates the trip distance. It runs before the filter so
+	// the filter's distance and speed limits see the fresh value.
 	StageDistance = "distance"
 	// StageFuel applies the fuel calculations.
 	StageFuel = "fuel"
@@ -54,8 +55,11 @@ const (
 )
 
 // Order is the processing order of the chain, which is the order of the Java
-// server's ProcessingHandler. TestHandlerOrder pins it.
+// server's ProcessingHandler. Distance runs before Filter because the Java
+// server keeps it that way: the filter's distance and speed limits compare the
+// value the distance stage has just written. TestHandlerOrder pins it.
 var Order = []string{
+	StageDistance,
 	StageFilter,
 	StageDefaultData,
 	StagePosition,
@@ -66,7 +70,6 @@ var Order = []string{
 	StageSpeedLimit,
 	StageAlertEvent,
 	StageBusiness,
-	StageDistance,
 	StageFuel,
 	StageDriver,
 	StageMaintenance,
@@ -98,6 +101,36 @@ func (h HandlerFunc) Name() string { return h.Stage }
 // HandlePosition implements PositionHandler.
 func (h HandlerFunc) HandlePosition(ctx context.Context, position *model.Position, next Next) error {
 	return h.Fn(ctx, position, next)
+}
+
+// Pipeline runs several handlers in order inside one stage. The Java server
+// splits some stages over several handlers - the filter stage runs
+// OutdatedHandler before FilterHandler - and this keeps them in one slot of
+// Order instead of inventing stage names the Java server does not have.
+type Pipeline struct {
+	// Stage is the stage name, one of the Stage constants.
+	Stage string
+	// Handlers run in order; the last one hands the position to the rest of the
+	// chain.
+	Handlers []PositionHandler
+}
+
+// Name implements PositionHandler.
+func (p Pipeline) Name() string { return p.Stage }
+
+// HandlePosition implements PositionHandler. A handler that stops the position
+// also stops the pipeline, which is how a filter inside a pipeline drops it.
+func (p Pipeline) HandlePosition(ctx context.Context, position *model.Position, next Next) error {
+	return p.run(ctx, 0, position, next)
+}
+
+func (p Pipeline) run(ctx context.Context, index int, position *model.Position, next Next) error {
+	if index == len(p.Handlers) {
+		return next(ctx, position)
+	}
+	return p.Handlers[index].HandlePosition(ctx, position, func(ctx context.Context, position *model.Position) error {
+		return p.run(ctx, index+1, position, next)
+	})
 }
 
 // Placeholder is a declared stage with no implementation yet. It passes the

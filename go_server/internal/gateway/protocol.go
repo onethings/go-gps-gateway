@@ -17,6 +17,8 @@ import (
 	"traccar-server_go/go_server/internal/protocol/meitrack"
 	"traccar-server_go/go_server/internal/protocol/mqtt"
 	"traccar-server_go/go_server/internal/protocol/osmand"
+	"traccar-server_go/go_server/internal/protocol/ruptela"
+	"traccar-server_go/go_server/internal/protocol/suntech"
 	"traccar-server_go/go_server/internal/protocol/teltonika"
 	"traccar-server_go/go_server/internal/protocol/tk103"
 	"traccar-server_go/go_server/internal/protocol/wondex"
@@ -200,6 +202,35 @@ func DefaultRegistry() *Registry {
 			NewEncoder:      func() codec.Encoder { return teltonika.NewEncoder(base) },
 			DataCommands: []string{
 				model.CommandEngineStop, model.CommandEngineResume, model.CommandCustom,
+			},
+		}
+	})
+
+	// Suntech splits its stream into length delimited binary frames and
+	// carriage return terminated text frames; the encoder is not implemented, so
+	// the protocol can be received but not commanded.
+	registry.Add(suntech.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            suntech.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return suntech.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return suntech.NewDecoder(base) },
+		}
+	})
+
+	// Ruptela frames are length delimited: the leading two byte length covers
+	// the rest of the message.
+	registry.Add(ruptela.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            ruptela.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return ruptela.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return ruptela.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return ruptela.NewEncoder(base) },
+			DataCommands: []string{
+				model.CommandCustom, model.CommandEngineStop, model.CommandEngineResume,
+				model.CommandRequestPhoto, model.CommandConfiguration,
+				model.CommandGetVersion, model.CommandFirmwareUpdate,
+				model.CommandOutputControl, model.CommandSetConnection,
+				model.CommandSetOdometer,
 			},
 		}
 	})

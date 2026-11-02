@@ -295,6 +295,9 @@ func commandQuery(filter model.CommandFilter) (string, []any) {
 		args = append(args, filter.DeviceID)
 		clauses = append(clauses, fmt.Sprintf("device_id = $%d", len(args)))
 	}
+	if filter.IDs != nil {
+		clauses = append(clauses, deviceIDsClause(&args, "id", filter.IDs))
+	}
 	if filter.DeviceIDs != nil {
 		clauses = append(clauses, deviceIDsClause(&args, "device_id", filter.DeviceIDs))
 	}

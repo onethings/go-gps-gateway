@@ -117,6 +117,9 @@ type Command struct {
 // restriction"; Limit and Offset are clamped by the storage layer.
 type CommandFilter struct {
 	DeviceID int64
+	// IDs restricts the result to a set of command ids, which is what
+	// GET /api/commands/{id} uses. Nil means "no restriction".
+	IDs []int64
 	// DeviceIDs restricts the result to a set of devices. Nil means "no
 	// restriction"; a non-nil empty slice matches nothing, which is how a
 	// token without device grants stays isolated.

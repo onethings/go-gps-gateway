@@ -277,6 +277,7 @@ func insertPositionsReturning(
 		for column := 0; column < positionColumns; column++ {
 			placeholders[column] = fmt.Sprintf("$%d", len(args)+column+1)
 		}
+		placeholders[positionColumns-2] += "::jsonb"
 		placeholders[positionColumns-1] += "::jsonb"
 
 		values = append(values, "("+strings.Join(placeholders, ", ")+")")
@@ -289,7 +290,7 @@ func insertPositionsReturning(
 
 	query := `INSERT INTO positions (
 			device_id, protocol, device_time, valid, latitude, longitude,
-			altitude, speed, course, accuracy, attributes
+			altitude, speed, course, accuracy, geofenceids, attributes
 		) VALUES ` + strings.Join(values, ", ") + `
 		RETURNING id, device_id, device_time`
 

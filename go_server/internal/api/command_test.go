@@ -568,3 +568,50 @@ func BenchmarkCommandAccepted(b *testing.B) {
 		}
 	}
 }
+
+// TestCommandSingle covers GET /api/commands/{id}.
+func TestCommandSingle(t *testing.T) {
+	created := time.Date(2026, 10, 31, 13, 2, 10, 0, time.UTC)
+	store := &recordingCommands{results: []model.Command{{
+		ID:         3,
+		DeviceID:   7,
+		Type:       "engineStop",
+		Attributes: map[string]any{},
+		Status:     model.CommandStatusSent,
+		Attempts:   1,
+		CreatedAt:  created,
+		SentAt:     created.Add(time.Second),
+	}}}
+	handler := NewServer(nil, WithCommandStore(store)).Handler()
+
+	recorder := get(t, handler, "/api/commands/3")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	command := decodeBodyValue[commandView](t, recorder)
+	if command.ID != 3 || command.DeviceID != 7 || command.Type != "engineStop" {
+		t.Errorf("command = %+v", command)
+	}
+	if command.Status != model.CommandStatusSent || command.SentAt == nil {
+		t.Errorf("command = %+v", command)
+	}
+
+	store.mu.Lock()
+	filter := store.filter
+	store.mu.Unlock()
+	if len(filter.IDs) != 1 || filter.IDs[0] != 3 {
+		t.Errorf("filter ids = %v, want [3]", filter.IDs)
+	}
+
+	if recorder := get(t, handler, "/api/commands/abc"); recorder.Code != http.StatusBadRequest {
+		t.Errorf("bad id status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestCommandSingleNotFound(t *testing.T) {
+	handler := NewServer(nil, WithCommandStore(&recordingCommands{})).Handler()
+
+	if recorder := get(t, handler, "/api/commands/3"); recorder.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (body %s)", recorder.Code, recorder.Body)
+	}
+}

@@ -13,6 +13,7 @@ import (
 // would pass after any reorder.
 func TestHandlerOrder(t *testing.T) {
 	want := []string{
+		"distance",
 		"filter",
 		"defaultData",
 		"position",
@@ -23,7 +24,6 @@ func TestHandlerOrder(t *testing.T) {
 		"speedLimit",
 		"alertEvent",
 		"business",
-		"distance",
 		"fuel",
 		"driver",
 		"maintenance",
@@ -194,8 +194,8 @@ func TestOverriddenStageKeepsItsSlot(t *testing.T) {
 	}
 
 	// The override must not be appended after the placeholders.
-	if chain.Names()[3] != StageMotion {
-		t.Fatalf("stage 3 is %q, want %q", chain.Names()[3], StageMotion)
+	if chain.Names()[4] != StageMotion {
+		t.Fatalf("stage 4 is %q, want %q", chain.Names()[4], StageMotion)
 	}
 	if err := chain.Handle(&model.Position{DeviceID: 1}); err != nil {
 		t.Fatalf("handle: %v", err)

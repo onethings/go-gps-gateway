@@ -16,7 +16,7 @@ const (
 
 	// positionSelectColumns keeps the SELECT list and the scan order in sync.
 	positionSelectColumns = `id, device_id, protocol, device_time, server_time, valid,
-		latitude, longitude, altitude, speed, course, accuracy, attributes`
+		latitude, longitude, altitude, speed, course, accuracy, attributes, geofenceids`
 )
 
 // QueryPositions returns the positions matching the filter, newest first.
@@ -85,19 +85,20 @@ func latestPositionsQuery(deviceIDs []int64) (string, []any) {
 // scanPosition reads one row in positionColumns order.
 func scanPosition(row interface{ Scan(dest ...any) error }) (*model.Position, error) {
 	var (
-		position   model.Position
-		latitude   sql.NullFloat64
-		longitude  sql.NullFloat64
-		altitude   sql.NullFloat64
-		speed      sql.NullFloat64
-		course     sql.NullFloat64
-		accuracy   sql.NullFloat64
-		attributes []byte
+		position    model.Position
+		latitude    sql.NullFloat64
+		longitude   sql.NullFloat64
+		altitude    sql.NullFloat64
+		speed       sql.NullFloat64
+		course      sql.NullFloat64
+		accuracy    sql.NullFloat64
+		attributes  []byte
+		geofenceIDs []byte
 	)
 	if err := row.Scan(
 		&position.ID, &position.DeviceID, &position.Protocol, &position.Time,
 		&position.ServerTime, &position.Valid, &latitude, &longitude,
-		&altitude, &speed, &course, &accuracy, &attributes,
+		&altitude, &speed, &course, &accuracy, &attributes, &geofenceIDs,
 	); err != nil {
 		return nil, fmt.Errorf("postgres: scan position: %w", err)
 	}
@@ -116,6 +117,11 @@ func scanPosition(row interface{ Scan(dest ...any) error }) (*model.Position, er
 			return nil, fmt.Errorf("postgres: decode position attributes: %w", err)
 		}
 	}
+	if len(geofenceIDs) > 0 {
+		if err := json.Unmarshal(geofenceIDs, &position.GeofenceIDs); err != nil {
+			return nil, fmt.Errorf("postgres: decode position geofences: %w", err)
+		}
+	}
 	return &position, nil
 }
 
@@ -132,6 +138,9 @@ func positionQuery(filter model.PositionFilter) (string, []any) {
 
 	if filter.DeviceID != 0 {
 		add("device_id", "=", filter.DeviceID)
+	}
+	if filter.IDs != nil {
+		clauses = append(clauses, deviceIDsClause(&args, "id", filter.IDs))
 	}
 	if filter.DeviceIDs != nil {
 		clauses = append(clauses, deviceIDsClause(&args, "device_id", filter.DeviceIDs))

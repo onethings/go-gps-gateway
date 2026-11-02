@@ -174,6 +174,9 @@ type Position struct {
 	Outdated bool
 	// Attributes holds every extra value reported by the device.
 	Attributes Attributes
+	// GeofenceIDs are the geofences containing the position, written by the
+	// geofence stage. Empty when the position is outside every geofence.
+	GeofenceIDs []int64
 }
 
 // NewPosition creates an empty position tagged with the protocol name.
@@ -240,6 +243,9 @@ func (p *Position) IsLocated() bool {
 // are compared against the device time, which is what the reports use.
 type PositionFilter struct {
 	DeviceID int64
+	// IDs restricts the result to a set of position ids, which is what
+	// GET /api/positions/{id} uses. Nil means "no restriction".
+	IDs []int64
 	// DeviceIDs restricts the result to a set of devices. Nil means "no
 	// restriction"; a non-nil empty slice matches nothing.
 	DeviceIDs []int64

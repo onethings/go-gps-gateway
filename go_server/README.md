@@ -9,18 +9,23 @@
 
 ## 現況
 
-- 10 個協議：H02、GT06、JT808、Teltonika、OsmAnd、MQTT、GPS103、TK103、Meitrack、Wondex。
-  純函式 codec + TCP / UDP / TLS / HTTP / poll 五種傳輸基底。
-- 處理鏈：`ProcessingHandler` 宣告 14 個階段（filter … media），已實作 `motion`、`business`，
-  其餘為 placeholder。`business` = `alert.Pipeline`（規則評估 → events 與 position 同交易落地）→
+- 12 個協議：H02、GT06、JT808、Teltonika、OsmAnd、MQTT、GPS103、TK103、Meitrack、Wondex、
+  Suntech、Ruptela（後兩者 5011 / 5046 預設啟動）。純函式 codec + TCP / UDP / TLS / HTTP / poll 五種傳輸基底。
+- 處理鏈：`ProcessingHandler` 宣告 15 個階段，已實作 12 個：
+  `distance`（OutdatedHandler + DistanceHandler）、`filter`（FilterHandler）、`motion`、`mapMatcher`、
+  `geofence`、`speedLimit`、`alertEvent`、`business`、`fuel`、`driver`、`maintenance`、`media`；
+  `defaultData`、`position`、`computedAttributes` 仍為 placeholder。
+  順序上 `distance` 在 `filter` 之前，與母本一致（Filter 的 distance / maxSpeed 規則要讀剛算好的里程）。
+  `business` = `alert.Pipeline`（規則評估 → events 與 position 同交易落地）→
   `notify.Dispatcher`（webhook / SMTP，背景傳送）；`terminal` = `postgres.BatchSink` 批次落地。
-- REST API：裝置 / 位置 / 事件、帳號與 token、權限與分享、資源 CRUD、命令、WebSocket 推播、
-  統計、媒體、認證與密碼自助，全部可編譯、`go test ./...` 幾乎全綠（唯一失敗見「測試」）。
+- REST API：裝置 / 位置 / 事件（含 `GET /api/positions/{id}`、`GET /api/commands/{id}`）、
+  帳號與 token、權限與分享、資源 CRUD、命令、WebSocket 推播、統計、媒體、認證與密碼自助。
 - 連線狀態：`devices.status`（online / offline / unknown）、心跳逾時、`events` 表。
 
-> **測試**：`go build ./...` 通過。`go test ./...` 目前有一個**既有失敗**：
-> `internal/protocol/suntech` 的 `TestDecodeBinary`（二進位幀的經緯度縮放不符預期，lat 22.1274 ≠ 22.1234）。
-> `suntech` / `ruptela` 尚未納入預設啟動清單，此失敗不影響網關。修復前「全綠」的說法不成立。
+> **測試**：`go build ./...`、`go vet ./...`、`go test ./...` 全部通過（含 `-race` 的
+> gateway / alert / api / notify）。`suntech` 的 `TestDecodeBinary` 過去失敗是測試向量本身把
+> 22.123456°N / 114.123456°E 寫成了 0x0151A340 / 0x06CD6A40（= 22.127424 / 114.125376），
+> 解碼器一直是對的，已修正向量。
 
 ## 架構
 
@@ -232,19 +237,22 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
   / `socket` 外都回 401。首次使用先帶 `-api-key` 建立管理員並發 token，或直接用 `-issue-token`。
 - 帳號 API 只有分頁，無搜尋 / 排序；email 建立後不可改。密碼自助與登入失敗鎖定（bcrypt cost 12，
   一次登入約 0.6 秒）見「認證」。
-- `PUT /api/devices/{id}` 只改 `name` / `model` / `attributes`；`protocol` 建立後不可改，母本其餘
-  欄位（phone / contact / category / disabled / expirationTime）尚未建模。
+- `PUT /api/devices/{id}` 可改 `name` / `model` / `phone` / `contact` / `category` / `disabled` /
+  `expirationTime` / `calendarId` / `attributes`（整筆取代語意，省略即清空）；`protocol` 與 `uniqueId`
+  建立後不可改。`disabled` 目前只儲存與回傳，尚未用來擋資料。
 - 告警只有超速 / 斷電 / 復電 / 圍欄四類；通知管道以 webhook / email 為主力。群組授權只影響「看
   得到哪些裝置」，通知收件者仍只認 `user → device` 直接授權（未展開群組）。
 - 分享帳號只能靠 admin 事後刪除撤銷（無到期自動清理）；`expiration` 只作用在 token 上。
 - `/api/socket` 的 token 放 query string（瀏覽器無法對 WebSocket 設 header），會出現在存取紀錄裡。
-- `suntech` / `ruptela` codec 已存在但未納入預設啟動清單；`suntech` 目前有未通過的測試（見「現況」）。
+- `suntech` / `ruptela` 已納入預設啟動清單；`suntech` 沒有 Encoder，只能收不能下命令。
 - 記憶體目錄（無 `-dsn`）僅適合開發；正式環境請用 PostgreSQL。
 
 ## Roadmap & 未完成事項
 
-- [ ] **ProcessingHandler**：補齊 Filter（過濾漂移）、Geocoder（逆地理編碼）、EngineHours/Trips 計算。
-- [ ] **協議層**：修復 `suntech` 縮放測試失敗；實作 Queclink 協議；擴充各協議命令下發 Encoder。
+- [x] **ProcessingHandler**：Filter（過濾漂移 / 過期點）、Distance（累積里程）、Geofence（回寫 geofenceIds）
+      已補齊；仍缺 defaultData（Hemisphere / Time）、position、computedAttributes，以及
+      Geocoder（逆地理編碼）、EngineHours 尚未接進處理鏈。
+- [ ] **協議層**：實作 Queclink 協議；擴充各協議命令下發 Encoder（Suntech 目前無 Encoder）。
 - [ ] **集群與擴展**：引進 Redis 分散式 Session 與 WebSocket 推播廣播，支援多網關節點水平擴展。
 - [ ] **前端對接**：提供完整 WebSocket JSON 訂閱協定文檔。
 
@@ -261,9 +269,9 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
 
 各模組完成度
 模組 完成度 現況證據
-協議解碼 4%（廣度）<br>主力 4 支 100% 12 個 codec：h02/gt06/jt808/teltonika + gps103/tk103/meitrack/wondex/osmand/mqtt/ruptela/suntech；protocol.go 只註冊 10 支
+協議解碼 4%（廣度）<br>主力 4 支 100% 12 個 codec：h02/gt06/jt808/teltonika + gps103/tk103/meitrack/wondex/osmand/mqtt/ruptela/suntech；protocol.go 已註冊 12 支
 傳輸層 100% TCP / UDP / TLS / HTTP / poll 五種基底都有
-處理鏈（ProcessingHandler） 約 70% 15 個階段中 9 個有實作；6 個仍是 placeholder（見下）
+處理鏈（ProcessingHandler） 約 85% 15 個階段中 12 個有實作；3 個仍是 placeholder（見下）
 事件規則 約 90% 12 類事件幾乎都有：Alarm/Ignition/Behavior/Fuel/Driver/Maintenance/Media/CommandResult/Proximity + 超速/斷電/圍欄
 REST API 約 85% 母本 openapi.yaml 76 條路徑，Go 覆蓋約 65 條
 通知 約 90% webhook、SMTP、Telegram、Pushover、Firebase、WhatsApp、SMS、AWS SNS、Traccar Push
@@ -277,29 +285,30 @@ REST API 約 85% 母本 openapi.yaml 76 條路徑，Go 覆蓋約 65 條
 
 1. 協議層（最大缺口）
    272 支母本協議中尚有 260 支未實作（Queclink、Meitrack 變體、Concox 系列等）。
-   suntech、ruptela codec 存在但沒註冊進預設啟動清單；suntech 還有一個失敗測試。
+   suntech、ruptela 已註冊進預設啟動清單（suntech 仍無 Encoder，只能收不能下命令）。
    已支援協議的子功能缺漏（README 自述）：
    GT06：0x94 子類型、WiFi 掃描（0x17/0x2C/0x33/0xA2）、0xA3 variant、ADAS/DMS
    JT808：0x0704/0x0210 批次、0x5501/0x5502、0x0702 駕駛員卡、0x0104 參數、0x0900/0x8900 透傳、ADAS/DMS/胎壓/OBD
    Teltonika：Codec 7/16、BLE beacon、io78 driver id、圖片傳輸
    命令 Encoder 只有 5 支：h02 / gt06 / jt808 / teltonika / ruptela；gps103、tk103、meitrack、wondex 只能收不能下命令。
-2. 處理鏈仍是 placeholder 的 6 個階段
+2. 處理鏈仍是 placeholder 的 3 個階段
    chain.go 宣告了 15 個階段，實際未實作：
 
 階段 母本對應
-filter FilterHandler / OutdatedHandler（漂移、過期點過濾）
 defaultData HemisphereHandler / TimeHandler
 position PositionHandler（最後位置、有效性）
-geofence GeofenceHandler（把 geofenceIds 寫回 position）
 computedAttributes ComputedAttributesHandler
-distance DistanceHandler（累積里程）
+
+已補齊（本次）：filter（FilterHandler，含 filter.* 漂移/重複/精度/時效規則）、
+distance（OutdatedHandler 補位 + distance / totalDistance 累積，且排在 filter 之前）、
+geofence（geofenceIds 回寫並落地）。
 另外 GeocoderHandler（把地址寫進 position.address）、EngineHoursHandler 也還沒接進處理鏈。
-注意：main.go 其實已經接了 motion / alertEvent / fuel / driver / maintenance / media / speedLimit / mapMatcher / business 共 9 個，README「現況」寫「只實作 motion、business」是過時描述。
+注意：main.go 現在接了 filter（Outdated + Filter）、geofence、distance、motion / alertEvent / fuel /
+driver / maintenance / media / speedLimit / mapMatcher / business 共 12 個。
 
 3. REST / 資料模型缺口
    母本有、Go 沒有的路由：
 
-GET /api/positions/{id}、GET /api/commands/{id}
 GET /api/devices/{id}/accumulators、GET /api/devices/{id}/image
 POST /api/permissions/bulk
 POST /api/users/totp（兩階段驗證）
@@ -307,7 +316,13 @@ GET /api/session/openid/auth、/callback（OpenID Connect）
 GET /api/stream/{deviceId}/{channel}/live.m3u8、/{index}.ts（HLS 影像串流）
 POST /api/attributes/computed/test
 GET /api/server/cache
-資料模型：device.go 只有 id/uniqueId/name/model/protocol/groupId/attributes/status，缺母本的 phone、contact、category、disabled、expirationTime、calendarId、positionId；PUT /api/devices/{id} 只能改 name/model/attributes。
+資料模型：device 已補上 phone、contact、category、disabled、expirationTime、calendarId、positionId，
+PUT /api/devices/{id} 可寫入這些欄位（migration 0017）。
+
+已補齊（本次）：
+GET /api/positions/{id}、GET /api/commands/{id}
+Device 欄位（phone / contact / category / disabled / expirationTime / calendarId / positionId）
+Position 的 geofenceIds（geofence stage 回寫，`positions.geofenceids` JSONB 落地，`/api/positions` 會回傳）
 
 其他已知限制：
 
@@ -321,12 +336,48 @@ Forward：缺 AMQP、Kafka、事件外送、Network forwarder
 資料庫：只支援 PostgreSQL；schema 是 Go 版自己的，不能直接接母本資料庫
 Web 前端：Go 版沒有前端（母本 repo 本身也不含 traccar-web，前端是獨立專案）5. 驗證狀態（我實際跑過）
 
-PostgreSQL 整合測試（TRACCAR_POSTGRES_DSN）在此沙箱無法啟動 DB，全部 skip
-make smoke / make rest-e2e 因沙箱禁止綁定 TCP 埠，未實際跑過
+PostgreSQL 整合測試（TRACCAR_POSTGRES_DSN）在此沙箱無法啟動 DB，全部 skip；
+migration 0017、`positions.geofenceids` 的寫入與 `devices` 新欄位的 SQL 只經過單元測試，尚未對真 DB 跑過
+make smoke / make rest-e2e 因沙箱禁止綁定 TCP 埠（實測 `bind: operation not permitted`），未實際跑過
+已跑過：go build / go vet / go test ./... 全綠；go test -race ./internal/{gateway,alert,api,notify} 全綠
 建議的下一步優先順序
-修 suntech 縮放測試並註冊 ruptela/suntech（成本最低）
-補 filter、distance、computedAttributes、geofence 四個處理鏈階段（影響報表與事件正確性）
-補 positions/{id}、commands/{id}、device 欄位與 accumulators（前端對接必需）
+~~修 suntech 縮放測試並註冊 ruptela/suntech~~（已完成）
+~~補 filter、distance、geofence 三個處理鏈階段~~（已完成；computedAttributes 仍未做）
+~~補 positions/{id}、commands/{id}、device 欄位~~（已完成；accumulators 仍未做）
 依實際客戶設備清單，一支一支補協議（不要追 272 支）
 要水平擴展再做 Redis session/broadcast，目前可以先維持單節點
 ----now check end ---
+
+---- 現在做 start---
+優先修復與補齊（Sprint 1：掃尾與基礎健全）—— ✅ 已完成
+
+修復 suntech 測試：把這個歷史遺留的單元測試修好或先略過，並把 suntech / ruptela 納入預設啟動清單，讓 go test ./... 真正全綠。
+→ 已修正測試向量，並把 suntech（5011）/ ruptela（5046）註冊進 `gateway.DefaultRegistry` 與
+`config.Protocols`，`go test ./...` 全綠。
+
+補上關鍵的 ProcessingHandler 階段：
+
+DistanceHandler（累積里程計算）與 filter（過濾漂移點）。這兩者對 GPS 系統極為重要，如果沒有里程計算與防漂移，地圖軌跡會非常難看，報表數據也會失真。
+→ `handler.DistanceHandler`（distance / totalDistance）＋ `handler.FilterHandler`（filter.invalid / zero /
+outdated / future / past / accuracy / approximate / duplicate / static / distance / maxSpeed / minPeriod，
+含 filter.skipLimit / skipAttributes 覆寫）已接進 main.go。順序與母本一致：OutdatedHandler →
+DistanceHandler → FilterHandler（距離階段排在 filter 之前，filter 才讀得到剛算好的里程）。
+啟動時會從 DB 載入每台裝置的最後位置，重啟後累積里程不會歸零。
+
+GeofenceHandler：把圍欄 ID 寫回 Position，這樣才能正確觸發進出圍欄事件。支援前端對接（Sprint 2：API 完善）
+→ `handler.GeofenceHandler` 寫回 `Position.GeofenceIDs`，落地到 `positions.geofenceids`（migration 0017），
+`/api/positions`、`/api/positions/{id}` 與 socket 推播都會帶 `geofenceIds`。—— ✅ 已完成
+
+補上 GET /api/positions/{id}、GET /api/commands/{id}。
+→ 兩條路由已加上（同一個讀取 scope：read:positions / read:commands，並檢查裝置授權；查不到回 404）。—— ✅ 已完成
+
+補齊 Device 模型缺少的欄位（如 phone, disabled, expirationTime），並讓 PUT /api/devices/{id} 支援修改更多欄位。前端（例如 Traccar 官方 Web 介面或其他自研儀表板）在呼叫 API 時才不會因為欄位缺失而報錯。
+→ 已補 phone / contact / category / disabled / expirationTime / calendarId / positionId（migration 0017），
+`POST` 與 `PUT /api/devices/{id}` 都接受（PUT 為整筆取代語意，省略即清空）。
+`positionId` 由批次寫入時維護（新增位置後指向該裝置最新一筆）。—— ✅ 已完成
+
+長期考量（Sprint 3：效能與擴展，依需求而定）
+
+叢集與 Redis：除非您一開始就要面對十萬台以上、需要多台機器負載均衡的龐大流量，否則單機 Go 伺服器的極限非常高，現階段不需要過早引入 Redis 分散式 Session，維持單節點能省下極大的維護複雜度。（本次未動）
+
+---- 現在做 end----

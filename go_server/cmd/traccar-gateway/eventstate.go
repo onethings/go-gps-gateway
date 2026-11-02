@@ -67,14 +67,20 @@ func (s *eventState) Device(deviceID int64) *model.Device {
 }
 
 // setPosition keeps the newest position, which the proximity rule compares the
-// linked devices against.
+// linked devices against and which the distance and filter stages use as the
+// previous position. An older row never replaces a newer one, so a periodic
+// reload cannot rewind the map the ingest path is updating.
 func (s *eventState) setPosition(position *model.Position) {
 	if position == nil || position.DeviceID == 0 {
 		return
 	}
 	copied := *position
 	s.mu.Lock()
-	s.last[position.DeviceID] = &copied
+	if previous, ok := s.last[copied.DeviceID]; ok && copied.Time.Before(previous.Time) {
+		s.mu.Unlock()
+		return
+	}
+	s.last[copied.DeviceID] = &copied
 	s.mu.Unlock()
 }
 
@@ -137,6 +143,29 @@ func loadDevices(ctx context.Context, store *postgres.Store) (map[int64]*model.D
 			return devices, nil
 		}
 	}
+}
+
+// seedLastPositions loads the newest stored position of every device, so the
+// distance and filter stages have a previous position to compare against right
+// after a restart. Without it the first position of a device would start a new
+// trip and reset its running total.
+func (s *eventState) seedLastPositions(ctx context.Context, store *postgres.Store) error {
+	positions, err := store.LatestPositions(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range positions {
+		position := positions[index]
+		if _, ok := s.last[position.DeviceID]; ok {
+			continue
+		}
+		copied := position
+		s.last[copied.DeviceID] = &copied
+	}
+	return nil
 }
 
 // runEventStateRefresh keeps the links and maintenance intervals current. A

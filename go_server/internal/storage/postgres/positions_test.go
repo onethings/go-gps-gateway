@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +129,83 @@ func TestLatestPositionsQuery(t *testing.T) {
 	query, _ = latestPositionsQuery([]int64{})
 	if !strings.Contains(query, "WHERE false") {
 		t.Errorf("query = %s, want an empty scope to match nothing", query)
+	}
+}
+
+// TestPositionQueryIDs covers the id list GET /api/positions/{id} uses.
+func TestPositionQueryIDs(t *testing.T) {
+	query, args := positionQuery(model.PositionFilter{IDs: []int64{11}})
+
+	if !strings.Contains(query, "id IN ($1)") {
+		t.Errorf("query = %s", query)
+	}
+	if len(args) != 3 || args[0] != int64(11) {
+		t.Fatalf("args = %v", args)
+	}
+
+	query, args = positionQuery(model.PositionFilter{IDs: []int64{}})
+	if !strings.Contains(query, "WHERE false") {
+		t.Errorf("an empty id list must match nothing: %s", query)
+	}
+	if len(args) != 2 {
+		t.Fatalf("args = %v", args)
+	}
+}
+
+// positionRow fills the destinations scanPosition asks for.
+type positionRow struct {
+	values   []any
+	assigned int
+}
+
+func (r *positionRow) Scan(dest ...any) error {
+	r.assigned = len(dest)
+	for index, target := range dest {
+		if index >= len(r.values) {
+			break
+		}
+		switch pointer := target.(type) {
+		case *int64:
+			*pointer = r.values[index].(int64)
+		case *string:
+			*pointer = r.values[index].(string)
+		case *bool:
+			*pointer = r.values[index].(bool)
+		case *time.Time:
+			*pointer = r.values[index].(time.Time)
+		case *[]byte:
+			*pointer = r.values[index].([]byte)
+		case *sql.NullFloat64:
+			*pointer = r.values[index].(sql.NullFloat64)
+		default:
+			panic("unsupported scan target")
+		}
+	}
+	return nil
+}
+
+func TestScanPositionReadsTheGeofenceIDs(t *testing.T) {
+	at := time.Date(2026, 10, 31, 13, 2, 10, 0, time.UTC)
+
+	row := &positionRow{values: []any{
+		int64(11), int64(7), "gt06", at, at, true,
+		sql.NullFloat64{Float64: 54.943, Valid: true},
+		sql.NullFloat64{Float64: 25.206, Valid: true},
+		sql.NullFloat64{}, sql.NullFloat64{}, sql.NullFloat64{}, sql.NullFloat64{},
+		[]byte(`{"sat":9}`), []byte(`[5,9]`),
+	}}
+
+	position, err := scanPosition(row)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if row.assigned != 14 {
+		t.Fatalf("scan targets = %d, want 14", row.assigned)
+	}
+	if len(position.GeofenceIDs) != 2 || position.GeofenceIDs[1] != 9 {
+		t.Errorf("geofence ids = %v", position.GeofenceIDs)
+	}
+	if position.Latitude != 54.943 || position.Attributes["sat"] != float64(9) {
+		t.Errorf("position = %+v", position)
 	}
 }

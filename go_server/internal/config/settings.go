@@ -122,6 +122,7 @@ type rawFlags struct {
 
 	h02, gt06, jt808, teltonika, osmand, mqtt string
 	gps103, tk103, meitrack, wondex           string
+	suntech, ruptela                          string
 
 	dsn           string
 	batchSize     string
@@ -217,6 +218,10 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 		"Meitrack listen address")
 	binder.text(&binder.raw.wondex, "wondex", protocolAddress(cfg, "wondex"),
 		"Wondex listen address")
+	binder.text(&binder.raw.suntech, "suntech", protocolAddress(cfg, "suntech"),
+		"Suntech listen address")
+	binder.text(&binder.raw.ruptela, "ruptela", protocolAddress(cfg, "ruptela"),
+		"Ruptela listen address")
 
 	binder.text(&binder.raw.dsn, "dsn", cfg.String(DatabaseURL),
 		"PostgreSQL DSN (defaults to TRACCAR_DSN); empty uses an in-memory directory and a log sink")
@@ -469,6 +474,8 @@ func (b *Binder) protocols(raw rawFlags, settings Settings) ([]ProtocolSettings,
 		"tk103":     raw.tk103,
 		"meitrack":  raw.meitrack,
 		"wondex":    raw.wondex,
+		"suntech":   raw.suntech,
+		"ruptela":   raw.ruptela,
 	}
 
 	var (

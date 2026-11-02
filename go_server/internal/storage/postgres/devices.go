@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/permissions"
@@ -18,7 +19,8 @@ const (
 
 	// deviceColumns keeps the SELECT list and the scan order in sync.
 	deviceColumns = `id, unique_id, name, model, protocol, group_id, attributes,
-		status, last_update, created_at`
+		status, last_update, created_at, phone, contact, category, disabled,
+		expiration_time, calendar_id, position_id`
 )
 
 // Devices returns the devices matching the filter, most recently updated first.
@@ -111,16 +113,22 @@ func deviceQuery(filter model.DeviceFilter) (string, []any) {
 // scanDevice reads one row in deviceColumns order.
 func scanDevice(row interface{ Scan(dest ...any) error }) (*model.Device, error) {
 	var (
-		device      model.Device
-		deviceModel sql.NullString
-		protocol    sql.NullString
-		groupID     sql.NullInt64
-		lastUpdate  sql.NullTime
-		attributes  []byte
+		device         model.Device
+		deviceModel    sql.NullString
+		protocol       sql.NullString
+		groupID        sql.NullInt64
+		lastUpdate     sql.NullTime
+		attributes     []byte
+		phone          sql.NullString
+		contact        sql.NullString
+		category       sql.NullString
+		expirationTime sql.NullTime
 	)
 	if err := row.Scan(
 		&device.ID, &device.UniqueID, &device.Name, &deviceModel, &protocol,
 		&groupID, &attributes, &device.Status, &lastUpdate, &device.CreatedAt,
+		&phone, &contact, &category, &device.Disabled, &expirationTime,
+		&device.CalendarID, &device.PositionID,
 	); err != nil {
 		return nil, fmt.Errorf("postgres: scan device: %w", err)
 	}
@@ -128,8 +136,14 @@ func scanDevice(row interface{ Scan(dest ...any) error }) (*model.Device, error)
 	device.Model = deviceModel.String
 	device.Protocol = protocol.String
 	device.GroupID = groupID.Int64
+	device.Phone = phone.String
+	device.Contact = contact.String
+	device.Category = category.String
 	if lastUpdate.Valid {
 		device.LastUpdate = lastUpdate.Time
+	}
+	if expirationTime.Valid {
+		device.ExpirationTime = expirationTime.Time
 	}
 	device.Attributes = map[string]any{}
 	if len(attributes) > 0 {
@@ -193,11 +207,15 @@ func (s *Store) DeviceAttributes(ctx context.Context) (map[int64]map[string]any,
 // already exists returns model.ErrDuplicateDevice instead of touching the row.
 func (s *Store) CreateDevice(ctx context.Context, create model.DeviceCreate) (*model.Device, error) {
 	device, err := scanDevice(s.db.QueryRowContext(ctx,
-		`INSERT INTO devices (unique_id, name, model, protocol)
-		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''))
+		`INSERT INTO devices (unique_id, name, model, protocol, phone, contact,
+			category, disabled, expiration_time, calendar_id)
+		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''),
+			NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10)
 		 ON CONFLICT (unique_id) DO NOTHING
 		 RETURNING `+deviceColumns,
-		create.UniqueID, create.Name, create.Model, create.Protocol))
+		create.UniqueID, create.Name, create.Model, create.Protocol,
+		create.Phone, create.Contact, create.Category, create.Disabled,
+		nullTime(create.ExpirationTime), create.CalendarID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrDuplicateDevice
 	}
@@ -223,10 +241,14 @@ func (s *Store) UpdateDevice(ctx context.Context, deviceID int64, update model.D
 
 	device, err := scanDevice(s.db.QueryRowContext(ctx,
 		`UPDATE devices SET name = $2, model = NULLIF($3, ''),
-			attributes = COALESCE($4::jsonb, attributes)
+			phone = NULLIF($4, ''), contact = NULLIF($5, ''),
+			category = NULLIF($6, ''), disabled = $7, expiration_time = $8,
+			calendar_id = $9, attributes = COALESCE($10::jsonb, attributes)
 		 WHERE id = $1
 		 RETURNING `+deviceColumns,
-		deviceID, update.Name, update.Model, encodedAttributes))
+		deviceID, update.Name, update.Model, update.Phone, update.Contact,
+		update.Category, update.Disabled, nullTime(update.ExpirationTime),
+		update.CalendarID, encodedAttributes))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrDeviceNotFound
 	}
@@ -258,4 +280,13 @@ func (s *Store) DeleteDevice(ctx context.Context, deviceID int64) error {
 		return err
 	}
 	return nil
+}
+
+// nullTime binds a zero time as NULL, which is how an absent expiration date is
+// stored.
+func nullTime(value time.Time) sql.NullTime {
+	if value.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: value.UTC(), Valid: true}
 }

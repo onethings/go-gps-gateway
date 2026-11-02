@@ -634,3 +634,90 @@ func TestDevicesUserIdIgnoredWithoutAccounts(t *testing.T) {
 		t.Errorf("device ids = %v, want no restriction for the shared key", filter.DeviceIDs)
 	}
 }
+
+// TestDeviceResponseCarriesTheJavaFields covers the columns the Java model has
+// and the web interface expects.
+func TestDeviceResponseCarriesTheJavaFields(t *testing.T) {
+	expires := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	querier := &fakeDeviceList{device: &model.Device{
+		ID:             7,
+		UniqueID:       "864717003283581",
+		Name:           "van-7",
+		Protocol:       "gt06",
+		Phone:          "+886912345678",
+		Contact:        "ops",
+		Category:       "van",
+		Disabled:       true,
+		ExpirationTime: expires,
+		CalendarID:     3,
+		PositionID:     11,
+		CreatedAt:      time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC),
+	}}
+	handler := NewServer(nil, WithDevices(querier)).Handler()
+
+	recorder := get(t, handler, "/api/devices/7")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	device := decodeBodyValue[deviceResponse](t, recorder)
+	if device.Phone != "+886912345678" || device.Contact != "ops" || device.Category != "van" {
+		t.Errorf("device = %+v", device)
+	}
+	if !device.Disabled {
+		t.Error("disabled = false, want true")
+	}
+	if device.ExpirationTime == nil || !device.ExpirationTime.Equal(expires) {
+		t.Errorf("expirationTime = %v, want %s", device.ExpirationTime, expires)
+	}
+	if device.CalendarID != 3 || device.PositionID != 11 {
+		t.Errorf("calendarId = %d, positionId = %d", device.CalendarID, device.PositionID)
+	}
+}
+
+// TestUpdateDeviceWritableFields covers the columns PUT /api/devices/{id} now
+// accepts, and that omitting the expiration clears it.
+func TestUpdateDeviceWritableFields(t *testing.T) {
+	querier := &fakeDeviceList{}
+	handler := NewServer(nil, WithDevices(querier)).Handler()
+
+	recorder := request(t, handler, http.MethodPut, "/api/devices/7", `{
+		"name":" van-7 ",
+		"phone":"+886912345678",
+		"contact":"ops",
+		"category":"van",
+		"disabled":true,
+		"expirationTime":"2027-01-01T00:00:00Z",
+		"calendarId":3
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+
+	querier.mu.Lock()
+	updated := append([]model.DeviceUpdate(nil), querier.updated...)
+	querier.mu.Unlock()
+	if len(updated) != 1 {
+		t.Fatalf("updated = %d, want 1", len(updated))
+	}
+	update := updated[0]
+	if update.Name != "van-7" || update.Phone != "+886912345678" ||
+		update.Contact != "ops" || update.Category != "van" {
+		t.Errorf("update = %+v", update)
+	}
+	if !update.Disabled || update.CalendarID != 3 {
+		t.Errorf("update = %+v", update)
+	}
+	if !update.ExpirationTime.Equal(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("expirationTime = %s", update.ExpirationTime)
+	}
+
+	if recorder := request(t, handler, http.MethodPut, "/api/devices/7", `{"name":"van-7"}`); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	querier.mu.Lock()
+	cleared := querier.updated[len(querier.updated)-1]
+	querier.mu.Unlock()
+	if !cleared.ExpirationTime.IsZero() || cleared.Phone != "" || cleared.Disabled {
+		t.Errorf("update = %+v, want the omitted fields cleared", cleared)
+	}
+}

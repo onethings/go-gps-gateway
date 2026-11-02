@@ -292,6 +292,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/password/forgot", s.handleForgotPassword)
 	mux.HandleFunc("POST /api/password/reset", s.handleResetPassword)
 	mux.HandleFunc("GET /api/positions", s.handlePositions)
+	mux.HandleFunc("GET /api/positions/{id}", s.handlePositionByID)
 	mux.HandleFunc("GET /api/positions/kml", s.handlePositionExport(exportKML))
 	mux.HandleFunc("GET /api/positions/kmz", s.handlePositionExport(exportKMZ))
 	mux.HandleFunc("GET /api/positions/csv", s.handlePositionExport(exportCSV))
@@ -299,6 +300,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/socket", s.handleSocket)
 	mux.HandleFunc("GET /api/commands", s.handleCommands)
+	mux.HandleFunc("GET /api/commands/{id}", s.handleCommandByID)
 	mux.HandleFunc("POST /api/commands", s.handleCommand)
 
 	// Account administration. These routes answer 501 when no UserStore is
@@ -653,6 +655,9 @@ type positionResponse struct {
 	Course     float64        `json:"course"`
 	Accuracy   float64        `json:"accuracy"`
 	Attributes map[string]any `json:"attributes"`
+	// GeofenceIDs are the geofences containing the position, written by the
+	// geofence stage. Absent when the position is outside every geofence.
+	GeofenceIDs []int64 `json:"geofenceIds,omitempty"`
 }
 
 type positionsResponse struct {
@@ -717,6 +722,42 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// handlePositionByID serves GET /api/positions/{id}.
+func (s *Server) handlePositionByID(w http.ResponseWriter, r *http.Request) {
+	if s.positions == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("positions are not configured"))
+		return
+	}
+	if !s.authorize(w, r, auth.ScopeReadPositions) {
+		return
+	}
+	positionID, err := parsePositiveID(r.PathValue("id"), "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	positions, err := s.positions.QueryPositions(ctx,
+		model.PositionFilter{IDs: []int64{positionID}, Limit: 1})
+	if err != nil {
+		s.logf("api: get position %d: %v", positionID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+	if len(positions) == 0 {
+		writeError(w, http.StatusNotFound, fmt.Errorf("unknown position %d", positionID))
+		return
+	}
+	if !s.canAccessDevice(r, positions[0].DeviceID) {
+		writeForbiddenDevice(w, positions[0].DeviceID)
+		return
+	}
+	writeJSON(w, http.StatusOK, newPositionResponse(positions[0]))
+}
+
 // newPositionResponse renders one position, the shape the list and the socket
 // both use.
 func newPositionResponse(position model.Position) positionResponse {
@@ -725,19 +766,20 @@ func newPositionResponse(position model.Position) positionResponse {
 		attributes = map[string]any{}
 	}
 	return positionResponse{
-		ID:         position.ID,
-		DeviceID:   position.DeviceID,
-		Protocol:   position.Protocol,
-		DeviceTime: position.Time.UTC(),
-		ServerTime: position.ServerTime.UTC(),
-		Valid:      position.Valid,
-		Latitude:   position.Latitude,
-		Longitude:  position.Longitude,
-		Altitude:   position.Altitude,
-		Speed:      position.Speed,
-		Course:     position.Course,
-		Accuracy:   position.Accuracy,
-		Attributes: attributes,
+		ID:          position.ID,
+		DeviceID:    position.DeviceID,
+		Protocol:    position.Protocol,
+		DeviceTime:  position.Time.UTC(),
+		ServerTime:  position.ServerTime.UTC(),
+		Valid:       position.Valid,
+		Latitude:    position.Latitude,
+		Longitude:   position.Longitude,
+		Altitude:    position.Altitude,
+		Speed:       position.Speed,
+		Course:      position.Course,
+		Accuracy:    position.Accuracy,
+		Attributes:  attributes,
+		GeofenceIDs: position.GeofenceIDs,
 	}
 }
 
@@ -774,12 +816,21 @@ func insideGeofence(positions []model.Position, fence *geofence.Geofence) []mode
 }
 
 type deviceResponse struct {
-	ID         int64             `json:"id"`
-	UniqueID   string            `json:"uniqueId"`
-	Name       string            `json:"name"`
-	Model      string            `json:"model,omitempty"`
-	Protocol   string            `json:"protocol"`
-	Attributes *model.Attributes `json:"attributes,omitempty"`
+	ID       int64  `json:"id"`
+	UniqueID string `json:"uniqueId"`
+	Name     string `json:"name"`
+	Model    string `json:"model,omitempty"`
+	Protocol string `json:"protocol"`
+	Phone    string `json:"phone,omitempty"`
+	Contact  string `json:"contact,omitempty"`
+	Category string `json:"category,omitempty"`
+	Disabled bool   `json:"disabled"`
+	// ExpirationTime stays absent while the device never expires; calendarId and
+	// positionId while they are zero.
+	ExpirationTime *time.Time        `json:"expirationTime,omitempty"`
+	CalendarID     int64             `json:"calendarId,omitempty"`
+	PositionID     int64             `json:"positionId,omitempty"`
+	Attributes     *model.Attributes `json:"attributes,omitempty"`
 	// LastUpdate stays absent until the device has reported a position.
 	LastUpdate *time.Time `json:"lastUpdate,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
@@ -940,6 +991,12 @@ func newDeviceResponse(device model.Device, includeAttributes bool) deviceRespon
 		Name:       device.Name,
 		Model:      device.Model,
 		Protocol:   device.Protocol,
+		Phone:      device.Phone,
+		Contact:    device.Contact,
+		Category:   device.Category,
+		Disabled:   device.Disabled,
+		CalendarID: device.CalendarID,
+		PositionID: device.PositionID,
 		Attributes: optionalAttributes(device.Attributes, includeAttributes),
 		CreatedAt:  device.CreatedAt.UTC(),
 	}
@@ -947,26 +1004,42 @@ func newDeviceResponse(device model.Device, includeAttributes bool) deviceRespon
 		lastUpdate := device.LastUpdate.UTC()
 		response.LastUpdate = &lastUpdate
 	}
+	if !device.ExpirationTime.IsZero() {
+		expirationTime := device.ExpirationTime.UTC()
+		response.ExpirationTime = &expirationTime
+	}
 	return response
 }
 
 const maxDeviceBody = 1 << 16
 
 type deviceCreateRequest struct {
-	UniqueID string `json:"uniqueId"`
-	Name     string `json:"name"`
-	Model    string `json:"model"`
-	Protocol string `json:"protocol"`
+	UniqueID       string     `json:"uniqueId"`
+	Name           string     `json:"name"`
+	Model          string     `json:"model"`
+	Protocol       string     `json:"protocol"`
+	Phone          string     `json:"phone"`
+	Contact        string     `json:"contact"`
+	Category       string     `json:"category"`
+	Disabled       bool       `json:"disabled"`
+	ExpirationTime *time.Time `json:"expirationTime"`
+	CalendarID     int64      `json:"calendarId"`
 }
 
-// deviceUpdateRequest is a replace of the mutable columns. Name and model fall
-// back to empty when omitted, like before; attributes are only replaced when
-// the field is present so a rename does not wipe the thresholds the alert
-// engine reads from the device.
+// deviceUpdateRequest is a replace of the mutable columns. Every scalar field
+// falls back to its zero value when omitted, like before; attributes are only
+// replaced when the field is present so a rename does not wipe the thresholds
+// the alert engine reads from the device.
 type deviceUpdateRequest struct {
-	Name       string            `json:"name"`
-	Model      string            `json:"model"`
-	Attributes *model.Attributes `json:"attributes"`
+	Name           string            `json:"name"`
+	Model          string            `json:"model"`
+	Phone          string            `json:"phone"`
+	Contact        string            `json:"contact"`
+	Category       string            `json:"category"`
+	Disabled       bool              `json:"disabled"`
+	ExpirationTime *time.Time        `json:"expirationTime"`
+	CalendarID     int64             `json:"calendarId"`
+	Attributes     *model.Attributes `json:"attributes"`
 }
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
@@ -1002,10 +1075,16 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	device, err := s.devices.CreateDevice(ctx, model.DeviceCreate{
-		UniqueID: request.UniqueID,
-		Name:     strings.TrimSpace(request.Name),
-		Model:    strings.TrimSpace(request.Model),
-		Protocol: strings.TrimSpace(request.Protocol),
+		UniqueID:       request.UniqueID,
+		Name:           strings.TrimSpace(request.Name),
+		Model:          strings.TrimSpace(request.Model),
+		Protocol:       strings.TrimSpace(request.Protocol),
+		Phone:          strings.TrimSpace(request.Phone),
+		Contact:        strings.TrimSpace(request.Contact),
+		Category:       strings.TrimSpace(request.Category),
+		Disabled:       request.Disabled,
+		ExpirationTime: optionalTime(request.ExpirationTime),
+		CalendarID:     request.CalendarID,
 	})
 	if errors.Is(err, model.ErrDuplicateDevice) {
 		writeError(w, http.StatusConflict, fmt.Errorf("device %q already exists", request.UniqueID))
@@ -1064,9 +1143,15 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	device, err := s.devices.UpdateDevice(ctx, deviceID, model.DeviceUpdate{
-		Name:       strings.TrimSpace(request.Name),
-		Model:      strings.TrimSpace(request.Model),
-		Attributes: request.Attributes,
+		Name:           strings.TrimSpace(request.Name),
+		Model:          strings.TrimSpace(request.Model),
+		Phone:          strings.TrimSpace(request.Phone),
+		Contact:        strings.TrimSpace(request.Contact),
+		Category:       strings.TrimSpace(request.Category),
+		Disabled:       request.Disabled,
+		ExpirationTime: optionalTime(request.ExpirationTime),
+		CalendarID:     request.CalendarID,
+		Attributes:     request.Attributes,
 	})
 	if errors.Is(err, model.ErrDeviceNotFound) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("unknown device %d", deviceID))
@@ -1335,6 +1420,70 @@ type commandsResponse struct {
 	Count    int           `json:"count"`
 }
 
+// newCommandView renders one command row.
+func newCommandView(command model.Command) commandView {
+	attributes := command.Attributes
+	if attributes == nil {
+		attributes = map[string]any{}
+	}
+	view := commandView{
+		ID:         command.ID,
+		DeviceID:   command.DeviceID,
+		Type:       command.Type,
+		Attributes: attributes,
+		Status:     command.Status,
+		ResultCode: command.ResultCode,
+		Serial:     command.Serial,
+		Attempts:   command.Attempts,
+		CreatedAt:  command.CreatedAt.UTC(),
+	}
+	if !command.SentAt.IsZero() {
+		sentAt := command.SentAt.UTC()
+		view.SentAt = &sentAt
+	}
+	if !command.DoneAt.IsZero() {
+		doneAt := command.DoneAt.UTC()
+		view.DoneAt = &doneAt
+	}
+	return view
+}
+
+// handleCommandByID serves GET /api/commands/{id}.
+func (s *Server) handleCommandByID(w http.ResponseWriter, r *http.Request) {
+	if s.commands == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("commands are not configured"))
+		return
+	}
+	if !s.authorize(w, r, auth.ScopeReadCommands) {
+		return
+	}
+	commandID, err := parsePositiveID(r.PathValue("id"), "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	commands, err := s.commands.QueryCommands(ctx,
+		model.CommandFilter{IDs: []int64{commandID}, Limit: 1})
+	if err != nil {
+		s.logf("api: get command %d: %v", commandID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+	if len(commands) == 0 {
+		writeError(w, http.StatusNotFound, fmt.Errorf("unknown command %d", commandID))
+		return
+	}
+	if !s.canAccessDevice(r, commands[0].DeviceID) {
+		writeForbiddenDevice(w, commands[0].DeviceID)
+		return
+	}
+	writeJSON(w, http.StatusOK, newCommandView(commands[0]))
+}
+
 // handleCommands lists the commands of the devices the caller may see.
 func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	if s.commands == nil {
@@ -1367,30 +1516,7 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 		Count:    len(commands),
 	}
 	for _, command := range commands {
-		attributes := command.Attributes
-		if attributes == nil {
-			attributes = map[string]any{}
-		}
-		view := commandView{
-			ID:         command.ID,
-			DeviceID:   command.DeviceID,
-			Type:       command.Type,
-			Attributes: attributes,
-			Status:     command.Status,
-			ResultCode: command.ResultCode,
-			Serial:     command.Serial,
-			Attempts:   command.Attempts,
-			CreatedAt:  command.CreatedAt.UTC(),
-		}
-		if !command.SentAt.IsZero() {
-			sentAt := command.SentAt.UTC()
-			view.SentAt = &sentAt
-		}
-		if !command.DoneAt.IsZero() {
-			doneAt := command.DoneAt.UTC()
-			view.DoneAt = &doneAt
-		}
-		response.Commands = append(response.Commands, view)
+		response.Commands = append(response.Commands, newCommandView(command))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -1596,4 +1722,13 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+// optionalTime turns an absent JSON timestamp into the zero time the storage
+// layer reads as NULL.
+func optionalTime(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return value.UTC()
 }

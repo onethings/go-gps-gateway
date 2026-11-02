@@ -247,3 +247,86 @@ REST 認證）、`-auto-register`（預設 true）、`-batch-size`(500) / `-batc
 - [ ] **協議層**：修復 `suntech` 縮放測試失敗；實作 Queclink 協議；擴充各協議命令下發 Encoder。
 - [ ] **集群與擴展**：引進 Redis 分散式 Session 與 WebSocket 推播廣播，支援多網關節點水平擴展。
 - [ ] **前端對接**：提供完整 WebSocket JSON 訂閱協定文檔。
+
+----now check start---
+我已經實際比對 traccar-master 與 go_server 的程式碼、路由與測試（commit 0e35d75，工作區乾淨）。先給結論，再給依據。
+
+結論：完成度取決於「分母」
+計算基準 完成度 說明
+整個 traccar-master 功能對等（272 協議 + 全業務層） 約 40% 母本 272 支協議解碼器佔 Java 程式碼 66%，Go 只做了 12 支
+單機核心營運系統（不含冷門協議、叢集、Web UI） 約 80% 網關、REST、事件、通知、報表、地理服務都可用
+最初指定的四大協議目標（H02/GT06/JT808/Teltonika） 約 95% 解碼完成，命令下發仍有部分缺口
+母本有 272 個協議解碼器、1,059 個 Java 主程式檔（118,398 行）；Go 版 277 個 .go 檔、非測試碼 40,575 行。
+若只看協議廣度是 12/272 = 4.4%，但四大主力協議在實務部署中覆蓋率最高，所以「能不能上線」和「是否完全取代母本」是兩個差距很大的數字。
+
+各模組完成度
+模組 完成度 現況證據
+協議解碼 4%（廣度）<br>主力 4 支 100% 12 個 codec：h02/gt06/jt808/teltonika + gps103/tk103/meitrack/wondex/osmand/mqtt/ruptela/suntech；protocol.go 只註冊 10 支
+傳輸層 100% TCP / UDP / TLS / HTTP / poll 五種基底都有
+處理鏈（ProcessingHandler） 約 70% 15 個階段中 9 個有實作；6 個仍是 placeholder（見下）
+事件規則 約 90% 12 類事件幾乎都有：Alarm/Ignition/Behavior/Fuel/Driver/Maintenance/Media/CommandResult/Proximity + 超速/斷電/圍欄
+REST API 約 85% 母本 openapi.yaml 76 條路徑，Go 覆蓋約 65 條
+通知 約 90% webhook、SMTP、Telegram、Pushover、Firebase、WhatsApp、SMS、AWS SNS、Traccar Push
+報表 約 90% route/trips/stops/summary/events/geofences/devices/combined + KML/KMZ/CSV/GPX/XLSX
+外送 Forward 約 55% 只有 URL(/HTTP)、MQTT、Redis、Wialon；缺 AMQP、Kafka、Event forwarder、Network forwarder
+地理服務 約 90% geocoder / geolocation / speedlimit / mapmatcher 都有
+認證與權限 約 80% 密碼、token、scope、權限、分享；缺 TOTP、OpenID
+叢集與水平擴展 約 10% 單節點；無 Redis session、無 WebSocket 廣播、無 multicast
+資料庫 約 70% 只有 PostgreSQL、自有 schema；母本還支援 MySQL/H2，schema 不相容
+還沒有完成的部分
+
+1. 協議層（最大缺口）
+   272 支母本協議中尚有 260 支未實作（Queclink、Meitrack 變體、Concox 系列等）。
+   suntech、ruptela codec 存在但沒註冊進預設啟動清單；suntech 還有一個失敗測試。
+   已支援協議的子功能缺漏（README 自述）：
+   GT06：0x94 子類型、WiFi 掃描（0x17/0x2C/0x33/0xA2）、0xA3 variant、ADAS/DMS
+   JT808：0x0704/0x0210 批次、0x5501/0x5502、0x0702 駕駛員卡、0x0104 參數、0x0900/0x8900 透傳、ADAS/DMS/胎壓/OBD
+   Teltonika：Codec 7/16、BLE beacon、io78 driver id、圖片傳輸
+   命令 Encoder 只有 5 支：h02 / gt06 / jt808 / teltonika / ruptela；gps103、tk103、meitrack、wondex 只能收不能下命令。
+2. 處理鏈仍是 placeholder 的 6 個階段
+   chain.go 宣告了 15 個階段，實際未實作：
+
+階段 母本對應
+filter FilterHandler / OutdatedHandler（漂移、過期點過濾）
+defaultData HemisphereHandler / TimeHandler
+position PositionHandler（最後位置、有效性）
+geofence GeofenceHandler（把 geofenceIds 寫回 position）
+computedAttributes ComputedAttributesHandler
+distance DistanceHandler（累積里程）
+另外 GeocoderHandler（把地址寫進 position.address）、EngineHoursHandler 也還沒接進處理鏈。
+注意：main.go 其實已經接了 motion / alertEvent / fuel / driver / maintenance / media / speedLimit / mapMatcher / business 共 9 個，README「現況」寫「只實作 motion、business」是過時描述。
+
+3. REST / 資料模型缺口
+   母本有、Go 沒有的路由：
+
+GET /api/positions/{id}、GET /api/commands/{id}
+GET /api/devices/{id}/accumulators、GET /api/devices/{id}/image
+POST /api/permissions/bulk
+POST /api/users/totp（兩階段驗證）
+GET /api/session/openid/auth、/callback（OpenID Connect）
+GET /api/stream/{deviceId}/{channel}/live.m3u8、/{index}.ts（HLS 影像串流）
+POST /api/attributes/computed/test
+GET /api/server/cache
+資料模型：device.go 只有 id/uniqueId/name/model/protocol/groupId/attributes/status，缺母本的 phone、contact、category、disabled、expirationTime、calendarId、positionId；PUT /api/devices/{id} 只能改 name/model/attributes。
+
+其他已知限制：
+
+帳號 API 無搜尋/排序，email 建立後不可改
+群組授權不會展開到通知收件者
+分享帳號沒有到期自動清理
+/api/socket token 放 query string
+GT06/H02/Teltonika 命令回應無識別碼，只能配對「該裝置最新一筆 sent」4. 基礎設施
+Forward：缺 AMQP、Kafka、事件外送、Network forwarder
+叢集：無 Redis 分散式 session、無 WebSocket 跨節點廣播 → 目前只能單節點
+資料庫：只支援 PostgreSQL；schema 是 Go 版自己的，不能直接接母本資料庫
+Web 前端：Go 版沒有前端（母本 repo 本身也不含 traccar-web，前端是獨立專案）5. 驗證狀態（我實際跑過）
+
+PostgreSQL 整合測試（TRACCAR_POSTGRES_DSN）在此沙箱無法啟動 DB，全部 skip
+make smoke / make rest-e2e 因沙箱禁止綁定 TCP 埠，未實際跑過
+建議的下一步優先順序
+修 suntech 縮放測試並註冊 ruptela/suntech（成本最低）
+補 filter、distance、computedAttributes、geofence 四個處理鏈階段（影響報表與事件正確性）
+補 positions/{id}、commands/{id}、device 欄位與 accumulators（前端對接必需）
+依實際客戶設備清單，一支一支補協議（不要追 272 支）
+要水平擴展再做 Redis session/broadcast，目前可以先維持單節點
+----now check end ---

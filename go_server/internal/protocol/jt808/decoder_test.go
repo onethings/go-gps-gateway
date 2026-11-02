@@ -210,6 +210,83 @@ func TestDecodeLocationExtensions(t *testing.T) {
 	}
 }
 
+// buildSubPacketFrame builds a JT808 frame with the sub-packet (分包) flag set
+// in the message attribute field (0x2000). The body is prefixed with the four
+// byte sub-packet header: total packet count then the packet sequence number.
+func buildSubPacketFrame(t *testing.T, messageType int, total, sequence int, body []byte) []byte {
+	t.Helper()
+	id, err := encodeID("123456789012345", 6)
+	if err != nil {
+		t.Fatalf("encodeID: %v", err)
+	}
+	h := &header{delimiter: 0x7e, id: id}
+
+	packet := make([]byte, 0, len(body)+4)
+	packet = binary.BigEndian.AppendUint16(packet, uint16(total))
+	packet = binary.BigEndian.AppendUint16(packet, uint16(sequence))
+	packet = append(packet, body...)
+
+	attribute := len(packet) | 0x2000
+	raw := make([]byte, 0, 2+2+6+2+len(packet)+2)
+	raw = append(raw, byte(messageType>>8), byte(messageType),
+		byte(attribute>>8), byte(attribute))
+	raw = append(raw, h.id...)
+	raw = append(raw, 0, 1) // serial
+	raw = append(raw, packet...)
+	raw = append(raw, helper.XOR(raw))
+
+	frame := []byte{0x7e}
+	for _, b := range raw {
+		switch b {
+		case 0x7d:
+			frame = append(frame, 0x7d, 0x01)
+		case 0x7e:
+			frame = append(frame, 0x7d, 0x02)
+		default:
+			frame = append(frame, b)
+		}
+	}
+	return append(frame, 0x7e)
+}
+
+// TestSubPacketNotMisparsed guards against a real gap found in review: a
+// location report (0x0200) that carries the sub-packet flag (0x2000) is a
+// fragment of a larger transmission, not a complete message. Before the fix the
+// body was parsed from the sub-packet header, producing a garbage position and
+// a spurious acknowledgement.
+func TestSubPacketNotMisparsed(t *testing.T) {
+	decoder := NewDecoder(Base())
+
+	// A plausible 0x0200 body split across two packets. Each fragment is fed
+	// alone; neither is a complete location report.
+	body := make([]byte, 0, 32)
+	body = binary.BigEndian.AppendUint32(body, 0)          // alarm
+	body = binary.BigEndian.AppendUint32(body, 0x00000002) // valid fix
+	body = binary.BigEndian.AppendUint32(body, 54945350)   // latitude
+	body = binary.BigEndian.AppendUint32(body, 24017620)   // longitude
+	body = binary.BigEndian.AppendUint16(body, 120)        // altitude
+	body = binary.BigEndian.AppendUint16(body, 500)        // speed, 50.0 km/h
+	body = binary.BigEndian.AppendUint16(body, 90)         // course
+	body = append(body, 0x26, 0x10, 0x31, 0x13, 0x02, 0x10)
+
+	// Packet 1 of 2 carries the first fragment, packet 2 the second.
+	for _, frame := range [][]byte{
+		buildSubPacketFrame(t, msgLocationReport, 2, 1, body[:16]),
+		buildSubPacketFrame(t, msgLocationReport, 2, 2, body[16:]),
+	} {
+		result, err := decoder.Decode(frame)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(result.Positions) != 0 {
+			t.Fatalf("sub-packet parsed as complete message: positions = %d", len(result.Positions))
+		}
+		if len(result.Responses) != 0 {
+			t.Fatalf("sub-packet answered: responses = %d", len(result.Responses))
+		}
+	}
+}
+
 // TestEncodeCommandCarriesItsOwnSerial pins the correlation rule: every
 // downlink frame gets the next serial, the command remembers it, and a second
 // command cannot reuse it.

@@ -53,6 +53,12 @@ type header struct {
 	id          []byte
 	index       int
 	shortIndex  bool
+	// subPacket is set when the message attribute carries the sub-packet (分包)
+	// flag. Such a frame is one fragment of a larger transmission, not a
+	// complete message: its body is prefixed with the sub-packet header (total
+	// packet count and packet sequence number), so it must never be parsed as
+	// if it were whole.
+	subPacket bool
 	// serial is the serial written into the frame buildMessage produces. It is
 	// set by the command encoder and stays zero for a platform response, which
 	// carries the serial it answers in its payload instead.
@@ -69,6 +75,7 @@ func parseHeader(frame []byte) (*header, *helper.Buffer, bool) {
 	h.messageType = buf.ReadUnsignedShort()
 	h.attribute = buf.ReadUnsignedShort()
 	h.bodyLength = h.attribute & 0x03ff
+	h.subPacket = h.attribute&0x2000 != 0
 
 	if h.attribute&0x4000 != 0 {
 		version := byte(buf.ReadUnsignedByte())

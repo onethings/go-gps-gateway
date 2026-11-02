@@ -26,6 +26,8 @@ const (
 	KeyMapMatcherURL    = config.MapMatcherURL
 	KeyMapMatcherKey    = config.MapMatcherKey
 	KeyMapMatcherRadius = config.MapMatcherRadius
+	KeyMapMatcherCache  = config.MapMatcherCache
+	KeyMapMatcherCacheFile = config.MapMatcherCacheFile
 
 	KeyGeolocationEnable = config.GeolocationEnable
 	KeyGeolocationURL    = config.GeolocationURL
@@ -68,6 +70,11 @@ type Settings struct {
 		URL     string
 		Key     string
 		Radius  int
+		Cache   time.Duration
+		// CacheFile is where the snapped-coordinate cache is persisted. It
+		// falls back to the shared cache.file so an operator who only set that
+		// still gets a persisting cache.
+		CacheFile string
 	}
 	Geolocation struct {
 		Enabled bool
@@ -135,6 +142,8 @@ func ReadSettings(cfg *config.Config) Settings {
 	} else {
 		settings.MapMatcher.Radius = 50
 	}
+	settings.MapMatcher.Cache = readDuration(KeyMapMatcherCache, DefaultCacheTTL)
+	settings.MapMatcher.CacheFile = cfg.StringOr(KeyMapMatcherCacheFile, settings.CacheFile)
 
 	settings.Geolocation.Enabled = readBool(KeyGeolocationEnable)
 	settings.Geolocation.URL = cfg.StringOr(KeyGeolocationURL, geolocateURL)

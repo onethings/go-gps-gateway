@@ -6,9 +6,9 @@
 - 母本：`../traccar-master`（Java），每個 Go 檔案的註解都標明了對應的 Java 類別。
 - 設計原則：協議層是**純函式**（`[]byte` → `*model.Position`），所有 I/O 集中在 `internal/gateway`。
 - 現況：四個協議的 codec + TCP 網關 + PostgreSQL 落地 + 三層設定（`traccar.xml` / 環境變數 / flag）
-  + `ProcessingHandler` 處理鏈 + 連線狀態（`devices.status`、online / offline、心跳逾時）+ `events` 表
-  （告警規則 / 地理圍欄 / 通知 webhook / email，含使用者訂閱）
-  - REST（裝置管理、位置查詢、事件查詢（`/api/events`，`/api/alerts` 為別名）、健康檢查、命令下發、
+  - `ProcessingHandler` 處理鏈 + 連線狀態（`devices.status`、online / offline、心跳逾時）+ `events` 表
+    （告警規則 / 地理圍欄 / 通知 webhook / email，含使用者訂閱）
+  * REST（裝置管理、位置查詢、事件查詢（`/api/events`，`/api/alerts` 為別名）、健康檢查、命令下發、
     `/metrics`、使用者 token / 裝置擁有權、帳號與 token 管理、密碼登入、通知訂閱）全部可編譯、
     `go test ./...` 全綠。
 
@@ -50,39 +50,39 @@ client ──HTTP──▶ api.Server (RequireAuth)
 
 ## 目錄
 
-| 路徑                             | 說明                                                                                                                                                                                                                                                                   |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `internal/model`                 | 統一資料模型：`Position` / `Network` / `CellTower` / `Command` / `User` / `Notification`                                                                                                                                                                               |
-| `internal/auth`                  | 權限模型：scope、`Principal`、token 產生 / SHA-256 雜湊、密碼 bcrypt 雜湊                                                                                                                                                                                              |
-| `internal/codec`                 | 協議介面：`FrameDecoder`、`Decoder`、`SessionDecoder`、`Encoder`、`Base`                                                                                                                                                                                               |
-| `internal/helper`                | Java helper 的移植：`Buffer`(Netty ByteBuf)、`PatternBuilder`、`Parser`、BCD、DateBuilder、CRC16/X25、CRC16/IBM、XOR、Luhn                                                                                                                                             |
-| `internal/protocol/h02`          | H02 / TK102 系                                                                                                                                                                                                                                                         |
-| `internal/protocol/gt06`         | GT06 / Concox / Jimi 系                                                                                                                                                                                                                                                |
-| `internal/protocol/jt808`        | JT/T 808（中國交通部標準）                                                                                                                                                                                                                                             |
-| `internal/protocol/teltonika`    | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13）                                                                                                                                                                                                                        |
-| `internal/protocol/osmand`       | OsmAnd HTTP：查詢字串 → 位置；同一支 `Decode` 也被 MQTT 協議重用                                                                                                                                                                                                        |
-| `internal/protocol/mqtt`         | MQTT 3.1.1：CONNECT / SUBSCRIBE / PUBLISH / PINGREQ，publish 的 payload 就是 OsmAnd 查詢字串                                                                                                                                                                            |
-| `internal/protocol/gps103`       | Coban GPS103 / TK102：`imei:` 開頭、`;` 結尾的文字句，十進位度 + 半球                                                                                                                                                                                                    |
-| `internal/protocol/tk103`        | Xexun TK103：`imei:` 開頭、換行結尾，`ddmm.mmmm` + 半球                                                                                                                                                                                                                 |
-| `internal/protocol/meitrack`     | Meitrack：`$$` + 長度 + 逗號欄位 + `*` + XOR 檢查碼                                                                                                                                                                                                                     |
-| `internal/protocol/wondex`       | Wondex：`#DD#` + `;` 分隔欄位                                                                                                                                                                                                                                           |
-| `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植）                                                                                                                                                                                                                                  |
-| `internal/gateway`               | 網關：TCP / UDP / TLS / HTTP 四種 listener、poller（主動撥號）、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                                                                                            |
-| `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                                                                                                                                                  |
-| `internal/session`               | 連線登錄表（`devices.status`、心跳超時、`deviceOnline` / `deviceOffline`）與 moving / stopped 狀態機（`motion` 階段）                                                                                                     |
-| `internal/handler`               | 位置處理鏈：母本 `ProcessingHandler` 的 14 個階段順序、`PositionHandler` 介面、`BusinessHandler`（一次跑一個 `Processor`）與 terminal store                                                                                                                                  |
-| `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                          |
-| `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                       |
-| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）、報表（8 種 + `csv/gpx/kml/xlsx/mail`）、媒體（`/api/media` 列表 / 上傳 / 下載 / 刪除）、`/api/server/geocode|speedlimit|geolocation`、`GET /api/socket`（WebSocket 推播）；認證 / scope / 裝置擁有權 |
-| `internal/media`                 | 媒體檔案：上傳後寫入 `media.path`，`media` 表存索引，REST 列表 / 下載 / 刪除                                                                         |
-| `internal/stats`                 | 統計歷史：把 process 計數器（REST 請求、frame、位置、通知、地理查詢）換算成 `statistics` 的每分鐘增量列                                                                                                                 |
-| `internal/schedule`              | 週期性維護：到期停用帳號、清過期 token / 重設碼 / audit、排程報表（CSV 附件 email）、DB health check                                                                                                                     |
-| `internal/geo`                   | 地理加值：TTL + 檔案快取、反向地理編碼（Nominatim / Google）、速限（Overpass）、地圖吸附（Mapbox）、基地台定位（Google）                                                                                                |
-| `internal/report`                | 報表：route / trips / stops / summary / events / geofences / devices / combined，CSV / GPX / KML / XLSX 匯出                                                                                                          |
-| `internal/websocket`             | RFC 6455 伺服器端子集：握手、文字 / 二進位訊息與 fragmentation、ping / pong、close（無 extension）  |
-| `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                                                                                                                                              |
-| `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                                                                                                                                                           |
-| `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                                                                                                                                                           |
+| 路徑                             | 說明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------- |
+| `internal/model`                 | 統一資料模型：`Position` / `Network` / `CellTower` / `Command` / `User` / `Notification`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `internal/auth`                  | 權限模型：scope、`Principal`、token 產生 / SHA-256 雜湊、密碼 bcrypt 雜湊                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `internal/codec`                 | 協議介面：`FrameDecoder`、`Decoder`、`SessionDecoder`、`Encoder`、`Base`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `internal/helper`                | Java helper 的移植：`Buffer`(Netty ByteBuf)、`PatternBuilder`、`Parser`、BCD、DateBuilder、CRC16/X25、CRC16/IBM、XOR、Luhn                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `internal/protocol/h02`          | H02 / TK102 系                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `internal/protocol/gt06`         | GT06 / Concox / Jimi 系                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `internal/protocol/jt808`        | JT/T 808（中國交通部標準）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `internal/protocol/teltonika`    | Teltonika FMxxx / FMB（Codec 8 / 8E / 12 / 13）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `internal/protocol/osmand`       | OsmAnd HTTP：查詢字串 → 位置；同一支 `Decode` 也被 MQTT 協議重用                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `internal/protocol/mqtt`         | MQTT 3.1.1：CONNECT / SUBSCRIBE / PUBLISH / PINGREQ，publish 的 payload 就是 OsmAnd 查詢字串                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `internal/protocol/gps103`       | Coban GPS103 / TK102：`imei:` 開頭、`;` 結尾的文字句，十進位度 + 半球                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `internal/protocol/tk103`        | Xexun TK103：`imei:` 開頭、換行結尾，`ddmm.mmmm` + 半球                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `internal/protocol/meitrack`     | Meitrack：`$$` + 長度 + 逗號欄位 + `*` + XOR 檢查碼                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `internal/protocol/wondex`       | Wondex：`#DD#` + `;` 分隔欄位                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `internal/protocol/protocaltest` | 共用測試斷言（`ProtocolTest` 的移植）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `internal/gateway`               | 網關：TCP / UDP / TLS / HTTP 四種 listener、poller（主動撥號）、協議註冊表、裝置目錄、位置快取、Sink 介面、連線表與命令路由                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `internal/geofence`              | 圍欄幾何：Traccar WKT（`POLYGON` / `CIRCLE`）→ 內含判定（含反子午線）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `internal/session`               | 連線登錄表（`devices.status`、心跳超時、`deviceOnline` / `deviceOffline`）與 moving / stopped 狀態機（`motion` 階段）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `internal/handler`               | 位置處理鏈：母本 `ProcessingHandler` 的 14 個階段順序、`PositionHandler` 介面、`BusinessHandler`（一次跑一個 `Processor`）與 terminal store                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `internal/alert`                 | 告警規則（overspeed / powerCut / geofenceEnter / geofenceExit）+ 非阻塞寫入管線；在處理鏈上是 `business` 這一段                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `internal/notify`                | 告警通知：webhook / SMTP email、訊息格式化、裝置 attributes 覆寫、使用者訂閱路由、非阻塞傳送佇列                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `internal/api`                   | REST：`GET/POST/PUT/DELETE /api/devices`（含 `GET /{id}`、`uniqueId` / `id` / `keyword` / `excludeAttributes`、可寫 `attributes`）、`GET /api/positions`（`geofenceId`）與 `kml` / `kmz` / `csv` / `gpx` 匯出、`GET /api/events`（`/api/alerts` 為別名）與 `GET /{id}`、`GET /api/health`、`POST /api/login`、`GET /metrics`、`GET/POST /api/commands`、`/api/users`（帳號 / token / 裝置授權 / 通知訂閱）、`/api/notifications`、資源 CRUD（`/api/groups`、`/api/geofences`、`/api/calendars`、`/api/drivers`、`/api/maintenance(s)`、`/api/orders`、`/api/reports`、`/api/attributes/computed`）、報表（8 種 + `csv/gpx/kml/xlsx/mail`）、媒體（`/api/media` 列表 / 上傳 / 下載 / 刪除）、`/api/server/geocode | speedlimit | geolocation`、`GET /api/socket`（WebSocket 推播）；認證 / scope / 裝置擁有權 |
+| `internal/media`                 | 媒體檔案：上傳後寫入 `media.path`，`media` 表存索引，REST 列表 / 下載 / 刪除                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `internal/stats`                 | 統計歷史：把 process 計數器（REST 請求、frame、位置、通知、地理查詢）換算成 `statistics` 的每分鐘增量列                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `internal/schedule`              | 週期性維護：到期停用帳號、清過期 token / 重設碼 / audit、排程報表（CSV 附件 email）、DB health check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `internal/geo`                   | 地理加值：TTL + 檔案快取、反向地理編碼（Nominatim / Google）、速限（Overpass）、地圖吸附（Mapbox）、基地台定位（Google）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `internal/report`                | 報表：route / trips / stops / summary / events / geofences / devices / combined，CSV / GPX / KML / XLSX 匯出                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `internal/websocket`             | RFC 6455 伺服器端子集：握手、文字 / 二進位訊息與 fragmentation、ping / pong、close（無 extension）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `internal/metrics`               | Prometheus 文字格式的計數器 / gauge / histogram（零依賴）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `internal/storage/postgres`      | PostgreSQL schema/migration、`DeviceDirectory` 與批次 `Sink`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `cmd/traccar-gateway`            | 啟動四個監聽埠與 REST 的 CLI                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## 快速開始
 
@@ -515,11 +515,11 @@ Webhook 的 body 固定為一份 JSON：
 `POST /api/password/reset`）與自己驗 `?token=` 的 `/api/socket`，REST 每個請求都要帶憑證，放在 `X-Api-Key` 或
 `Authorization: Bearer <token>`（兩者等價）：
 
-| 憑證         | 來源                                  | 權限                         |
-| ------------ | ------------------------------------- | ---------------------------- |
-| 共用 API key | `-api-key` / `TRACCAR_API_KEY`        | admin：所有 scope、所有裝置  |
-| 使用者 token | `api_tokens` 表，用 `-issue-token` 發 | 依 `scopes` + `permissions`  |
-| 密碼登入     | `POST /api/login`（email + 密碼）     | 換發一組帶 `*` 的新 token    |
+| 憑證         | 來源                                  | 權限                        |
+| ------------ | ------------------------------------- | --------------------------- |
+| 共用 API key | `-api-key` / `TRACCAR_API_KEY`        | admin：所有 scope、所有裝置 |
+| 使用者 token | `api_tokens` 表，用 `-issue-token` 發 | 依 `scopes` + `permissions` |
+| 密碼登入     | `POST /api/login`（email + 密碼）     | 換發一組帶 `*` 的新 token   |
 
 密碼只以 bcrypt（cost 12）雜湊存在 `users.password_hash`，登入請求和任何 user JSON 都不會出現它。
 
@@ -538,27 +538,27 @@ curl -H "Authorization: Bearer $TOKEN" 'localhost:8082/api/alerts'
 
 ### Scope
 
-| scope            | 端點                                                                     |
-| ---------------- | ------------------------------------------------------------------------ |
-| `read:positions` | `GET /api/positions`                                                     |
-| `read:devices`   | `GET /api/devices`                                                       |
-| `read:alerts`    | `GET /api/events`、`GET /api/alerts`（同一個查詢）                        |
-| `read:metrics`   | `GET /metrics`                                                           |
-| `read:commands`  | `GET /api/commands`                                                      |
-| `write:devices`  | `POST/PUT/DELETE /api/devices`                                           |
-| `write:commands` | `POST /api/commands`                                                     |
-| `read:permissions` | `GET /api/permissions`                                                 |
-| `write:permissions` | `POST` / `DELETE /api/permissions`                                    |
-| `write:share`    | `POST /api/share/device`、`POST /api/share/group`                        |
-| `read:groups` / `write:groups`               | `/api/groups`                                 |
-| `read:geofences` / `write:geofences`         | `/api/geofences`                              |
-| `read:calendars` / `write:calendars`         | `/api/calendars`                              |
-| `read:drivers` / `write:drivers`             | `/api/drivers`                                |
-| `read:maintenances` / `write:maintenances`   | `/api/maintenance`、`/api/maintenances`        |
-| `read:orders` / `write:orders`               | `/api/orders`                                 |
-| `read:reports` / `write:reports`             | `/api/reports`                                |
-| `read:attributes` / `write:attributes`       | `/api/attributes/computed`                    |
-| `*`              | 全部（給機器用，等同舊 API key），另外是列出 / 撤銷自己 token 的必要條件 |
+| scope                                      | 端點                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------ |
+| `read:positions`                           | `GET /api/positions`                                                     |
+| `read:devices`                             | `GET /api/devices`                                                       |
+| `read:alerts`                              | `GET /api/events`、`GET /api/alerts`（同一個查詢）                       |
+| `read:metrics`                             | `GET /metrics`                                                           |
+| `read:commands`                            | `GET /api/commands`                                                      |
+| `write:devices`                            | `POST/PUT/DELETE /api/devices`                                           |
+| `write:commands`                           | `POST /api/commands`                                                     |
+| `read:permissions`                         | `GET /api/permissions`                                                   |
+| `write:permissions`                        | `POST` / `DELETE /api/permissions`                                       |
+| `write:share`                              | `POST /api/share/device`、`POST /api/share/group`                        |
+| `read:groups` / `write:groups`             | `/api/groups`                                                            |
+| `read:geofences` / `write:geofences`       | `/api/geofences`                                                         |
+| `read:calendars` / `write:calendars`       | `/api/calendars`                                                         |
+| `read:drivers` / `write:drivers`           | `/api/drivers`                                                           |
+| `read:maintenances` / `write:maintenances` | `/api/maintenance`、`/api/maintenances`                                  |
+| `read:orders` / `write:orders`             | `/api/orders`                                                            |
+| `read:reports` / `write:reports`           | `/api/reports`                                                           |
+| `read:attributes` / `write:attributes`     | `/api/attributes/computed`                                               |
+| `*`                                        | 全部（給機器用，等同舊 API key），另外是列出 / 撤銷自己 token 的必要條件 |
 
 `*` 不等於 admin：帳號管理（建 / 改 / 刪帳號、發 token）仍然只認 `users.admin = true`，
 所以帶 `*` 的 token 不會提權，只能管自己的 token。
@@ -595,11 +595,11 @@ token 認證時會把群組授權展開成裝置清單（每個請求一次）�
 {"groupId": 1, "geofenceId": 5}
 ```
 
-| 路由                     | 說明                                                                        |
-| ------------------------ | --------------------------------------------------------------------------- |
-| `GET /api/permissions`   | 查詢，形如 `?userId=2&deviceId=7`；其中一個可以省略表示不限定。回傳**裸陣列**（母本格式，`traccar-web` 直接吃） |
-| `POST /api/permissions`  | 新增一筆或一批（陣列），全部同型別；成功回 `204`，重複新增不會出錯           |
-| `DELETE /api/permissions`| 刪除一筆或一批；成功回 `204`，原本沒有也回 `204`                              |
+| 路由                      | 說明                                                                                                            |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `GET /api/permissions`    | 查詢，形如 `?userId=2&deviceId=7`；其中一個可以省略表示不限定。回傳**裸陣列**（母本格式，`traccar-web` 直接吃） |
+| `POST /api/permissions`   | 新增一筆或一批（陣列），全部同型別；成功回 `204`，重複新增不會出錯                                              |
+| `DELETE /api/permissions` | 刪除一筆或一批；成功回 `204`，原本沒有也回 `204`                                                                |
 
 - 需要 scope `read:permissions` / `write:permissions`。
 - admin 可以查、改任何配對。非 admin 只能碰自己碰得到的兩端（自己 → 自己的裝置），
@@ -651,7 +651,7 @@ token 的列出與撤銷對帳號本人開放，但本人手上那組 token 必�
 | `GET /api/users`                                        | 列出帳號（`limit` 1–1000、`offset`），含 `deviceCount` / `tokenCount`                   |
 | `POST /api/users`                                       | 建立帳號，body `{"email","name","admin"}`；email 重複回 `409`                           |
 | `PUT /api/users/{id}`                                   | 局部更新 `name` / `admin` / `disabled` / `password`，省略的欄位不動                     |
-| `DELETE /api/users/{id}`                                | 刪除帳號（token cascade；授權由儲存層一併清掉）                                          |
+| `DELETE /api/users/{id}`                                | 刪除帳號（token cascade；授權由儲存層一併清掉）                                         |
 | `GET /api/users/{id}/devices`                           | 列出已授權的裝置（格式同 `GET /api/devices`）                                           |
 | `PUT /api/users/{id}/devices/{deviceId}`                | 授權裝置（重複呼叫不會出錯）                                                            |
 | `DELETE /api/users/{id}/devices/{deviceId}`             | 撤銷授權（原本就沒有也回 `204`）                                                        |
@@ -856,16 +856,16 @@ curl -i -X PUT localhost:8082/api/devices/7 \
 M2-3 把母本 `SimpleObjectResource` / `ExtendedObjectResource` 的設定型資源補齊，全部共用
 `internal/api/resources.go` 的一套 handler：
 
-| 路徑                        | 資源                      | 寫入時的額外檢查             |
-| --------------------------- | ------------------------- | ---------------------------- |
-| `/api/groups`               | 群組（最多三層）          | 父群組要碰得到、樹不能超過三層 |
-| `/api/geofences`            | 圍欄（Traccar WKT）       | `calendarId` 要碰得到          |
-| `/api/calendars`            | iCalendar 原文            |                              |
-| `/api/drivers`              | 駕駛                      |                              |
-| `/api/maintenance`（`/api/maintenances` 為別名） | 保養週期 |                          |
-| `/api/orders`               | 訂單                      |                              |
-| `/api/reports`              | 報表排程                  | `calendarId` 要碰得到          |
-| `/api/attributes/computed`  | 計算屬性                  | 只有 admin 能寫                |
+| 路徑                                             | 資源                | 寫入時的額外檢查               |
+| ------------------------------------------------ | ------------------- | ------------------------------ |
+| `/api/groups`                                    | 群組（最多三層）    | 父群組要碰得到、樹不能超過三層 |
+| `/api/geofences`                                 | 圍欄（Traccar WKT） | `calendarId` 要碰得到          |
+| `/api/calendars`                                 | iCalendar 原文      |                                |
+| `/api/drivers`                                   | 駕駛                |                                |
+| `/api/maintenance`（`/api/maintenances` 為別名） | 保養週期            |                                |
+| `/api/orders`                                    | 訂單                |                                |
+| `/api/reports`                                   | 報表排程            | `calendarId` 要碰得到          |
+| `/api/attributes/computed`                       | 計算屬性            | 只有 admin 能寫                |
 
 每個路徑都是 `GET`（清單）、`GET /{id}`、`POST`、`PUT /{id}`、`DELETE /{id}`。
 清單回**裸陣列**（traccar-web 直接讀），`POST` 回 201、`PUT` 回 200、`DELETE` 回 204；
@@ -873,14 +873,14 @@ M2-3 把母本 `SimpleObjectResource` / `ExtendedObjectResource` 的設定型資
 
 參數照母本：
 
-| 參數                | 語義                                                                 |
-| ------------------- | -------------------------------------------------------------------- |
-| `all`               | 只有 admin 有效：`true` 回全部；省略時回呼叫者自己的授權              |
-| `userId`            | 指定帳號的授權；非 admin 只能填自己，否則 403（`all=true` 時忽略，與母本相同） |
-| `groupId` / `deviceId` | 只看授權給該群組 / 裝置的資源；呼叫者碰不到該群組 / 裝置回 403    |
-| `excludeAttributes` | 不回 `attributes` 欄位                                               |
-| `keyword`           | 對該表的文字欄位做 `ILIKE`                                           |
-| `limit` / `offset`  | 分頁；storage 夾在 1–1000 與 `>= 0`，預設 100                        |
+| 參數                   | 語義                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `all`                  | 只有 admin 有效：`true` 回全部；省略時回呼叫者自己的授權                       |
+| `userId`               | 指定帳號的授權；非 admin 只能填自己，否則 403（`all=true` 時忽略，與母本相同） |
+| `groupId` / `deviceId` | 只看授權給該群組 / 裝置的資源；呼叫者碰不到該群組 / 裝置回 403                 |
+| `excludeAttributes`    | 不回 `attributes` 欄位                                                         |
+| `keyword`              | 對該表的文字欄位做 `ILIKE`                                                     |
+| `limit` / `offset`     | 分頁；storage 夾在 1–1000 與 `>= 0`，預設 100                                  |
 
 授權展開跟母本 `Condition.Permission` 一致：裝置與**群組本身**會從授權的群組往子群組展開
 （最多三層），其餘資源（圍欄、日曆、駕駛、…）只認 `user → 資源` 的直接授權。
@@ -948,12 +948,12 @@ curl 'localhost:8082/api/positions?deviceId=7&limit=2'
 
 匯出（都需要 `read:positions`，只能匯出自己碰得到的裝置；`deviceId` 必填）：
 
-| 端點                     | Content-Type                           | 內容                             |
-| ------------------------ | -------------------------------------- | -------------------------------- |
-| `GET /api/positions/kml` | `application/vnd.google-earth.kml+xml` | 一條 `LineString` 軌跡           |
-| `GET /api/positions/kmz` | `application/vnd.google-earth.kmz`     | 同上的 KML 壓成 `doc.kml`        |
-| `GET /api/positions/csv` | `text/csv`                             | 固定欄位 + 每個 attribute 一欄   |
-| `GET /api/positions/gpx` | `application/gpx+xml`                  | `trkpt` 軌跡                     |
+| 端點                     | Content-Type                           | 內容                           |
+| ------------------------ | -------------------------------------- | ------------------------------ |
+| `GET /api/positions/kml` | `application/vnd.google-earth.kml+xml` | 一條 `LineString` 軌跡         |
+| `GET /api/positions/kmz` | `application/vnd.google-earth.kmz`     | 同上的 KML 壓成 `doc.kml`      |
+| `GET /api/positions/csv` | `text/csv`                             | 固定欄位 + 每個 attribute 一欄 |
+| `GET /api/positions/gpx` | `application/gpx+xml`                  | `trkpt` 軌跡                   |
 
 ```bash
 curl -OJ 'localhost:8082/api/positions/csv?deviceId=7&from=2026-11-01T00:00:00Z&to=2026-11-01T23:59:59Z'
@@ -984,11 +984,11 @@ socket.onmessage = (event) => {
 連上後第一則固定是 `{"positions":[...]}`（該帳號看得到的每台裝置的最新一筆，`DISTINCT ON
 (device_id)`），之後每次變更送一則，形狀與 REST 相同：
 
-| 訊息        | 何時                                               |
-| ----------- | -------------------------------------------------- |
-| `positions` | 每筆處理過的定位（`alert.Pipeline` 的位置 hook）    |
-| `events`    | 規則產生的每一個事件（含寫入佇列漏掉的）            |
-| `devices`   | 裝置上線 / 離線（`session.Manager` 的狀態轉換）     |
+| 訊息        | 何時                                             |
+| ----------- | ------------------------------------------------ |
+| `positions` | 每筆處理過的定位（`alert.Pipeline` 的位置 hook） |
+| `events`    | 規則產生的每一個事件（含寫入佇列漏掉的）         |
+| `devices`   | 裝置上線 / 離線（`session.Manager` 的狀態轉換）  |
 
 每 30 秒送一次 `{}` 當 keepalive（母本 `onKeepalive` 的行為）。用戶端送 `{"logs":true}` 會被
 接受但忽略：這裡沒有 log 串流。訊息依 token 的 scope 分流——`read:positions` / `read:alerts` /
@@ -1207,11 +1207,11 @@ TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmod
 | `gateway.Server` log     | `<protocol>: listening on <addr>`、`<protocol>: decode: ...`、`<protocol>: read: ...`、`<protocol>: frame buffer exceeded N bytes`、`<protocol>: acknowledge command: <err>`（裝置回應已到但 `commands` 寫不回去，連線不受影響）                                                    |
 | `gateway.Dispatcher` log | `dispatch: give up on command <id> of device <id> after <n> attempts`、`dispatch: load pending commands of device <id>: <err>`、`dispatch: re-encode command <id> of device <id>: <err>`、`dispatch: mark command <id> sent/failed: <err>`                                          |
 | `postgres.BatchSink` log | `postgres: batch write (<n> positions): <err>`                                                                                                                                                                                                                                      |
-| `alert.Pipeline` log     | `alert: write <n> reports: <err>`、`alert: queue full, dropped <n> events for device <id>`                                                                                                                                                                                             |
+| `alert.Pipeline` log     | `alert: write <n> reports: <err>`、`alert: queue full, dropped <n> events for device <id>`                                                                                                                                                                                          |
 | `alert` 啟動 log         | `alerts: load geofences: ...`、`alerts: reload geofences: ...`（含單一圍欄解析失敗）、`alerts: load device attributes: ...`、`alerts: reload device attributes: ...`                                                                                                                |
 | `notify.Dispatcher` log  | `notify: webhook, mail enabled`、`notify: <channel>: <err>`、`notify: lookup device <id>: <err>`、`notify: lookup subscriptions for device <id>: <err>`、`notify: queue full, dropped <type> for device <id>`                                                                       |
 | `api.Server` log         | `api: listening on <addr>`、`api: lookup token: <err>`、`api: query events: <err>`、`api: query positions: <err>`、`api: query devices: <err>`、`api: query commands: <err>`、`api: record command <type> for device <id>: <err>`、`api: send command <type> to device <id>: <err>` |
-| CLI 關閉時               | `dropped <n> positions because the queue was full`、`alert: queue full, dropped <n> events for device <id>``、`dropped <n> notifications because the queue was full`                                                                                                                         |
+| CLI 關閉時               | `dropped <n> positions because the queue was full`、`alert: queue full, dropped <n> events for device <id>``、`dropped <n> notifications because the queue was full`                                                                                                                |
 | `GET /api/health`        | `200 {"status":"ok","database":"ok"}`；資料庫 ping 失敗回 `503 {"status":"unavailable","database":"unavailable"}`（driver 錯誤只進 log，不外洩）                                                                                                                                    |
 | 記憶體模式 sink          | 每筆 position 一行 JSON（`log.Printf("position %s", ...)`）                                                                                                                                                                                                                         |
 
@@ -1344,27 +1344,27 @@ scrape_configs:
 
 ## 架構比對
 
-| 層       | traccar-master（Java）                                                                              | go_server 現況                                               | 差距                                                                                                                   |
-| -------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| 協議     | `protocol/` 272 個 `*ProtocolDecoder`，共用 HTTP / MQTT / poller 基底                               | 10 個（H02 / GT06 / JT808 / Teltonika / OsmAnd / MQTT / GPS103 / TK103 / Meitrack / Wondex），純函式 | 262 個；HTTP / MQTT / poller / UDP / TLS 基底已就位                                                                     |
-| 傳輸     | `ServerManager` + `TrackerServer`：TCP / UDP、TLS、每協議一個埠、`TrackerConnector` 主動連線        | `gateway.Server` 每協議一個 TCP listener                     | 無 UDP、無 TLS、無 client 模式                                                                                         |
-| 連線狀態 | `session/ConnectionManager`、`session/state`（motion / overspeed 狀態機）、`session/cache` 圖狀快取 | `gateway.DeviceDirectory` + `LocationCache`                  | 無 online / offline / timeout 與事件、無狀態機、無快取圖                                                               |
-| 處理管線 | `ProcessingHandler`：19 段 position handler + 12 段 event handler + `PostProcessHandler`            | 固定兩段：`alert.Pipeline`（4 條規則）→ `postgres.BatchSink` | position 只對應到 `GeofenceHandler` 的一部分，event 只對應到 Overspeed / Alarm / Geofence 的一部分，且管線寫死不可插拔 |
-| 資料模型 | `model/` 40 個類別                                                                                  | `internal/model` 18 檔 33 個型別（含 Group / Geofence / Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute） | 缺 media / geocoder / forward 等週邊型別                                                                               |
-| 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL + `resourceSpec` 共用 CRUD，19 張表                 | 缺的 31 張以 M4–M6 的週邊為主，且沒有通用查詢建構器                                                                     |
-| 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + 通用 `permissions` 表（user / group / device → 任何資源），group 最多三層 | 缺 `managedUser`（管理員代管下屬）與分享帳號到期自動清理                                                               |
-| REST     | 25 個 resource、81 個端點                                                                           | 120+ 條路由（資源 CRUD、單筆裝置 / 事件、四種位置匯出、WebSocket、protocol / server / session / statistics / audit、commands 下發、報表、媒體） | 影像串流端點                                                                                                            |
-| 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 25 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名） | 日曆限制與 media 檔案欄位待 M7-3                                                                                       |
-| 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email + telegram / pushover / sms（HTTP / SNS）/ firebase / traccar push / whatsapp + Velocity 子集模板 | `command` notificator（告警轉命令）還沒接                                                              |
-| 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | json / url / mqtt / redis / wialon（`internal/forward`，每個目的地一條佇列 + 退避重試） | amqp / kafka                                                                                                           |
-| 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | route / trips / stops / summary / events / geofences / devices / combined + CSV / GPX / KML / XLSX | 油耗事件差值、calendar 過濾                                                                                            |
-| 排程     | `schedule/` 8 個 task                                                                               | expiration / cleanup / reports / health 四個 task（`internal/schedule`，間隔可設、預設關閉） | database export、media cleanup                                                                                          |
-| 地理加值 | 28 個 geocoder 檔、`speedlimit/`、`mapmatcher/`、`geolocation/`                                     | Nominatim / Google geocoder、Overpass 速限、Mapbox 吸附、Google 基地台定位，全部有 TTL + 檔案快取 | geocoder 只剩 2 家；matcher 沒有消費端                                                                                 |
-| 設定     | `Config` + 267 個 `Keys`，支援 `protocol.<name>.<key>`                                              | 38 個 command line flag                                      | 無設定檔、無 per-protocol、無動態重載                                                                                  |
-| 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | `internal/websocket` + `/api/socket`：位置 / 事件 / 裝置狀態  | 沒有 log 串流與 multi-node broadcast（母本 `BaseBroadcastService`）                                                    |
-| 安全     | token、OIDC、LDAP、`api/signature`                                                                  | token、密碼登入                                              | OIDC / LDAP / 簽章                                                                                                     |
-| 媒體     | `media/`、`MediaEventHandler`、`VideoStreamResource`                                                | 上傳 / 列表 / 下載 / 刪除（`internal/media` + `/api/media`），`MediaRule` 已有 | 影像串流                                                                                                               |
-| 歷史統計 | `tc_statistics` + `StatisticsManager`                                                               | `statistics` 每分鐘增量列（`internal/stats`）+ `/metrics`（即時） | device 等級的細分                                                                                                      |
+| 層       | traccar-master（Java）                                                                              | go_server 現況                                                                                                                                  | 差距                                                                                                                   |
+| -------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 協議     | `protocol/` 272 個 `*ProtocolDecoder`，共用 HTTP / MQTT / poller 基底                               | 10 個（H02 / GT06 / JT808 / Teltonika / OsmAnd / MQTT / GPS103 / TK103 / Meitrack / Wondex），純函式                                            | 262 個；HTTP / MQTT / poller / UDP / TLS 基底已就位                                                                    |
+| 傳輸     | `ServerManager` + `TrackerServer`：TCP / UDP、TLS、每協議一個埠、`TrackerConnector` 主動連線        | `gateway.Server` 每協議一個 TCP listener                                                                                                        | 無 UDP、無 TLS、無 client 模式                                                                                         |
+| 連線狀態 | `session/ConnectionManager`、`session/state`（motion / overspeed 狀態機）、`session/cache` 圖狀快取 | `gateway.DeviceDirectory` + `LocationCache`                                                                                                     | 無 online / offline / timeout 與事件、無狀態機、無快取圖                                                               |
+| 處理管線 | `ProcessingHandler`：19 段 position handler + 12 段 event handler + `PostProcessHandler`            | 固定兩段：`alert.Pipeline`（4 條規則）→ `postgres.BatchSink`                                                                                    | position 只對應到 `GeofenceHandler` 的一部分，event 只對應到 Overspeed / Alarm / Geofence 的一部分，且管線寫死不可插拔 |
+| 資料模型 | `model/` 40 個類別                                                                                  | `internal/model` 18 檔 33 個型別（含 Group / Geofence / Calendar / Driver / Maintenance / Order / Report / Statistics / Attribute）             | 缺 media / geocoder / forward 等週邊型別                                                                               |
+| 儲存     | `Storage` 泛型 + `QueryBuilder`，50 張 `tc_*` 表                                                    | 手寫 SQL + `resourceSpec` 共用 CRUD，19 張表                                                                                                    | 缺的 31 張以 M4–M6 的週邊為主，且沒有通用查詢建構器                                                                    |
+| 權限     | `Permission` + `PermissionsService` + `tc_user_*` / `tc_device_*` 多對多，group 最多三層            | scope + 通用 `permissions` 表（user / group / device → 任何資源），group 最多三層                                                               | 缺 `managedUser`（管理員代管下屬）與分享帳號到期自動清理                                                               |
+| REST     | 25 個 resource、81 個端點                                                                           | 120+ 條路由（資源 CRUD、單筆裝置 / 事件、四種位置匯出、WebSocket、protocol / server / session / statistics / audit、commands 下發、報表、媒體） | 影像串流端點                                                                                                           |
+| 事件     | `Event.TYPE_*` 23 種，寫在 `tc_events`                                                              | 25 種，寫在 `events`，路由是 `/api/events`（`/api/alerts` 為別名）                                                                              | 日曆限制與 media 檔案欄位待 M7-3                                                                                       |
+| 通知     | 9 個 notificator + `TextTemplateFormatter`                                                          | webhook + email + telegram / pushover / sms（HTTP / SNS）/ firebase / traccar push / whatsapp + Velocity 子集模板                               | `command` notificator（告警轉命令）還沒接                                                                              |
+| 外送     | `forward/` 4 個 event + 7 個 position forwarder                                                     | json / url / mqtt / redis / wialon（`internal/forward`，每個目的地一條佇列 + 退避重試）                                                         | amqp / kafka                                                                                                           |
+| 報表     | 8 個 report provider + CSV / GPX / KML 匯出                                                         | route / trips / stops / summary / events / geofences / devices / combined + CSV / GPX / KML / XLSX                                              | 油耗事件差值、calendar 過濾                                                                                            |
+| 排程     | `schedule/` 8 個 task                                                                               | expiration / cleanup / reports / health 四個 task（`internal/schedule`，間隔可設、預設關閉）                                                    | database export、media cleanup                                                                                         |
+| 地理加值 | 28 個 geocoder 檔、`speedlimit/`、`mapmatcher/`、`geolocation/`                                     | Nominatim / Google geocoder、Overpass 速限、Mapbox 吸附、Google 基地台定位，全部有 TTL + 檔案快取                                               | geocoder 只剩 2 家；mapmatcher 已接進 pipeline 當 route 報表吸附（2026-11-02）                                         |
+| 設定     | `Config` + 267 個 `Keys`，支援 `protocol.<name>.<key>`                                              | 38 個 command line flag                                                                                                                         | 無設定檔、無 per-protocol、無動態重載                                                                                  |
+| 即時推播 | `api/AsyncSocket`（WebSocket）                                                                      | `internal/websocket` + `/api/socket`：位置 / 事件 / 裝置狀態                                                                                    | 沒有 log 串流與 multi-node broadcast（母本 `BaseBroadcastService`）                                                    |
+| 安全     | token、OIDC、LDAP、`api/signature`                                                                  | token、密碼登入                                                                                                                                 | OIDC / LDAP / 簽章                                                                                                     |
+| 媒體     | `media/`、`MediaEventHandler`、`VideoStreamResource`                                                | 上傳 / 列表 / 下載 / 刪除（`internal/media` + `/api/media`），`MediaRule` 已有                                                                  | 影像串流                                                                                                               |
+| 歷史統計 | `tc_statistics` + `StatisticsManager`                                                               | `statistics` 每分鐘增量列（`internal/stats`）+ `/metrics`（即時）                                                                               | device 等級的細分                                                                                                      |
 
 Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純函式（`[]byte` → `*model.Position`，可用 Java 測試向量直接斷言）、
 `BatchSink` 非阻塞批次寫入、`/metrics` 零依賴、`cmd/device-sim` 能重播場景。任何一個里程碑都不准把它們換掉。
@@ -1748,16 +1748,15 @@ Go 這邊已經贏母本、後面計畫不准動到的四件事：codec 是純�
     背景查詢），REST `GET /api/server/speedlimit` 才用會等的 `Fetch`。
   - `Locator`：Google Geolocation API，`considerIp=false`（不然未知裝置會全部落在機房），用
     cell 當 key 快取；Go 專有的 `POST /api/server/geolocation` 讓這條服務能被呼叫。
-  - `Matcher`：Mapbox map matching（`mapmatcher.key`，Mapbox 要吃 lon,lat 順序），有測試但**目前
-    沒有呼叫端**：母本用它的是 route 報表，這個 repo 的 route 報表還沒接吸附。
+  - `Matcher`：Mapbox map matching（`mapmatcher.key`，Mapbox 要吃 lon,lat 順序），有測試；**已接上\n 消費端（2026-11-02）**：以 `mapMatcher` 鏈節（`handler.StageMapMatcher`）掛進 position pipeline\n （motion 之後、geofence / distance / 報表之前），有效定位會被吸附到道路，route 報表因此吃到的是\n 貼路座標；缺 key 或沒 match 就保留原座標。快取獨立存 `mapmatcher.cache.file`（缺省回退共用\n `geocoder.cache.file`），避免與 speedlimit 快取互覆寫。
   - 設定：`geocoder.enable|type|url|key|language|cache`、`geocoder.cache.file`、`geocoder.timeout`、
-    `speedlimit.enable|url|radius|cache`、`mapmatcher.enable|url|key|radius`、
+    `speedlimit.enable|url|radius|cache`、`mapmatcher.enable|url|key|radius|cache|cache.file`、
     `geolocation.enable|url|key|cache`。沒給 key 的服務一律視為關閉並在啟動時講一次，不會每個請求
     都去撞牆。
   - 測試：`internal/geo/geo_test.go`（兩家 geocoder、429 失敗、速限非阻塞 + 快取 + 無路可查、
     maxspeed 單位、stage 寫屬性、cell 快取、mapbox 座標順序、快取持久化 / 過期、設定缺 key 視為
     關閉）、`internal/api/admin_test.go` 的三條新路由。全部用假 `http.RoundTripper`，不連外。
-  - 偏差：mapmatcher 沒有消費端；geocoder 沒有 Java 的 `geocoder.format` 與多語系回退；speedlimit
+  - 偏差：geocoder 沒有 Java 的 `geocoder.format` 與多語系回退；speedlimit
     只查 Overpass，沒有母本的其他 provider。
 
 ### M7 運維與規模（M）
@@ -1862,16 +1861,16 @@ M2 與 M6-2 都是「一直往裡加」的長工，適合跟其他里程碑交�
 
 逐條對過程式與母本（`traccar-master`）：
 
-| 建議                                                         | 判定                | 依據                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OsmAnd 走 HTTP GET/POST，例 `/5055?id=…&lat=…&lon=…&speed=…` | ✅ 正確（已實作）   | 母本 `ProtocolConfig` 給 OsmAnd 的預設埠就是 5055；`OsmAndProtocolDecoder` 除了 query string 也吃 `application/json` body，欄位還有 `timestamp`、`location`、`cell`、`wifi`、`valid`。Go 這邊 M6-1 已做 query string 版（`internal/protocol/osmand`，`http` transport，預設 5055），JSON body 與 `location` / `cell` / `wifi` 尚未支援。 |
-| GT06 要注意 `NT_MODELS` 的欄位版面差異                       | ✅ 正確             | `0x22` / `0x25` 的 NT 版面已實作，見上面 GT06 段與「已知限制」。                                                                                                                                                                        |
-| JT808 的 `0x7E` ↔ `0x7D02` / `0x7D01` 轉義要穩               | ✅ 正確             | `internal/protocol/jt808/frame.go` 已處理，另含 `0xE7` 分隔符與 `0xE6` / `0x3E` 轉義表。                                                                                                                                                |
-| JT808 多包拼包要穩                                           | ❌ 目前沒有         | 標頭只取 `bodyLength = attribute & 0x03ff`，沒看分包旗標 `0x2000`；帶分包旗標的 `0x0200` 會被當成完整訊息解析。這是真缺口，不是「穩定度」問題。                                                                                         |
-| JT808 用流水號（Serial Number）精確 ACK 配對                 | ✅ 正確             | `codec.SerialSource` 給每筆命令號碼並存 `commands.serial`，`0x0001` 回應的流水號對回那一列；重送沿用同一個號碼。                                                                                                                        |
-| GT06 / H02 沒有可配對的欄位，維持「最新一筆 sent」收尾       | ✅ 結論對，理由要修 | 協議本身不是沒有欄位：GT06 的 `0x80` 回應帶命令索引、H02 的 `R12` 帶應答序號。是母本的 encoder 把 GT06 索引固定寫 0，兩邊的回應都不足以區分多筆在等回應的命令，所以只能收最新那列。                                                     |
-| 加 `/api/socket` 推播 position / alert                       | ✅ 正確且是缺口     | 母本是 `api/AsyncSocketServlet`；本 repo 的 roadmap M3-3 已列同一件事。                                                                                                                                                                 |
-| 佇列在記憶體，重啟會遺失排隊中指令                           | ⚠️ 只對一半         | 接 `-dsn` 時命令先寫進 `commands` 表，重啟後裝置重連會把 `pending` 列重新編碼補送（`Dispatcher.PendingCommands`）；真的會丟的只有記憶體模式。搬到 Redis / NATS 的正當理由是**多節點共用**與縮短復原時間，不是「重啟遺失」。             |
+| 建議                                                         | 判定                  | 依據                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OsmAnd 走 HTTP GET/POST，例 `/5055?id=…&lat=…&lon=…&speed=…` | ✅ 正確（已實作）     | 母本 `ProtocolConfig` 給 OsmAnd 的預設埠就是 5055；`OsmAndProtocolDecoder` 除了 query string 也吃 `application/json` body，欄位還有 `timestamp`、`location`、`cell`、`wifi`、`valid`。Go 這邊 M6-1 已做 query string 版（`internal/protocol/osmand`，`http` transport，預設 5055），JSON body 與 `location` / `cell` / `wifi` 尚未支援。 |
+| GT06 要注意 `NT_MODELS` 的欄位版面差異                       | ✅ 正確               | `0x22` / `0x25` 的 NT 版面已實作，見上面 GT06 段與「已知限制」。                                                                                                                                                                                                                                                                         |
+| JT808 的 `0x7E` ↔ `0x7D02` / `0x7D01` 轉義要穩               | ✅ 正確               | `internal/protocol/jt808/frame.go` 已處理，另含 `0xE7` 分隔符與 `0xE6` / `0x3E` 轉義表。                                                                                                                                                                                                                                                 |
+| JT808 多包拼包要穩                                           | ✅ 已修（2026-11-02） | 標頭已看分包旗標 `0x2000`；帶旗標的 `0x0200` 不再被當完整訊息解析（decoder 回 `Consumed: false`，零位置、零回應）。多包跨幀重組未實作，見「已知限制」。                                                                                                                                                                                  |
+| JT808 用流水號（Serial Number）精確 ACK 配對                 | ✅ 正確               | `codec.SerialSource` 給每筆命令號碼並存 `commands.serial`，`0x0001` 回應的流水號對回那一列；重送沿用同一個號碼。                                                                                                                                                                                                                         |
+| GT06 / H02 沒有可配對的欄位，維持「最新一筆 sent」收尾       | ✅ 結論對，理由要修   | 協議本身不是沒有欄位：GT06 的 `0x80` 回應帶命令索引、H02 的 `R12` 帶應答序號。是母本的 encoder 把 GT06 索引固定寫 0，兩邊的回應都不足以區分多筆在等回應的命令，所以只能收最新那列。                                                                                                                                                      |
+| 加 `/api/socket` 推播 position / alert                       | ✅ 正確且是缺口       | 母本是 `api/AsyncSocketServlet`；本 repo 的 roadmap M3-3 已列同一件事。                                                                                                                                                                                                                                                                  |
+| 佇列在記憶體，重啟會遺失排隊中指令                           | ⚠️ 只對一半           | 接 `-dsn` 時命令先寫進 `commands` 表，重啟後裝置重連會把 `pending` 列重新編碼補送（`Dispatcher.PendingCommands`）；真的會丟的只有記憶體模式。搬到 Redis / NATS 的正當理由是**多節點共用**與縮短復原時間，不是「重啟遺失」。                                                                                                              |
 
 接下來可以挑一條
 
@@ -1880,4 +1879,27 @@ M2 與 M6-2 都是「一直往裡加」的長工，適合跟其他里程碑交�
   `POST /api/commands` → 裝置重連後 `sent` 都成立。順帶修掉 `0009_commands_delivery.sql`
   讓全新資料庫連 migration 都過不了的問題：`splitStatements` 把註解裡的 `;` 當成語句結尾。
 - M3-3 WebSocket /api/socket + 接 traccar_web_ts 前端——你原本想要「看得見」的介面就是這條。
-- JT808 分包（0x2000）——上次核對時找到的真缺口：帶分包旗標的 `0x2000` 現在會被當完整訊息解成垃圾位置。這條最適合先補一個會紅的測試再修。
+- ~~JT808 分包（0x2000）~~ **已完成（2026-11-02）**：decoder 偵測分包旗標即不取該幀（`Consumed: false`、零位置、零回應），不再把 `0x0200` 解成垃圾位置。先補紅測試 `TestSubPacketNotMisparsed` 再修。多包跨幀重組是未解缺口。
+
+建議的下一步方向
+
+[x]1. 修補 JT808 分包支援 (0x2000) —— 強化協議健壯性
+內容：處理之前核對時發現的真缺口——JT808 帶分包旗標 (0x2000) 的訊息。目前若遇到大封包或分包傳輸，可能會被誤解為完整訊息而解析出錯誤座標。
+
+效益：確保實體設備在複雜網路環境下傳送大封包時的穩定性。
+
+[x]2. ~~串接 Mapmatcher 消費端（打通 Route 報表） —— 讓地理加值落地~~ **已完成（2026-11-02）**：以 `mapMatcher` 鏈節（`handler.StageMapMatcher`）掛進 position pipeline，有效定位經 `Matcher.Snap` 吸附到道路，route 報表因此吃到貼路座標。快取獨立存 `mapmatcher.cache.file`（缺省回退共用 `geocoder.cache.file`）。
+
+[x]3. 補齊 M6-2 剩餘的二進位協議 (eelink / ruptela / suntech / watch)
+內容：如果手邊剛好有這四款設備的測試向量或客戶有指定需求，可以依循現有的架構將這四支二進位協議補齊。
+
+效益：擴大支援的硬體生態系。
+
+[ ] 4. 生產環境架構演進（命令佇列外部化 / 效能快取）
+內容：
+
+命令佇列外部化：將目前存在記憶體的命令佇列與派送狀態搬到 Redis / NATS，支援多節點橫向擴展與重啟不丟失。
+
+Token / 裝置清單快取：為高頻的 Token 驗證與裝置擁有權查詢加上帶版本號的快取，減少資料庫 Round Trip。
+
+效益：為未來的高併發、多實例（Multi-node）部署做好準備。

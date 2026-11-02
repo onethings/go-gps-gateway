@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"traccar-server_go/go_server/internal/handler"
+	"traccar-server_go/go_server/internal/model"
 )
 
 // Matcher snaps a coordinate onto the nearest road. The implementation talks to
@@ -30,7 +33,7 @@ func NewMatcher(settings Settings, client *http.Client) *Matcher {
 		key:     settings.MapMatcher.Key,
 		radius:  settings.MapMatcher.Radius,
 		client:  client,
-		cache:   NewCache(DefaultCacheTTL, settings.CacheFile),
+		cache:   NewCache(settings.MapMatcher.Cache, settings.MapMatcher.CacheFile),
 	}
 }
 
@@ -102,6 +105,33 @@ func (m *Matcher) query(ctx context.Context, latitude, longitude float64) ([2]fl
 		return result, false, nil
 	}
 	return [2]float64{point[1], point[0]}, true, nil
+}
+
+// MapMatcherStage is the chain stage that snaps a valid position's coordinates
+// onto the nearest road. It mirrors the Java server's MapMatcherHandler, which
+// rewrites the position before distance, geofence and report stages see it.
+type MapMatcherStage struct {
+	// Matcher is the snapping service. A nil matcher leaves the position alone.
+	Matcher *Matcher
+}
+
+// Name implements handler.PositionHandler.
+func (s MapMatcherStage) Name() string { return handler.StageMapMatcher }
+
+// HandlePosition implements handler.PositionHandler. Only a valid GPS fix is
+// snapped; a position without one is left alone. A missing match keeps the
+// original coordinate, exactly as the Mapbox API reports an unsnapped point.
+func (s MapMatcherStage) HandlePosition(
+	ctx context.Context, position *model.Position, next handler.Next,
+) error {
+	if s.Matcher != nil && position != nil && position.Valid {
+		latitude, longitude, ok := s.Matcher.Snap(ctx, position.Latitude, position.Longitude)
+		if ok {
+			position.Latitude = latitude
+			position.Longitude = longitude
+		}
+	}
+	return next(ctx, position)
 }
 
 func formatPair(latitude, longitude float64) string {

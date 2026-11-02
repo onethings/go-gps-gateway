@@ -54,6 +54,16 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		return &codec.Result{}, nil
 	}
 
+	// A sub-packet (分包) is one fragment of a larger transmission; its body
+	// begins with the sub-packet header (total packet count and packet sequence
+	// number) rather than a full message body. Treating it as a whole message
+	// would misread that header as location data and record a bogus position, so
+	// it is deliberately not consumed or acknowledged.
+	if h.subPacket {
+		result.Consumed = false
+		return result, nil
+	}
+
 	uniqueID := decodeID(h.id)
 	result.UniqueID = uniqueID
 

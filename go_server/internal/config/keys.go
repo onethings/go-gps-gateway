@@ -150,6 +150,8 @@ const (
 	MapMatcherURL     = "mapmatcher.url"
 	MapMatcherKey     = "mapmatcher.key"
 	MapMatcherRadius  = "mapmatcher.radius"
+	MapMatcherCache   = "mapmatcher.cache"
+	MapMatcherCacheFile = "mapmatcher.cache.file"
 	GeolocationEnable = "geolocation.enable"
 	GeolocationURL    = "geolocation.url"
 	GeolocationKey    = "geolocation.key"
@@ -314,6 +316,8 @@ var KnownKeys = []string{
 	MapMatcherURL,
 	MapMatcherKey,
 	MapMatcherRadius,
+	MapMatcherCache,
+	MapMatcherCacheFile,
 	GeolocationEnable,
 	GeolocationURL,
 	GeolocationKey,

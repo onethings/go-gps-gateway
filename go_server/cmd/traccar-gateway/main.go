@@ -111,6 +111,7 @@ func main() {
 		state         *eventState
 		forwarder     *forward.Service
 		speedLimit    *geo.SpeedLimits
+		mapMatcher    *geo.Matcher
 		locator       *geo.Locator
 		scheduler     *schedule.Scheduler
 		geoSettings   = geo.ReadSettings(settings.Config)
@@ -245,6 +246,14 @@ func main() {
 			}
 			stages[handler.StageSpeedLimit] = geo.Stage{Limits: speedLimit}
 			log.Printf("geo: speed limits enabled via %s", geoSettings.SpeedLimit.URL)
+		}
+		if geoSettings.MapMatcher.Enabled {
+			mapMatcher = geo.NewMatcher(geoSettings, nil)
+			if err := mapMatcher.Load(); err != nil {
+				log.Printf("geo: load map matcher cache: %v", err)
+			}
+			stages[handler.StageMapMatcher] = geo.MapMatcherStage{Matcher: mapMatcher}
+			log.Printf("geo: map matching enabled via %s", geoSettings.MapMatcher.URL)
 		}
 
 		// The chain is the ProcessingHandler: the alert pipeline is the business
@@ -591,6 +600,14 @@ func main() {
 		cancel()
 		if err := speedLimit.Save(); err != nil {
 			log.Printf("geo: save speed limit cache: %v", err)
+		}
+	}
+
+	// The map matcher writes its snapped-coordinate cache to the same file, so
+	// it is persisted together with the speed limits.
+	if mapMatcher != nil {
+		if err := mapMatcher.Save(); err != nil {
+			log.Printf("geo: save map matcher cache: %v", err)
 		}
 	}
 

@@ -273,6 +273,53 @@ func TestMatcherWithoutAKeyKeepsTheCoordinate(t *testing.T) {
 	}
 }
 
+func TestMapMatcherStageSnapsThePosition(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return respond(http.StatusOK,
+			`{"code":"Ok","matchings":[{"geometry":{"coordinates":[[24.0177,54.9454]]}}]}`), nil
+	})}
+	stage := MapMatcherStage{Matcher: NewMatcher(testSettings(), client)}
+
+	position := model.NewPosition("test")
+	position.Latitude = 54.94535
+	position.Longitude = 24.01762
+	position.Valid = true
+
+	called := false
+	if err := stage.HandlePosition(context.Background(), position,
+		func(context.Context, *model.Position) error {
+			called = true
+			return nil
+		}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if !called {
+		t.Fatal("the stage dropped the position")
+	}
+	if position.Latitude != 54.9454 || position.Longitude != 24.0177 {
+		t.Fatalf("coordinate = %v,%v, want the snapped point",
+			position.Latitude, position.Longitude)
+	}
+}
+
+func TestMapMatcherStageLeavesAnInvalidFixAlone(t *testing.T) {
+	stage := MapMatcherStage{Matcher: NewMatcher(testSettings(), nil)}
+
+	position := model.NewPosition("test")
+	position.Latitude = 54.94535
+	position.Longitude = 24.01762
+	position.Valid = false
+
+	if err := stage.HandlePosition(context.Background(), position,
+		func(context.Context, *model.Position) error { return nil }); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if position.Latitude != 54.94535 || position.Longitude != 24.01762 {
+		t.Fatalf("an invalid fix was moved to %v,%v",
+			position.Latitude, position.Longitude)
+	}
+}
+
 func TestCachePersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache", "geo.json")
 	cache := NewCache(time.Hour, path)

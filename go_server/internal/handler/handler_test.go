@@ -17,6 +17,7 @@ func TestHandlerOrder(t *testing.T) {
 		"defaultData",
 		"position",
 		"motion",
+		"mapMatcher",
 		"geofence",
 		"computedAttributes",
 		"speedLimit",

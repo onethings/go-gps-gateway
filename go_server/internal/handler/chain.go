@@ -25,6 +25,10 @@ const (
 	StagePosition = "position"
 	// StageMotion turns position deltas into moving / stopped state.
 	StageMotion = "motion"
+	// StageMapMatcher snaps a position's coordinates onto the nearest road, so
+	// geofence, distance and the reports work on the road instead of the raw
+	// fix.
+	StageMapMatcher = "mapMatcher"
 	// StageGeofence matches the position against the geofences.
 	StageGeofence = "geofence"
 	// StageComputedAttributes evaluates the attributes configured on the device.
@@ -56,6 +60,7 @@ var Order = []string{
 	StageDefaultData,
 	StagePosition,
 	StageMotion,
+	StageMapMatcher,
 	StageGeofence,
 	StageComputedAttributes,
 	StageSpeedLimit,

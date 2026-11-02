@@ -17,6 +17,23 @@ func CRC16X25(data []byte) int {
 	return crc ^ 0xFFFF
 }
 
+// CRC16Kermit computes the CRC-16/KERMIT checksum (poly 0x1021 reflected, init
+// 0x0000, no final XOR) used by the Ruptela family.
+func CRC16Kermit(data []byte) int {
+	crc := 0x0000
+	for _, b := range data {
+		crc ^= int(b)
+		for i := 0; i < 8; i++ {
+			if crc&1 != 0 {
+				crc = crc>>1 ^ 0x8408
+			} else {
+				crc >>= 1
+			}
+		}
+	}
+	return crc
+}
+
 // CRC16IBM computes the CRC-16/IBM checksum (poly 0x8005 reflected, init
 // 0x0000) used by the Teltonika codecs.
 func CRC16IBM(data []byte) int {

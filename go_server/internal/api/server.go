@@ -12,6 +12,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -314,6 +317,7 @@ func (s *Server) Handler() http.Handler {
 	// Account administration. These routes answer 501 when no UserStore is
 	// configured and 403 for callers that are not admins.
 	mux.HandleFunc("GET /api/users", s.handleUsers)
+	mux.HandleFunc("GET /api/users/{id}", s.handleUser)
 	mux.HandleFunc("POST /api/users", s.handleCreateUser)
 	mux.HandleFunc("PUT /api/users/{id}", s.handleUpdateUser)
 	mux.HandleFunc("DELETE /api/users/{id}", s.handleDeleteUser)
@@ -352,14 +356,72 @@ func (s *Server) Handler() http.Handler {
 	s.registerMediaRoutes(mux)
 	s.registerExtensionRoutes(mux)
 
-	var handler http.Handler = mux
+	var apiHandler http.Handler = mux
 	if s.apiKey != "" || s.tokens != nil {
-		handler = RequireAuth(s.apiKey, s.tokens, s.logf, mux)
+		apiHandler = RequireAuth(s.apiKey, s.tokens, s.logf, mux)
 	}
 	if s.requestCounter != nil {
-		handler = countRequests(s.requestCounter, handler)
+		apiHandler = countRequests(s.requestCounter, apiHandler)
 	}
-	return handler
+
+	// web.path is the traccar-web build. Serving it from the API origin keeps
+	// the session cookie and the WebSocket on the same host, which is how the
+	// Java server exposes the interface as well.
+	if s.webPath != "" {
+		return s.staticHandler(apiHandler)
+	}
+	return apiHandler
+}
+
+// staticHandler serves the web build from web.path. Requests under /api and
+// /metrics go to the API; everything else is a file, or index.html so the
+// single-page app owns its client-side routes.
+func (s *Server) staticHandler(apiHandler http.Handler) http.Handler {
+	root, err := filepath.Abs(s.webPath)
+	if err != nil {
+		s.logf("api: resolve web root %q: %v", s.webPath, err)
+		return apiHandler
+	}
+
+	files := http.FileServer(http.Dir(root))
+	index := filepath.Join(root, "index.html")
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPIPath(r.URL.Path) {
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if name != "" {
+			for _, segment := range strings.Split(name, "/") {
+				if strings.HasPrefix(segment, ".") {
+					writeError(w, http.StatusNotFound, errors.New("not found"))
+					return
+				}
+			}
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(name))); err == nil {
+				files.ServeHTTP(w, r)
+				return
+			}
+		}
+		if _, err := os.Stat(index); err != nil {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		http.ServeFile(w, r, index)
+	})
+}
+
+// isAPIPath reports whether the path belongs to the JSON API or the metrics
+// endpoint, which the static handler must not shadow.
+func isAPIPath(urlPath string) bool {
+	return urlPath == "/metrics" || urlPath == "/api" || strings.HasPrefix(urlPath, "/api/")
 }
 
 // Counter is the one method the request counter needs, so the package does not
@@ -651,10 +713,14 @@ func intersectDeviceIDs(current, extra []int64) []int64 {
 }
 
 type positionResponse struct {
-	ID         int64          `json:"id"`
-	DeviceID   int64          `json:"deviceId"`
-	Protocol   string         `json:"protocol"`
-	DeviceTime time.Time      `json:"deviceTime"`
+	ID       int64  `json:"id"`
+	DeviceID int64  `json:"deviceId"`
+	Protocol string `json:"protocol"`
+	// DeviceTime is the timestamp the device reported.
+	DeviceTime time.Time `json:"deviceTime"`
+	// FixTime is the timestamp traccar-web sorts and labels positions by. The
+	// Go model keeps a single time, so it repeats DeviceTime.
+	FixTime    time.Time      `json:"fixTime"`
 	ServerTime time.Time      `json:"serverTime"`
 	Valid      bool           `json:"valid"`
 	Latitude   float64        `json:"latitude"`
@@ -663,15 +729,11 @@ type positionResponse struct {
 	Speed      float64        `json:"speed"`
 	Course     float64        `json:"course"`
 	Accuracy   float64        `json:"accuracy"`
+	Address    string         `json:"address,omitempty"`
 	Attributes map[string]any `json:"attributes"`
 	// GeofenceIDs are the geofences containing the position, written by the
 	// geofence stage. Absent when the position is outside every geofence.
 	GeofenceIDs []int64 `json:"geofenceIds,omitempty"`
-}
-
-type positionsResponse struct {
-	Positions []positionResponse `json:"positions"`
-	Count     int                `json:"count"`
 }
 
 func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
@@ -721,12 +783,9 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 	}
 	positions = insideGeofence(positions, fence)
 
-	response := positionsResponse{
-		Positions: make([]positionResponse, 0, len(positions)),
-		Count:     len(positions),
-	}
+	response := make([]positionResponse, 0, len(positions))
 	for _, position := range positions {
-		response.Positions = append(response.Positions, newPositionResponse(position))
+		response = append(response, newPositionResponse(position))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -779,6 +838,7 @@ func newPositionResponse(position model.Position) positionResponse {
 		DeviceID:    position.DeviceID,
 		Protocol:    position.Protocol,
 		DeviceTime:  position.Time.UTC(),
+		FixTime:     position.Time.UTC(),
 		ServerTime:  position.ServerTime.UTC(),
 		Valid:       position.Valid,
 		Latitude:    position.Latitude,
@@ -787,6 +847,7 @@ func newPositionResponse(position model.Position) positionResponse {
 		Speed:       position.Speed,
 		Course:      position.Course,
 		Accuracy:    position.Accuracy,
+		Address:     attributes.GetString("address", ""),
 		Attributes:  attributes,
 		GeofenceIDs: position.GeofenceIDs,
 	}
@@ -834,6 +895,11 @@ type deviceResponse struct {
 	Contact  string `json:"contact,omitempty"`
 	Category string `json:"category,omitempty"`
 	Disabled bool   `json:"disabled"`
+	// Status is the connection state ("online" / "offline") the session manager
+	// last recorded; traccar-web colours the device list by it.
+	Status string `json:"status"`
+	// GroupID is the parent group, absent for a device outside the tree.
+	GroupID int64 `json:"groupId,omitempty"`
 	// ExpirationTime stays absent while the device never expires; calendarId and
 	// positionId while they are zero.
 	ExpirationTime *time.Time        `json:"expirationTime,omitempty"`
@@ -843,11 +909,6 @@ type deviceResponse struct {
 	// LastUpdate stays absent until the device has reported a position.
 	LastUpdate *time.Time `json:"lastUpdate,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
-}
-
-type devicesResponse struct {
-	Devices []deviceResponse `json:"devices"`
-	Count   int              `json:"count"`
 }
 
 // deviceQueryOptions holds the parameters that decide which devices a caller
@@ -921,12 +982,9 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	includeAttributes := !options.ExcludeAttributes
-	response := devicesResponse{
-		Devices: make([]deviceResponse, 0, len(devices)),
-		Count:   len(devices),
-	}
+	response := make([]deviceResponse, 0, len(devices))
 	for _, device := range devices {
-		response.Devices = append(response.Devices, newDeviceResponse(device, includeAttributes))
+		response = append(response, newDeviceResponse(device, includeAttributes))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -1004,6 +1062,8 @@ func newDeviceResponse(device model.Device, includeAttributes bool) deviceRespon
 		Contact:    device.Contact,
 		Category:   device.Category,
 		Disabled:   device.Disabled,
+		Status:     device.Status,
+		GroupID:    device.GroupID,
 		CalendarID: device.CalendarID,
 		PositionID: device.PositionID,
 		Attributes: optionalAttributes(device.Attributes, includeAttributes),
@@ -1033,6 +1093,7 @@ type deviceCreateRequest struct {
 	Disabled       bool       `json:"disabled"`
 	ExpirationTime *time.Time `json:"expirationTime"`
 	CalendarID     int64      `json:"calendarId"`
+	GroupID        int64      `json:"groupId"`
 }
 
 // deviceUpdateRequest is a replace of the mutable columns. Every scalar field
@@ -1048,7 +1109,21 @@ type deviceUpdateRequest struct {
 	Disabled       bool              `json:"disabled"`
 	ExpirationTime *time.Time        `json:"expirationTime"`
 	CalendarID     int64             `json:"calendarId"`
+	GroupID        int64             `json:"groupId"`
 	Attributes     *model.Attributes `json:"attributes"`
+}
+
+// allowGroup reports whether the caller may place a device in groupID. An
+// admin may; anybody else needs a grant on the group.
+func (s *Server) allowGroup(w http.ResponseWriter, r *http.Request, ctx context.Context, groupID int64) bool {
+	if groupID <= 0 || s.isAdmin(r) {
+		return true
+	}
+	if err := s.checkObjectAccess(ctx, r, permissions.ObjectGroup, groupID); err != nil {
+		s.writeResourceError(w, err)
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
@@ -1083,6 +1158,10 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
+	if !s.allowGroup(w, r, ctx, request.GroupID) {
+		return
+	}
+
 	device, err := s.devices.CreateDevice(ctx, model.DeviceCreate{
 		UniqueID:       request.UniqueID,
 		Name:           strings.TrimSpace(request.Name),
@@ -1094,6 +1173,7 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		Disabled:       request.Disabled,
 		ExpirationTime: optionalTime(request.ExpirationTime),
 		CalendarID:     request.CalendarID,
+		GroupID:        request.GroupID,
 	})
 	if errors.Is(err, model.ErrDuplicateDevice) {
 		writeError(w, http.StatusConflict, fmt.Errorf("device %q already exists", request.UniqueID))
@@ -1151,6 +1231,10 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
+	if !s.allowGroup(w, r, ctx, request.GroupID) {
+		return
+	}
+
 	device, err := s.devices.UpdateDevice(ctx, deviceID, model.DeviceUpdate{
 		Name:           strings.TrimSpace(request.Name),
 		Model:          strings.TrimSpace(request.Model),
@@ -1160,6 +1244,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		Disabled:       request.Disabled,
 		ExpirationTime: optionalTime(request.ExpirationTime),
 		CalendarID:     request.CalendarID,
+		GroupID:        request.GroupID,
 		Attributes:     request.Attributes,
 	})
 	if errors.Is(err, model.ErrDeviceNotFound) {
@@ -1424,11 +1509,6 @@ type commandView struct {
 	DoneAt     *time.Time     `json:"doneAt,omitempty"`
 }
 
-type commandsResponse struct {
-	Commands []commandView `json:"commands"`
-	Count    int           `json:"count"`
-}
-
 // newCommandView renders one command row.
 func newCommandView(command model.Command) commandView {
 	attributes := command.Attributes
@@ -1520,12 +1600,9 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := commandsResponse{
-		Commands: make([]commandView, 0, len(commands)),
-		Count:    len(commands),
-	}
+	response := make([]commandView, 0, len(commands))
 	for _, command := range commands {
-		response.Commands = append(response.Commands, newCommandView(command))
+		response = append(response, newCommandView(command))
 	}
 	writeJSON(w, http.StatusOK, response)
 }

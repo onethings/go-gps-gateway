@@ -86,6 +86,8 @@ type DeviceCreate struct {
 	Disabled       bool
 	ExpirationTime time.Time
 	CalendarID     int64
+	// GroupID is the parent of the device in the group tree, zero for none.
+	GroupID int64
 }
 
 // DeviceUpdate holds the mutable fields of a device. Every field is replaced
@@ -103,5 +105,6 @@ type DeviceUpdate struct {
 	Disabled       bool
 	ExpirationTime time.Time
 	CalendarID     int64
+	GroupID        int64
 	Attributes     *Attributes
 }

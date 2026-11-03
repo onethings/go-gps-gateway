@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Drives the whole REST chain against a real PostgreSQL: device frames land in
+# Drives the whole REST chain against a real database (PostgreSQL or MySQL):
+# device frames land in
 # the positions table, the alert rules write alerts, and a command posted while
 # the device is offline is delivered when that device reconnects.
 #
@@ -81,7 +82,7 @@ post() {
 
 device_id() { # uniqueId protocol
 	get "/api/devices?protocol=$2&limit=1000" |
-		jq -r --arg u "$1" '(.devices // []) | map(select(.uniqueId == $u)) | (.[0].id // 0)'
+		jq -r --arg u "$1" 'map(select(.uniqueId == $u)) | (.[0].id // 0)'
 }
 
 newest_position_id() { # deviceId
@@ -89,7 +90,7 @@ newest_position_id() { # deviceId
 		echo 0
 		return
 	fi
-	get "/api/positions?deviceId=$1&limit=1" | jq -r '(.positions // [])[0].id // 0'
+	get "/api/positions?deviceId=$1&limit=1" | jq -r '.[0].id // 0'
 }
 
 newest_alert_id() {
@@ -98,7 +99,7 @@ newest_alert_id() {
 
 command_status() { # deviceId
 	get "/api/commands?deviceId=$1&limit=1" |
-		jq -r '(.commands // [])[0] | if . == null then "-" else "\(.status) \(.attempts)" end'
+		jq -r '.[0] | if . == null then "-" else "\(.status) \(.attempts)" end'
 }
 
 for tool in curl jq; do
@@ -204,12 +205,12 @@ for scene in $scenes; do
 		continue
 	fi
 
-	count=$(get "/api/positions?deviceId=$id&limit=1000" | jq -r '.count // 0')
+	count=$(get "/api/positions?deviceId=$id&limit=1000" | jq -r 'length')
 	if [[ $count -lt $expected ]]; then
 		fail "$scene: /api/positions returned $count row(s), scene records $expected"
 		continue
 	fi
-	protocol_seen=$(get "/api/positions?deviceId=$id&limit=1" | jq -r '(.positions // [])[0].protocol // ""')
+	protocol_seen=$(get "/api/positions?deviceId=$id&limit=1" | jq -r '.[0].protocol // ""')
 	if [[ -n $protocol && $protocol_seen != "$protocol" ]]; then
 		fail "$scene: newest position protocol is $protocol_seen, want $protocol"
 		continue
@@ -224,20 +225,24 @@ if [[ $registered -eq 0 ]]; then
 fi
 
 alert_after=$alerts_before
+# The device disconnects right after replaying, so a deviceOffline alert can be
+# newer than the overspeed one by the time this runs. Look for the overspeed
+# row the replay produced instead of requiring it to be the newest.
+overspeed_alert_id() {
+	get "/api/alerts?limit=20" |
+		jq -r --argjson before "$alerts_before" \
+			'[.alerts[] | select(.id > $before and .type == "deviceOverspeed")] | (.[0].id // 0)'
+}
+
 for _ in $(seq 1 50); do
-	alert_after=$(newest_alert_id)
+	alert_after=$(overspeed_alert_id)
 	[[ $alert_after -gt $alerts_before ]] && break
 	sleep 0.2
 done
 if [[ $alert_after -le $alerts_before ]]; then
-	fail "no alert was written for the replayed positions (threshold ${overspeed} knots)"
+	fail "no deviceOverspeed alert was written for the replayed positions (threshold ${overspeed} knots)"
 else
-	alert_type=$(get "/api/alerts?limit=1" | jq -r '(.alerts // [])[0].type // ""')
-	if [[ $alert_type != deviceOverspeed ]]; then
-		fail "newest alert type is $alert_type, want deviceOverspeed"
-	else
-		ok "alerts: /api/alerts returned the new $alert_type row (id $alert_after)"
-	fi
+	ok "alerts: /api/alerts returned the new deviceOverspeed row (id $alert_after)"
 fi
 
 gt06_id=${gt06_id:-0}
@@ -289,4 +294,4 @@ if [[ $failures -ne 0 ]]; then
 	exit 1
 fi
 
-echo "==> rest e2e passed: positions, alerts and commands all reached PostgreSQL through the REST API"
+echo "==> rest e2e passed: positions, alerts and commands all reached the database through the REST API"

@@ -110,9 +110,9 @@ func TestPositionsGeofenceFilter(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
 	}
-	response := decodeBodyValue[positionsResponse](t, recorder)
-	if response.Count != 1 || response.Positions[0].ID != 1 {
-		t.Errorf("positions = %+v, want only the one inside the fence", response.Positions)
+	response := decodeBodyValue[[]positionResponse](t, recorder)
+	if len(response) != 1 || response[0].ID != 1 {
+		t.Errorf("positions = %+v, want only the one inside the fence", response)
 	}
 
 	if recorder := get(t, handler, "/api/positions?geofenceId=9"); recorder.Code != http.StatusNotFound {

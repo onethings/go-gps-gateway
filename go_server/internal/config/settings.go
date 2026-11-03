@@ -42,8 +42,9 @@ type Settings struct {
 	BatchInterval time.Duration
 
 	WebAddress string
-	// WebPath is the web root POST /api/server/file/{path} writes into. Empty
-	// disables the upload route.
+	// WebPath is the traccar-web build (index.html and assets). GET serves it
+	// and POST /api/server/file/{path} writes below it, matching the Java
+	// server's web.path. Empty disables both.
 	WebPath string
 
 	// ServerTimeout is how long a device may stay silent before its session is
@@ -233,7 +234,7 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 	binder.text(&binder.raw.http, "http", cfg.String(WebAddress),
 		"REST listen address; empty disables the API")
 	binder.text(&binder.raw.webPath, "web-path", cfg.String(WebPath),
-		"web root an admin may upload files into; empty disables POST /api/server/file")
+		"traccar-web build to serve and receive uploads; empty disables both")
 	binder.text(&binder.raw.apiKey, "api-key", cfg.String(APIKey),
 		"REST API key (defaults to TRACCAR_API_KEY); empty means database tokens only")
 	binder.text(&binder.raw.allowAnonymous, "allow-anonymous", cfg.String(APIAllowAnonymous),

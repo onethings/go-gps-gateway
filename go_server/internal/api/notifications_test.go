@@ -289,8 +289,8 @@ func TestNotificationPresetCRUD(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("list status = %d", recorder.Code)
 	}
-	list := decodeBody[notificationsResponse](t, recorder)
-	if list.Count != 1 || len(list.Notifications) != 1 || list.Notifications[0].ID != created.ID {
+	list := decodeBody[[]notificationResponse](t, recorder)
+	if len(list) != 1 || list[0].ID != created.ID {
 		t.Fatalf("list = %+v", list)
 	}
 

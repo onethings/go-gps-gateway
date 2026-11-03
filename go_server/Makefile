@@ -6,7 +6,8 @@ BINARIES := traccar-gateway device-sim
 
 .DEFAULT_GOAL := help
 .PHONY: help build test race vet fmt smoke rest-e2e run run-db run-sqlite install uninstall \
-	docker-check db-up db-down db-up-mysql db-down-mysql docker-build compose-up compose-down clean
+	docker-check db-up db-down db-up-mysql db-down-mysql docker-build compose-up compose-down \
+	compose-up-mysql compose-down-mysql clean
 
 help: ## list the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -31,7 +32,7 @@ fmt: ## go fmt
 smoke: build ## replay the four protocol scenes against a throwaway gateway
 	BIN_DIR=$(BIN_DIR) SMOKE_NO_BUILD=1 ./scripts/smoke.sh
 
-rest-e2e: build ## replay the scenes with PostgreSQL and check positions, alerts and commands
+rest-e2e: build ## replay the scenes against PostgreSQL or MySQL (DSN) and check positions, alerts and commands
 	BIN_DIR=$(BIN_DIR) REST_E2E_NO_BUILD=1 ./scripts/rest-e2e.sh
 
 run: build ## run with no database: positions are logged as JSON
@@ -80,6 +81,12 @@ compose-up: docker-check ## start gateway + PostgreSQL with docker compose
 
 compose-down: ## stop the compose stack and drop its volume
 	docker compose down -v
+
+compose-up-mysql: docker-check ## start gateway + MySQL with traccar-web in ./web
+	docker compose -f docker-compose.mysql.yml up --build -d
+
+compose-down-mysql: ## stop the MySQL stack and drop its volume
+	docker compose -f docker-compose.mysql.yml down -v
 
 clean: ## remove ./bin
 	rm -rf $(BIN_DIR)

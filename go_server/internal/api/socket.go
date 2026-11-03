@@ -441,13 +441,25 @@ func (s *Server) handleSocket(w http.ResponseWriter, r *http.Request) {
 // errUnauthorized is the sentinel the socket token check reports.
 var errUnauthorized = errors.New("invalid API key")
 
-// socketPrincipal resolves ?token= the way RequireAuth resolves a header.
+// socketPrincipal resolves ?token= or the browser session cookie the way
+// RequireAuth resolves a header.
 func (s *Server) socketPrincipal(r *http.Request) (*auth.Principal, error) {
 	if !s.authEnabled() {
 		return auth.AdminPrincipal(), nil
 	}
 
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		// A browser cannot set headers on a WebSocket, but it does send the
+		// session cookie. RequireAuth has already resolved a header or cookie
+		// credential into the context when one was present.
+		if principal := auth.FromContext(r.Context()); principal != nil {
+			return principal, nil
+		}
+		if cookie, err := r.Cookie(SessionCookieName); err == nil {
+			token = cookie.Value
+		}
+	}
 	if token == "" {
 		return nil, errUnauthorized
 	}

@@ -61,26 +61,29 @@ type UserStore interface {
 }
 
 type userResponse struct {
-	ID             int64          `json:"id"`
-	Email          string         `json:"email"`
-	Name           string         `json:"name"`
-	Admin          bool           `json:"admin"`
-	Disabled       bool           `json:"disabled"`
-	Readonly       bool           `json:"readonly"`
-	DeviceReadonly bool           `json:"deviceReadonly"`
-	LimitCommands  bool           `json:"limitCommands"`
-	DisableReports bool           `json:"disableReports"`
-	FixedEmail     bool           `json:"fixedEmail"`
-	Temporary      bool           `json:"temporary"`
+	ID    int64  `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	// Admin is the name this API used first; Administrator is the one
+	// traccar-web reads, so both carry the same value.
+	Admin          bool `json:"admin"`
+	Administrator  bool `json:"administrator"`
+	Disabled       bool `json:"disabled"`
+	Readonly       bool `json:"readonly"`
+	DeviceReadonly bool `json:"deviceReadonly"`
+	LimitCommands  bool `json:"limitCommands"`
+	DisableReports bool `json:"disableReports"`
+	FixedEmail     bool `json:"fixedEmail"`
+	Temporary      bool `json:"temporary"`
+	// DeviceLimit and UserLimit are always zero: the Go schema does not store
+	// them. They are emitted because the web interface reads the fields.
+	DeviceLimit    int            `json:"deviceLimit"`
+	UserLimit      int            `json:"userLimit"`
+	ExpirationTime *time.Time     `json:"expirationTime,omitempty"`
 	Attributes     map[string]any `json:"attributes"`
 	DeviceCount    int            `json:"deviceCount"`
 	TokenCount     int            `json:"tokenCount"`
 	CreatedAt      time.Time      `json:"createdAt"`
-}
-
-type usersResponse struct {
-	Users []userResponse `json:"users"`
-	Count int            `json:"count"`
 }
 
 type tokenResponse struct {
@@ -105,14 +108,23 @@ type tokenIssueResponse struct {
 type userCreateRequest struct {
 	Email string `json:"email"`
 	Name  string `json:"name"`
-	Admin bool   `json:"admin"`
+	// Admin and Administrator are the two spellings of the same flag;
+	// traccar-web posts the latter.
+	Admin         bool  `json:"admin"`
+	Administrator *bool `json:"administrator"`
+	// Password is optional: a share link creates an account without one, while
+	// registration and the admin dialog set it.
+	Password string `json:"password"`
 }
 
 // userUpdateRequest is a partial update: absent fields stay unchanged.
 type userUpdateRequest struct {
-	Name     *string `json:"name"`
-	Admin    *bool   `json:"admin"`
-	Disabled *bool   `json:"disabled"`
+	Name *string `json:"name"`
+	// Admin and Administrator are the two spellings of the same flag;
+	// traccar-web posts the latter.
+	Admin         *bool `json:"admin"`
+	Administrator *bool `json:"administrator"`
+	Disabled      *bool `json:"disabled"`
 	// Attributes replaces the account attribute map, which is where the web
 	// interface keeps per-user preferences.
 	Attributes *map[string]any `json:"attributes"`
@@ -132,18 +144,28 @@ func newUserResponse(user model.User) userResponse {
 	if attributes == nil {
 		attributes = map[string]any{}
 	}
-	return userResponse{
-		ID:          user.ID,
-		Email:       user.Email,
-		Name:        user.Name,
-		Admin:       user.Admin,
-		Disabled:    user.Disabled,
-		Temporary:   user.Temporary,
-		Attributes:  attributes,
-		DeviceCount: user.DeviceCount,
-		TokenCount:  user.TokenCount,
-		CreatedAt:   user.CreatedAt.UTC(),
+	response := userResponse{
+		ID:            user.ID,
+		Email:         user.Email,
+		Name:          user.Name,
+		Admin:         user.Admin,
+		Administrator: user.Admin,
+		Disabled:      user.Disabled,
+		Temporary:     user.Temporary,
+		Attributes:    attributes,
+		DeviceCount:   user.DeviceCount,
+		TokenCount:    user.TokenCount,
+		CreatedAt:     user.CreatedAt.UTC(),
 	}
+	// Share accounts keep their deadline in attributes, which is what the
+	// scheduled cleanup reads.
+	if raw := user.Attributes.GetString("expirationTime", ""); raw != "" {
+		if expires, err := time.Parse(time.RFC3339, raw); err == nil {
+			expires = expires.UTC()
+			response.ExpirationTime = &expires
+		}
+	}
+	return response
 }
 
 func newTokenResponse(token model.APIToken) tokenResponse {
@@ -246,15 +268,42 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := usersResponse{Users: make([]userResponse, 0, len(users)), Count: len(users)}
+	response := make([]userResponse, 0, len(users))
 	for _, user := range users {
-		response.Users = append(response.Users, newUserResponse(user))
+		response = append(response, newUserResponse(user))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
 
+// handleUser serves GET /api/users/{id}. traccar-web fetches the account it is
+// about to edit, and an ordinary user may read only its own record.
+func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
+	if !s.usersConfigured(w) {
+		return
+	}
+	userID, err := positiveID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !s.isAdmin(r) && !s.isSelf(r, userID) {
+		writeError(w, http.StatusForbidden, errors.New("admin privileges are required"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	defer cancel()
+
+	user, err := s.users.User(ctx, userID)
+	if err != nil {
+		s.writeUserLookupError(w, userID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newUserResponse(*user))
+}
+
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
+	if !s.usersConfigured(w) {
 		return
 	}
 
@@ -270,13 +319,56 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var passwordHash string
+
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
+
+	// The Java server lets an anonymous caller create the very first account,
+	// which becomes an administrator, and allows further accounts while
+	// server.registration is on. That is what makes the web form work.
+	firstUser := s.newServer(ctx)
+	if !firstUser && !s.isAdmin(r) {
+		registration, err := s.registrationEnabled(ctx)
+		if err != nil {
+			s.logf("api: read registration setting: %v", err)
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return
+		}
+		if !registration {
+			writeError(w, http.StatusForbidden, errors.New("admin privileges are required"))
+			return
+		}
+	}
+
+	admin := request.Admin
+	if request.Administrator != nil {
+		admin = *request.Administrator
+	}
+	// Only an administrator may hand out the flag; the first account always
+	// gets it.
+	if !s.isAdmin(r) {
+		admin = firstUser
+	}
+
+	if request.Password != "" {
+		hash, err := auth.HashPassword(request.Password)
+		if errors.Is(err, auth.ErrEmptyPassword) || errors.Is(err, auth.ErrPasswordTooLong) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err != nil {
+			s.logf("api: hash password for %q: %v", email, err)
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return
+		}
+		passwordHash = hash
+	}
 
 	user, err := s.users.CreateUser(ctx, model.UserCreate{
 		Email: email,
 		Name:  strings.TrimSpace(request.Name),
-		Admin: request.Admin,
+		Admin: admin,
 	})
 	if errors.Is(err, model.ErrDuplicateUser) {
 		writeError(w, http.StatusConflict, fmt.Errorf("user %q already exists", email))
@@ -288,12 +380,24 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if passwordHash != "" {
+		if err := s.users.SetPassword(ctx, user.ID, passwordHash); err != nil {
+			s.logf("api: set password of user %d: %v", user.ID, err)
+			// Do not leave a half-created account behind.
+			if deleteErr := s.users.DeleteUser(ctx, user.ID); deleteErr != nil {
+				s.logf("api: roll back user %d: %v", user.ID, deleteErr)
+			}
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return
+		}
+	}
+
 	s.audit(r, model.ActionCreate, "user", user.ID)
 	writeJSON(w, http.StatusCreated, newUserResponse(*user))
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) || !s.usersConfigured(w) {
+	if !s.usersConfigured(w) {
 		return
 	}
 
@@ -302,22 +406,41 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// An administrator edits any account; everybody else edits only its own,
+	// which is how traccar-web saves the preferences dialog.
+	self := s.isSelf(r, userID)
+	if !self && !s.isAdmin(r) {
+		writeError(w, http.StatusForbidden, errors.New("admin privileges are required"))
+		return
+	}
 
 	var request userUpdateRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxUserBody)).Decode(&request); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	if request.Disabled != nil && *request.Disabled && s.isSelf(r, userID) {
+
+	admin := request.Admin
+	if request.Administrator != nil {
+		admin = request.Administrator
+	}
+	disabled := request.Disabled
+	if !s.isAdmin(r) {
+		// Editing your own profile must not grant powers or hide the account
+		// from the administrator.
+		admin = nil
+		disabled = nil
+	}
+	if disabled != nil && *disabled && self {
 		writeError(w, http.StatusConflict, errors.New("cannot disable your own account"))
 		return
 	}
-	if request.Admin != nil && !*request.Admin && s.isSelf(r, userID) {
+	if admin != nil && !*admin && self {
 		writeError(w, http.StatusConflict, errors.New("cannot revoke your own admin flag"))
 		return
 	}
 
-	update := model.UserUpdate{Admin: request.Admin, Disabled: request.Disabled}
+	update := model.UserUpdate{Admin: admin, Disabled: disabled}
 	if request.Name != nil {
 		name := strings.TrimSpace(*request.Name)
 		update.Name = &name
@@ -443,12 +566,9 @@ func (s *Server) handleUserDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := devicesResponse{
-		Devices: make([]deviceResponse, 0, len(devices)),
-		Count:   len(devices),
-	}
+	response := make([]deviceResponse, 0, len(devices))
 	for _, device := range devices {
-		response.Devices = append(response.Devices, newDeviceResponse(device, true))
+		response = append(response, newDeviceResponse(device, true))
 	}
 	writeJSON(w, http.StatusOK, response)
 }

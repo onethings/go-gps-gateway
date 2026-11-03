@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -128,6 +130,46 @@ func TestAlertsEmptyResult(t *testing.T) {
 	body := strings.TrimSpace(recorder.Body.String())
 	if body != `{"alerts":[],"count":0}` {
 		t.Errorf("body = %s", body)
+	}
+}
+
+func TestWebRootServesSPA(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<html>app</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "assets", "app.js"), []byte("console.log(1)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewServer(nil, WithAPIKey(testAdminKey), WithWebPath(root)).Handler()
+
+	// The interface stays anonymous: the key protects the API, not the files.
+	recorder := get(t, handler, "/")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "app") {
+		t.Fatalf("index status = %d body = %s", recorder.Code, recorder.Body)
+	}
+
+	recorder = get(t, handler, "/assets/app.js")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "console") {
+		t.Errorf("asset status = %d body = %s", recorder.Code, recorder.Body)
+	}
+
+	// A client-side route falls back to index.html.
+	recorder = get(t, handler, "/settings")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "app") {
+		t.Errorf("fallback status = %d body = %s", recorder.Code, recorder.Body)
+	}
+
+	// Unknown API paths are not swallowed by the fallback.
+	if recorder := get(t, handler, "/api/devices"); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("api status = %d, want 401", recorder.Code)
+	}
+	if recorder := get(t, handler, "/api/health"); recorder.Code != http.StatusOK {
+		t.Errorf("health status = %d, want 200", recorder.Code)
 	}
 }
 

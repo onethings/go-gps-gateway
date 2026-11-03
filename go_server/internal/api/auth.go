@@ -34,8 +34,13 @@ var exemptPaths = map[string]struct{}{
 	"/api/session/openid/auth":     {},
 	"/api/session/openid/callback": {},
 	"/api/server":                  {},
+	// The web interface registers the first account (and any account while
+	// server.registration is on) without a credential. The handler enforces
+	// both conditions; a GET on the same path still requires an admin.
+	"/api/users": {},
 	// A browser cannot set headers on a WebSocket, so /api/socket reads its
-	// token from the query string and authenticates itself.
+	// token from the query string or the session cookie and authenticates
+	// itself.
 	"/api/socket": {},
 }
 

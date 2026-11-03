@@ -469,15 +469,15 @@ func TestCommandList(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
 	}
 
-	var response commandsResponse
+	var response []commandView
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode: %v (body %s)", err, recorder.Body)
 	}
-	if response.Count != 2 || len(response.Commands) != 2 {
+	if len(response) != 2 {
 		t.Fatalf("response = %+v", response)
 	}
 
-	newest := response.Commands[0]
+	newest := response[0]
 	if newest.ID != 9 || newest.Status != model.CommandStatusDone {
 		t.Errorf("newest = %+v", newest)
 	}
@@ -494,7 +494,7 @@ func TestCommandList(t *testing.T) {
 		t.Errorf("timestamps = %+v", newest)
 	}
 
-	pending := response.Commands[1]
+	pending := response[1]
 	if pending.ResultCode != nil || pending.SentAt != nil || pending.DoneAt != nil {
 		t.Errorf("pending command carries a finish: %+v", pending)
 	}

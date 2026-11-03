@@ -1,0 +1,53 @@
+# gateway + MySQL 8, with the traccar-web build served by the gateway.
+#
+#   mkdir -p web            # put the traccar-web build here first
+#   TRACCAR_API_KEY=... MYSQL_ROOT_PASSWORD=... \
+#     docker compose -f docker-compose.mysql.yml up --build -d
+#
+# The gateway creates its own schema on first start. MySQL is not published on
+# the host; only the protocol and REST ports are.
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: traccar
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-traccar}
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  gateway:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TRACCAR_DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-traccar}@db:3306/traccar
+      TRACCAR_API_KEY: ${TRACCAR_API_KEY:-dev-key}
+      TZ: ${TZ:-Asia/Taipei}
+    # web.path is both the served interface and the upload root.
+    command: ["-web-path", "/srv/traccar-web"]
+    volumes:
+      - ./web:/srv/traccar-web
+    ports:
+      - "5013:5013"   # H02
+      - "5023:5023"   # GT06
+      - "5027:5027"   # Teltonika
+      - "8610:8610"   # JT808
+      - "5055:5055"   # OsmAnd
+      - "1883:1883"   # MQTT
+      - "5001:5001"   # TK103
+      - "5002:5002"   # GPS103
+      - "5006:5006"   # Wondex
+      - "5011:5011"   # Suntech
+      - "5020:5020"   # Meitrack
+      - "5046:5046"   # Ruptela
+      - "8082:8082"   # REST + traccar-web
+    restart: unless-stopped
+
+volumes:
+  mysqldata:

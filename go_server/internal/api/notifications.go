@@ -42,11 +42,6 @@ type notificationResponse struct {
 	CreatedAt    time.Time      `json:"createdAt"`
 }
 
-type notificationsResponse struct {
-	Notifications []notificationResponse `json:"notifications"`
-	Count         int                    `json:"count"`
-}
-
 type userNotificationsResponse struct {
 	UserID        int64                  `json:"userId"`
 	Notifications []notificationResponse `json:"notifications"`
@@ -138,12 +133,9 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := notificationsResponse{
-		Notifications: make([]notificationResponse, 0, len(notifications)),
-		Count:         len(notifications),
-	}
+	response := make([]notificationResponse, 0, len(notifications))
 	for _, notification := range notifications {
-		response.Notifications = append(response.Notifications, newNotificationResponse(notification))
+		response = append(response, newNotificationResponse(notification))
 	}
 	writeJSON(w, http.StatusOK, response)
 }

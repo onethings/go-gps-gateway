@@ -132,8 +132,9 @@ func WithVersion(version string) Option {
 	return func(s *Server) { s.version = version }
 }
 
-// WithWebPath enables POST /api/server/file/{path}, which writes an uploaded
-// file below this directory (the web root the Java server serves).
+// WithWebPath sets the web root: GET serves the traccar-web build from it and
+// POST /api/server/file/{path} writes below it, matching the Java server's
+// web.path. An empty path disables both.
 func WithWebPath(path string) Option {
 	return func(s *Server) { s.webPath = path }
 }
@@ -407,6 +408,19 @@ func (s *Server) newServer(ctx context.Context) bool {
 		return false
 	}
 	return len(users) == 0
+}
+
+// registrationEnabled reports whether server.registration allows anonymous
+// account creation. Without a settings store registration stays disabled.
+func (s *Server) registrationEnabled(ctx context.Context) (bool, error) {
+	if s.serverSettings == nil {
+		return false, nil
+	}
+	settings, err := s.serverSettings.ServerSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	return settings.Registration, nil
 }
 
 type serverUpdateRequest struct {

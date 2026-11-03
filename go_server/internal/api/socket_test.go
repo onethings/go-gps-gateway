@@ -228,7 +228,9 @@ func TestSocketRequiresValidTokenAndScope(t *testing.T) {
 	latest := &fakeLatestPositions{}
 	handler := socketServer(hub, latest, auth.NewPrincipal(2, false, []auth.Scope{auth.ScopeReadPositions}, []int64{7}))
 
-	recorder := withToken(t, handler, http.MethodGet, "/api/socket", "")
+	// No credential at all: the request is exempt from RequireAuth, so the
+	// handler itself has to reject it.
+	recorder := get(t, handler, "/api/socket")
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("no token status = %d, want 401 (body %s)", recorder.Code, recorder.Body)
 	}
@@ -241,6 +243,18 @@ func TestSocketRequiresValidTokenAndScope(t *testing.T) {
 	recorder = withToken(t, noScope, http.MethodGet, "/api/socket?token="+testToken, "")
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("scope status = %d, want 403 (body %s)", recorder.Code, recorder.Body)
+	}
+}
+
+func TestSocketAcceptsSessionCookie(t *testing.T) {
+	principal := auth.NewPrincipal(2, false, []auth.Scope{auth.ScopeReadPositions}, []int64{7})
+	server := NewServer(nil, withTestToken(principal))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/socket", nil)
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: testToken})
+	got, err := server.socketPrincipal(request)
+	if err != nil || got == nil || got.UserID != 2 {
+		t.Fatalf("principal = %+v err = %v", got, err)
 	}
 }
 

@@ -546,7 +546,8 @@ func TestUserRoutesRequireAdmin(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/users", ""},
 		{http.MethodPost, "/api/users", `{"email":"bob@example.test"}`},
-		{http.MethodPut, "/api/users/1", `{"name":"x"}`},
+		{http.MethodGet, "/api/users/2", ""},
+		{http.MethodPut, "/api/users/2", `{"name":"x"}`},
 		{http.MethodDelete, "/api/users/1", ""},
 		{http.MethodGet, "/api/users/1/devices", ""},
 		{http.MethodPost, "/api/users/1/tokens", `{"scopes":["read:positions"]}`},
@@ -564,6 +565,60 @@ func TestUserRoutesRequireAdmin(t *testing.T) {
 	}
 }
 
+func TestFirstUserRegistration(t *testing.T) {
+	store := newFakeUsers()
+	handler := adminUsersHandler(store, nil)
+
+	// traccar-web posts the registration form to /api/users without any
+	// credential; the first account becomes the administrator.
+	recorder := apiRequest(t, handler, http.MethodPost, "/api/users",
+		`{"email":"admin@example.test","name":"Admin","password":"s3cret-pass"}`, "")
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body %s)", recorder.Code, recorder.Body)
+	}
+	created := decodeBody[userResponse](t, recorder)
+	if !created.Admin || !created.Administrator {
+		t.Errorf("first account is not an administrator: %+v", created)
+	}
+	if hash := store.passwords[created.ID]; !auth.VerifyPassword(hash, "s3cret-pass") {
+		t.Errorf("password was not stored for user %d", created.ID)
+	}
+
+	// Once an account exists, anonymous registration is refused unless the
+	// server enables it.
+	recorder = apiRequest(t, handler, http.MethodPost, "/api/users",
+		`{"email":"other@example.test","password":"s3cret-pass"}`, "")
+	if recorder.Code != http.StatusForbidden {
+		t.Errorf("second anonymous registration = %d, want 403 (body %s)", recorder.Code, recorder.Body)
+	}
+}
+
+func TestSelfUpdateKeepsPrivileges(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, "alice@example.test"))
+	principal := auth.NewPrincipal(1, false, []auth.Scope{auth.ScopeAll}, nil)
+	handler := NewServer(nil, WithUsers(store), withTestToken(principal)).Handler()
+
+	recorder := withToken(t, handler, http.MethodGet, "/api/users/1", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("self read status = %d (body %s)", recorder.Code, recorder.Body)
+	}
+
+	// The preferences dialog saves the profile; it must not be able to grant
+	// itself admin or disable the account.
+	recorder = withToken(t, handler, http.MethodPut, "/api/users/1",
+		`{"name":"Alice","administrator":true,"disabled":true}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("self update status = %d (body %s)", recorder.Code, recorder.Body)
+	}
+	updated := decodeBody[userResponse](t, recorder)
+	if updated.Name != "Alice" || updated.Administrator {
+		t.Errorf("updated = %+v", updated)
+	}
+	if store.users[1].Disabled {
+		t.Error("a self update disabled the account")
+	}
+}
+
 func TestListAndCreateUser(t *testing.T) {
 	store := newFakeUsers(sampleUser(1, "alice@example.test"))
 	handler := adminUsersHandler(store, nil)
@@ -572,8 +627,8 @@ func TestListAndCreateUser(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("list status = %d (body %s)", recorder.Code, recorder.Body)
 	}
-	list := decodeBody[usersResponse](t, recorder)
-	if list.Count != 1 || len(list.Users) != 1 || list.Users[0].Email != "alice@example.test" {
+	list := decodeBody[[]userResponse](t, recorder)
+	if len(list) != 1 || list[0].Email != "alice@example.test" {
 		t.Fatalf("list = %+v", list)
 	}
 	if store.lastList.Limit != 10 {
@@ -772,8 +827,8 @@ func TestUserDeviceGrants(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d (body %s)", recorder.Code, recorder.Body)
 	}
-	list := decodeBody[devicesResponse](t, recorder)
-	if list.Count != 1 || list.Devices[0].ID != 7 {
+	list := decodeBody[[]deviceResponse](t, recorder)
+	if len(list) != 1 || list[0].ID != 7 {
 		t.Fatalf("devices = %+v", list)
 	}
 	if filter := devices.lastFilter(t); len(filter.DeviceIDs) != 0 {

@@ -55,6 +55,9 @@ TRACCAR_DSN='sqlite:///var/lib/traccar/traccar.db' make run-db
 docker compose up --build -d
 curl -H 'X-Api-Key: dev-key' http://127.0.0.1:8082/api/health
 docker compose down -v
+
+# 同一進程託管 traccar-web（把前端 build 出來的 dist 指給 -web-path）
+./bin/traccar-gateway -dsn "$TRACCAR_DSN" -api-key dev-key -web-path ./web
 ```
 
 ## 設定
@@ -90,7 +93,7 @@ docker compose down -v
 | MQTT | `-mqtt` | `:1883` | Ruptela | `-ruptela` | `:5046` |
 | REST | `-http` | `:8082`（需 `-dsn`） | | | |
 
-常用 flag：`-dsn`、`-api-key`、`-allow-anonymous`、`-auto-register`（true）、`-batch-size`(500) /
+常用 flag：`-dsn`、`-api-key`、`-web-path`（traccar-web build 目錄）、`-allow-anonymous`、`-auto-register`（true）、`-batch-size`(500) /
 `-batch-interval`(1s)、`-overspeed-knots` / `-power-cut-volts`（0=關）、`-alert-repeat`(0)、
 `-geofence-refresh`(5m) / `-device-refresh`(5m)、`-login-max-failures`(5) / `-login-lock-duration`(15m)、
 `-issue-token` / `-token-scopes` / `-token-ttl`、`-command-retry`(30s) / `-command-attempts`(3) /
@@ -101,6 +104,7 @@ docker compose down -v
 
 | 功能 | Key |
 | --- | --- |
+| 前端託管 | `web.path`（traccar-web build 目錄；同時是 `POST /api/server/file/{path}` 的寫入根目錄；空=不託管也不接受上傳） |
 | 位置屬性複製 | `position.copyAttributes`（逗號分隔；空=關） |
 | 帳號影像 | `deviceImage.path`（預設 `<media.path>/devices`） |
 | HLS 串流 | `stream.path`（外部產生器寫 `<path>/<deviceId>/index.m3u8`） |
@@ -146,6 +150,14 @@ MySQL 也可用本機 socket：`mysql://root@localhost/traccar?socket=/tmp/mysql
 SQLite 是純 Go（`modernc.org/sqlite`，無 cgo），用來取代 Java 版的 H2；
 `sqlite::memory:` 適合測試。H2 本身是 Java 專屬，Go 版不支援。
 
+MySQL 的端到端驗證（`rest-e2e.sh` 只打 REST，不依賴 `psql`）：
+
+```bash
+make db-up-mysql
+DSN='mysql://root:traccar@127.0.0.1:53306/traccar' ./scripts/rest-e2e.sh
+make db-down-mysql
+```
+
 主要表：`devices`、`positions`、`events`、`geofences`、`device_groups`、`calendars`、
 `drivers`、`maintenances`、`orders`、`reports`、`users`、`api_tokens`、`commands`、
 `password_resets`、`notifications`、`user_notifications`、`permissions`、`media`、
@@ -162,11 +174,80 @@ TRACCAR_TEST_DSN='mysql://root@127.0.0.1:3306/traccar' go test ./internal/storag
 TRACCAR_TEST_DSN='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' go test ./internal/storage
 ```
 
+## VPS 部署（MySQL + traccar-web）
+
+不想自己拉 nginx 時，Go 進程可以直接託管前端：把 traccar-web 的 build（`index.html` 與
+assets）放到一個目錄，`-web-path` 指過去即可；`/api/*` 仍由同一進程處理，session cookie
+與 WebSocket 都是同源。
+
+1. 建 MySQL 資料庫與專用帳號（8.0+）：
+
+   ```sql
+   CREATE DATABASE traccar CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   CREATE USER 'traccar'@'127.0.0.1' IDENTIFIED BY '改成強密碼';
+   GRANT ALL PRIVILEGES ON traccar.* TO 'traccar'@'127.0.0.1';
+   ```
+
+2. 取得 traccar-web：官方 release zip 內的 `web/`，或 traccar-web repo `npm ci && npm run build`
+   的輸出，放到 `/opt/traccar/web`。
+
+3. 啟動：
+
+   ```bash
+   ./bin/traccar-gateway \
+     -dsn 'mysql://traccar:改成強密碼@127.0.0.1:3306/traccar' \
+     -api-key "$(openssl rand -hex 24)" \
+     -web-path /opt/traccar/web \
+     -http 127.0.0.1:8082
+   ```
+
+4. 開瀏覽器：第一次沒有任何帳號時，前端會顯示註冊表單；`POST /api/users` 允許匿名建立
+   **第一個**帳號並自動設為 administrator。之後的匿名註冊只在 `server.registration=true`
+   時開放。
+
+5. 若要改用 nginx 託管前端（或用 Docker）：
+
+   ```nginx
+   server {
+       listen 443 ssl;
+       root /opt/traccar/web;
+       location / { try_files $uri /index.html; }
+       location /api/ {
+           proxy_pass http://127.0.0.1:8082;
+           proxy_http_version 1.1;
+           proxy_set_header Upgrade $http_upgrade;
+           proxy_set_header Connection "upgrade";
+           proxy_set_header Host $host;
+       }
+   }
+   ```
+
+   ```bash
+   # 或整組用容器（MySQL + gateway + ./web）
+   TRACCAR_API_KEY=... MYSQL_ROOT_PASSWORD=... make compose-up-mysql
+   ```
+
+6. 驗證：
+
+   ```bash
+   curl -H 'X-Api-Key: ...' http://127.0.0.1:8082/api/health
+   DSN='mysql://traccar:改成強密碼@127.0.0.1:3306/traccar' ./scripts/rest-e2e.sh
+   ```
+
 ## REST API
 
 `-api-key`（admin）、`api_tokens`（scope + permissions）或 `/api/login` token；`/api/health`、
 `/api/login`、密碼自助、OpenID 與 `/api/socket` 例外。非 admin 只能存取授權裝置；
 本機可用 `-allow-anonymous` 關閉認證。
+
+清單端點（devices / positions / users / commands / notifications / resources）回傳**裸 JSON 陣列**，
+和母本 `openapi.yaml` 一致；事件與告警仍回 `{events|alerts, count}`。`GET /api/positions` 的每筆
+位置同時帶 `deviceTime` 與 `fixTime`（Go 只有一個時間戳，兩者相同）。
+
+`POST /api/users` 在帳號表為空時允許匿名建立第一個帳號（自動成為 administrator），
+之後只有在 `server.registration=true` 時才開放匿名註冊；一般使用者可 `PUT /api/users/{id}`
+更新自己的 name / attributes / password，但不能給自己 administrator 或 disabled。
+`GET /api/users/{id}` 允許 admin 或本人。
 
 | 區塊 | 路由 |
 | --- | --- |
@@ -184,19 +265,21 @@ TRACCAR_TEST_DSN='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' g
 ## 開發
 
 - `make test` / `make race`：單元測試與 race detector。
-- `make smoke`：無資料庫重播；`make rest-e2e`：PostgreSQL 全鏈驗證。
+- `make smoke`：無資料庫重播；`make rest-e2e`：資料庫全鏈驗證（`DSN` 可指 PostgreSQL 或 MySQL）。
 - `cmd/device-sim`：設備模擬器。
 
 ## 已知限制
 
-- 有 `-dsn` 時 REST 預設要求憑證；先帶 `-api-key` 建立管理員，或 `-issue-token`。
+- 有 `-dsn` 時 REST 預設要求憑證；`-api-key` 或第一個註冊帳號可取得管理權限。
 - 帳號 API 只有分頁；email 建立後不可改；登入失敗鎖定（bcrypt cost 12）。
+- `users` 表沒有 `device_limit` / `user_limit` 欄位，API 一律回 0；母本停在 `tc_*` 相容時再補。
 - `PUT /api/devices/{id}` 是整欄取代；`protocol` / `uniqueId` 不可改；`disabled` 尚未擋 ingest。
 - 群組授權只影響可見裝置；通知收件者仍只認 `user → device`。
-- 分享帳號由 admin 或 `schedule.temporary.interval` 到期刪除；`/api/socket` token 在 query string。
+- 分享帳號由 admin 或 `schedule.temporary.interval` 到期刪除；`/api/socket` 接受 query token 或 session cookie。
 - `suntech` 只能收不能下命令；記憶體模式僅適合開發。
 - MySQL 需 8.0+（`ROW_NUMBER` 窗函式）；SQLite 適合單節點，不建議多程序共用同一檔案。
 - TOTP / OpenID / LDAP / HLS / 裝置影像 / Redis 推播都要設定後才啟用，未設定回 501。
+- 位置事件寫入時 `position_id` 多為 NULL（位置批次寫入不回填 id），事件與位置在報表上不會互相關聯。
 
 ## 與母本差距
 
@@ -210,6 +293,7 @@ TRACCAR_TEST_DSN='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' g
 | 外送 | JSON、URL、MQTT、Redis、Wialon、Network、AMQP、Kafka | — |
 | 資料庫 | PostgreSQL、MySQL 8.0+、SQLite（內嵌取代 H2） | H2（Java 專屬）；母本 `tc_*` schema 尚未相容 |
 | 認證 | 密碼、token、TOTP、OpenID、LDAP | 0 |
+| 前端 | 可直接託管 traccar-web build（同源 cookie / WebSocket） | 無內建 build；需自備 `web/` |
 | 水平擴展 | Redis 推播 | multicast；跨節點 device session |
 | 影像 | 上傳 / 下載、HLS 端點 | JT1078 解碼與切片 |
 | 排程 | 10 | — |

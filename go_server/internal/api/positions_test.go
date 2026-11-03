@@ -77,20 +77,21 @@ func TestPositionsResponse(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
 	}
 
-	var response positionsResponse
+	var response []positionResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode: %v (body %s)", err, recorder.Body)
 	}
-	if response.Count != 1 || len(response.Positions) != 1 {
+	if len(response) != 1 {
 		t.Fatalf("response = %+v", response)
 	}
 
-	position := response.Positions[0]
+	position := response[0]
 	if position.ID != 11 || position.DeviceID != 7 || position.Protocol != "gt06" {
 		t.Fatalf("position = %+v", position)
 	}
-	if !position.DeviceTime.Equal(deviceTime) || !position.ServerTime.Equal(serverTime) {
-		t.Errorf("times = %s / %s", position.DeviceTime, position.ServerTime)
+	if !position.DeviceTime.Equal(deviceTime) || !position.FixTime.Equal(deviceTime) ||
+		!position.ServerTime.Equal(serverTime) {
+		t.Errorf("times = %s / %s / %s", position.DeviceTime, position.FixTime, position.ServerTime)
 	}
 	if !position.Valid || position.Latitude != 54.943 || position.Longitude != 25.206 {
 		t.Errorf("position = %+v", position)

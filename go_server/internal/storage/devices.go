@@ -208,13 +208,13 @@ func (s *Store) DeviceAttributes(ctx context.Context) (map[int64]map[string]any,
 func (s *Store) CreateDevice(ctx context.Context, create model.DeviceCreate) (*model.Device, error) {
 	id, err := insertReturningID(ctx, s.db,
 		`INSERT INTO devices (unique_id, name, model, protocol, phone, contact,
-			category, disabled, expiration_time, calendar_id, attributes)
+			category, disabled, expiration_time, calendar_id, group_id, attributes)
 		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''),
-			NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, '{}')
+			NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, $11, '{}')
 		 RETURNING id`,
 		create.UniqueID, create.Name, create.Model, create.Protocol,
 		create.Phone, create.Contact, create.Category, create.Disabled,
-		nullTime(create.ExpirationTime), create.CalendarID)
+		nullTime(create.ExpirationTime), create.CalendarID, nullableID(create.GroupID))
 	if err != nil {
 		if s.db.dialect.isDuplicate(err) {
 			return nil, model.ErrDuplicateDevice
@@ -241,14 +241,14 @@ func (s *Store) UpdateDevice(ctx context.Context, deviceID int64, update model.D
 	query := `UPDATE devices SET name = $2, model = NULLIF($3, ''),
 			phone = NULLIF($4, ''), contact = NULLIF($5, ''),
 			category = NULLIF($6, ''), disabled = $7, expiration_time = $8,
-			calendar_id = $9`
+			calendar_id = $9, group_id = $10`
 	args := []any{
 		deviceID, update.Name, update.Model, update.Phone, update.Contact,
 		update.Category, update.Disabled, nullTime(update.ExpirationTime),
-		update.CalendarID,
+		update.CalendarID, nullableID(update.GroupID),
 	}
 	if encodedAttributes != nil {
-		query += ", attributes = $10"
+		query += ", attributes = $11"
 		args = append(args, *encodedAttributes)
 	}
 	query += " WHERE id = $1"

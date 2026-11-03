@@ -145,15 +145,15 @@ func TestDevicesResponse(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
 	}
 
-	var response devicesResponse
+	var response []deviceResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode: %v (body %s)", err, recorder.Body)
 	}
-	if response.Count != 1 || len(response.Devices) != 1 {
+	if len(response) != 1 {
 		t.Fatalf("response = %+v", response)
 	}
 
-	device := response.Devices[0]
+	device := response[0]
 	if device.ID != 7 || device.UniqueID != "864717003283581" || device.Name != "van-7" {
 		t.Fatalf("device = %+v", device)
 	}
@@ -185,18 +185,14 @@ func TestDevicesOmitsEmptyOptionalFields(t *testing.T) {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+	var devices []map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &devices); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	devices, ok := payload["devices"].([]any)
-	if !ok || len(devices) != 1 {
-		t.Fatalf("payload = %v", payload)
+	if len(devices) != 1 {
+		t.Fatalf("payload = %v", devices)
 	}
-	entry, ok := devices[0].(map[string]any)
-	if !ok {
-		t.Fatalf("entry = %v", devices[0])
-	}
+	entry := devices[0]
 	for _, key := range []string{"lastUpdate", "model"} {
 		if _, present := entry[key]; present {
 			t.Errorf("%q should be omitted when empty: %v", key, entry)
@@ -490,22 +486,18 @@ func TestDevicesExcludeAttributes(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
 	}
-	rows := decodeBodyValue[struct {
-		Devices []map[string]any `json:"devices"`
-	}](t, recorder)
-	if len(rows.Devices) != 1 {
-		t.Fatalf("rows = %v", rows.Devices)
+	rows := decodeBodyValue[[]map[string]any](t, recorder)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v", rows)
 	}
-	if _, present := rows.Devices[0]["attributes"]; present {
-		t.Errorf("attributes = %v, want the field excluded", rows.Devices[0]["attributes"])
+	if _, present := rows[0]["attributes"]; present {
+		t.Errorf("attributes = %v, want the field excluded", rows[0]["attributes"])
 	}
 
 	recorder = get(t, handler, "/api/devices")
-	rows = decodeBodyValue[struct {
-		Devices []map[string]any `json:"devices"`
-	}](t, recorder)
-	if _, present := rows.Devices[0]["attributes"]; !present {
-		t.Errorf("attributes should be present without excludeAttributes: %v", rows.Devices[0])
+	rows = decodeBodyValue[[]map[string]any](t, recorder)
+	if _, present := rows[0]["attributes"]; !present {
+		t.Errorf("attributes should be present without excludeAttributes: %v", rows[0])
 	}
 
 	if recorder := get(t, handler, "/api/devices?excludeAttributes=perhaps"); recorder.Code != http.StatusBadRequest {

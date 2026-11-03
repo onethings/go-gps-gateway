@@ -1,0 +1,1 @@
+var e=(e,t)=>e+t.charAt(0).toUpperCase()+t.slice(1),t=(e,t)=>t.charAt(e.length).toLowerCase()+t.slice(e.length+1);export{t as n,e as t};

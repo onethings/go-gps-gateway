@@ -1,0 +1,1 @@
+import{Dt as e,P as t}from"./mui-MxkkwfnG.js";var n=e(),r=t((0,n.jsx)(`path`,{d:`M8 5v14l11-7z`}),`PlayArrow`);export{r as t};

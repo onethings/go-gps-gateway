@@ -1,0 +1,1 @@
+import{Dt as e,Yt as t}from"./mui-MxkkwfnG.js";import{t as n}from"./BaseFab-BOmF-B_5.js";import{i as r}from"./permissions-O_tW9ak_.js";import{r as i}from"./index-DrCHxr6f.js";var a=e(),o=({editPath:e,disabled:o})=>{let s=t();return!r(`readonly`)&&!o?(0,a.jsx)(n,{onClick:()=>s(e),children:(0,a.jsx)(i,{})}):``};export{o as t};

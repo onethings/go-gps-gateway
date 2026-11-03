@@ -100,7 +100,7 @@ docker compose down -v
 | LDAP | `ldap.url`、`ldap.user`、`ldap.password`、`ldap.base`、`ldap.idAttribute`、`ldap.searchFilter`（母本名稱；`ldap.userFilter` 為相容別名）、`ldap.nameAttribute`、`ldap.mailAttribute`、`ldap.timeout` |
 | 網路外送 | `forward.network.address`、`forward.network.protocol`（`tcp` / `udp`） |
 | AMQP / Kafka 外送 | `forward.type`（`json` / `url` / `amqp` / `kafka`）、`forward.url`（AMQP 連線 URL 或 Kafka bootstrap）、`forward.exchange`（預設 `traccar`）、`forward.topic`（預設 `positions`）；事件側同名 `event.forward.*`（topic 預設 `events`） |
-| 地理服務 | `geocoder.type`（nominatim / google / opencage / here / locationiq / mapbox / tomtom / photon / pelias）、`geolocation.type`（google / mozilla / opencellid / unwired / here）；其餘用 `*.url` |
+| 地理服務 | `geocoder.type`（nominatim / google / opencage / here / locationiq / mapbox / tomtom / photon / pelias / autonavi / baidu / tencent / ban / bingmaps / factual / geoapify / geocodefarm / geocodejson / geocodexyz / gisgraphy / mapquest / maptiler / mapmyindia / mygeocode / positionstack / pluscodes）、`geolocation.type`（google / mozilla / opencellid / unwired / here / universal）；其餘用 `*.url`。`nominatim`、`photon`、`ban`、`geocodejson`、`pluscodes` 免 `geocoder.key`（pluscodes 為本地計算） |
 | 排程 | `schedule.{inactive,deviceExpiration,events,positions,commands}.interval`、`schedule.{events,positions,commands}.retention`（0=不刪） |
 
 ## 協議
@@ -169,7 +169,7 @@ docker compose down -v
 | 命令 Encoder | 5 | 60 |
 | 處理鏈 / 事件 | 15 stage / 12 規則 | 0 |
 | OpenAPI 路徑 | 76 | 0 |
-| 地理 provider | geocoder 9、geolocation 5 | geocoder 15 |
+| 地理 provider | geocoder 26、geolocation 6 | — |
 | 外送 | JSON、URL、MQTT、Redis、Wialon、Network、AMQP、Kafka | — |
 | 資料庫 | PostgreSQL | MySQL / H2；schema 與母本不相容 |
 | 認證 | 密碼、token、TOTP、OpenID、LDAP | 0 |

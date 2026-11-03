@@ -43,6 +43,10 @@ func geolocationProviderURL(provider string) string {
 		return unwiredURL
 	case "here":
 		return hereLocateURL
+	case "universal":
+		// The universal provider has no endpoint of its own; geolocation.url
+		// must point at the operator's service.
+		return ""
 	default:
 		return geolocateURL
 	}
@@ -409,6 +413,45 @@ func (l *Locator) here(ctx context.Context, network *model.Network) (float64, fl
 	return parsed.Location.Lat, parsed.Location.Lng, true, nil
 }
 
+// universal posts the cell towers to an operator supplied endpoint that speaks
+// the Google geolocation protocol, so a self hosted service can replace Google.
+func (l *Locator) universal(ctx context.Context, network *model.Network) (float64, float64, bool, error) {
+	encoded, err := json.Marshal(newLocatePayload(network, false))
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("geo: encode cell towers: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		l.baseURL+"?key="+url.QueryEscape(l.key), bytes.NewReader(encoded))
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("geo: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+
+	body, err := readJSON(l.client, request)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	var parsed struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Location struct {
+			Lat float64 `json:"lat"`
+			Lng float64 `json:"lng"`
+		} `json:"location"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, 0, false, fmt.Errorf("geo: universal: %w", err)
+	}
+	if parsed.Error != nil {
+		return 0, 0, false, fmt.Errorf("geo: universal: %s", parsed.Error.Message)
+	}
+	if parsed.Location.Lat == 0 && parsed.Location.Lng == 0 {
+		return 0, 0, false, nil
+	}
+	return parsed.Location.Lat, parsed.Location.Lng, true, nil
+}
+
 func strongestTower(network *model.Network) model.CellTower {
 	best := network.CellTowers[0]
 	for _, tower := range network.CellTowers[1:] {
@@ -440,7 +483,11 @@ func joinAddress(parts []string) string {
 // defaultGeocoderURL returns the endpoint of a provider when the operator did
 // not set geocoder.url.
 func defaultGeocoderURL(provider string) string {
-	switch strings.ToLower(provider) {
+	provider = strings.ToLower(provider)
+	if endpoint, ok := extraGeocoderURLs[provider]; ok {
+		return endpoint
+	}
+	switch provider {
 	case "google":
 		return googleURL
 	case "opencage":

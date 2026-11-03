@@ -12,8 +12,8 @@ import (
 )
 
 // Locator turns a cell tower description into a coordinate. It talks to the
-// Google Geolocation API, which needs a key, and caches the answer per tower so
-// a device that reports the same cell does not cost another request.
+// provider selected by geolocation.type and caches the answer per tower so a
+// device that reports the same cell does not cost another request.
 type Locator struct {
 	provider string
 	baseURL  string
@@ -41,7 +41,7 @@ func NewLocator(settings Settings, client *http.Client) *Locator {
 // Locate returns the coordinate of a cell tower group. The second result reports
 // a hit: a miss is not an error, it only means the position cannot be filled in.
 func (l *Locator) Locate(ctx context.Context, network *model.Network) (float64, float64, bool) {
-	if l == nil || network.IsEmpty() || l.key == "" {
+	if l == nil || network.IsEmpty() || l.key == "" || l.baseURL == "" {
 		return 0, 0, false
 	}
 	key := CellKey(network)
@@ -79,38 +79,44 @@ func (l *Locator) query(ctx context.Context, network *model.Network) (float64, f
 		return l.unwired(ctx, network)
 	case "here":
 		return l.here(ctx, network)
+	case "universal":
+		return l.universal(ctx, network)
 	default:
 		return 0, 0, false, fmt.Errorf("geo: unknown geolocation type %q", l.provider)
 	}
 }
 
-// google posts the cell towers to the Google (or Mozilla) geolocation API.
-func (l *Locator) google(ctx context.Context, network *model.Network) (float64, float64, bool, error) {
-	type cellTower struct {
-		CellID            int64 `json:"cellId"`
-		LocationAreaCode  int   `json:"locationAreaCode"`
-		MobileCountryCode int   `json:"mobileCountryCode"`
-		MobileNetworkCode int   `json:"mobileNetworkCode"`
-		SignalStrength    int   `json:"signalStrength,omitempty"`
-	}
-	type request_ struct {
-		HomeMobileCountryCode int         `json:"homeMobileCountryCode,omitempty"`
-		HomeMobileNetworkCode int         `json:"homeMobileNetworkCode,omitempty"`
-		RadioType             string      `json:"radioType,omitempty"`
-		ConsiderIP            bool        `json:"considerIp"`
-		CellTowers            []cellTower `json:"cellTowers"`
-	}
+// cellTowerPayload is the cell tower wire format of the Google geolocation
+// protocol. The universal provider speaks the same protocol.
+type cellTowerPayload struct {
+	CellID            int64 `json:"cellId"`
+	LocationAreaCode  int   `json:"locationAreaCode"`
+	MobileCountryCode int   `json:"mobileCountryCode"`
+	MobileNetworkCode int   `json:"mobileNetworkCode"`
+	SignalStrength    int   `json:"signalStrength,omitempty"`
+}
 
-	payload := request_{
+// locatePayload is the body of a Google style geolocation request.
+type locatePayload struct {
+	HomeMobileCountryCode int                `json:"homeMobileCountryCode,omitempty"`
+	HomeMobileNetworkCode int                `json:"homeMobileNetworkCode,omitempty"`
+	RadioType             string             `json:"radioType,omitempty"`
+	ConsiderIP            bool               `json:"considerIp"`
+	CellTowers            []cellTowerPayload `json:"cellTowers"`
+}
+
+// newLocatePayload converts the network description to the request body.
+func newLocatePayload(network *model.Network, considerIP bool) locatePayload {
+	payload := locatePayload{
 		HomeMobileCountryCode: network.HomeMobileCountryCode,
 		HomeMobileNetworkCode: network.HomeMobileNetworkCode,
 		RadioType:             network.RadioType,
 		// A cell only lookup must not fall back to the server's own IP address,
 		// which would put every unknown device in the data centre.
-		ConsiderIP: false,
+		ConsiderIP: considerIP,
 	}
 	for _, tower := range network.CellTowers {
-		payload.CellTowers = append(payload.CellTowers, cellTower{
+		payload.CellTowers = append(payload.CellTowers, cellTowerPayload{
 			CellID:            tower.CellID,
 			LocationAreaCode:  tower.LocationAreaCode,
 			MobileCountryCode: tower.MobileCountryCode,
@@ -118,8 +124,12 @@ func (l *Locator) google(ctx context.Context, network *model.Network) (float64, 
 			SignalStrength:    tower.SignalStrength,
 		})
 	}
+	return payload
+}
 
-	encoded, err := json.Marshal(payload)
+// google posts the cell towers to the Google (or Mozilla) geolocation API.
+func (l *Locator) google(ctx context.Context, network *model.Network) (float64, float64, bool, error) {
+	encoded, err := json.Marshal(newLocatePayload(network, false))
 	if err != nil {
 		return 0, 0, false, fmt.Errorf("geo: encode cell towers: %w", err)
 	}

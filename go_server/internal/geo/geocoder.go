@@ -11,8 +11,9 @@ import (
 	"strings"
 )
 
-// Geocoder resolves a coordinate to an address. Two providers are implemented:
-// Nominatim, which needs no key, and the Google Geocoding API, which does.
+// Geocoder resolves a coordinate to an address using the provider selected by
+// geocoder.type. Providers that call a remote service are cached; pluscodes
+// are computed locally.
 type Geocoder struct {
 	provider string
 	baseURL  string
@@ -49,6 +50,11 @@ func (g *Geocoder) Address(ctx context.Context, latitude, longitude float64) (st
 	key := KeyFor("geocode", latitude, longitude)
 	if address, ok := g.cache.Get(key); ok {
 		return address, nil
+	}
+
+	// Plus codes are computed locally, so they cost neither a request nor a key.
+	if g.provider == "pluscodes" {
+		return plusCode(latitude, longitude), nil
 	}
 
 	if g.OnRequest != nil {
@@ -90,6 +96,40 @@ func (g *Geocoder) lookup(ctx context.Context, latitude, longitude float64) (str
 		return g.photon(ctx, latitude, longitude)
 	case "pelias":
 		return g.pelias(ctx, latitude, longitude)
+	case "autonavi":
+		return g.autoNavi(ctx, latitude, longitude)
+	case "baidu":
+		return g.baidu(ctx, latitude, longitude)
+	case "ban":
+		return g.geocodeJSON(ctx, latitude, longitude, "FR")
+	case "bingmaps":
+		return g.bingMaps(ctx, latitude, longitude)
+	case "factual":
+		return g.factual(ctx, latitude, longitude)
+	case "geoapify":
+		return g.geoapify(ctx, latitude, longitude)
+	case "geocodefarm":
+		return g.geocodeFarm(ctx, latitude, longitude)
+	case "geocodejson":
+		return g.geocodeJSON(ctx, latitude, longitude, "")
+	case "geocodexyz":
+		return g.geocodeXyz(ctx, latitude, longitude)
+	case "gisgraphy":
+		return g.gisgraphy(ctx, latitude, longitude)
+	case "mapquest":
+		return g.mapQuest(ctx, latitude, longitude)
+	case "maptiler":
+		return g.mapTiler(ctx, latitude, longitude)
+	case "mapmyindia":
+		return g.mapmyIndia(ctx, latitude, longitude)
+	case "mygeocode":
+		return g.myGeocode(ctx, latitude, longitude)
+	case "positionstack":
+		return g.positionStack(ctx, latitude, longitude)
+	case "tencent":
+		return g.tencent(ctx, latitude, longitude)
+	case "pluscodes":
+		return plusCode(latitude, longitude), nil
 	default:
 		return "", fmt.Errorf("geo: unknown geocoder type %q", g.provider)
 	}

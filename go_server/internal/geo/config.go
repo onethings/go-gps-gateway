@@ -159,7 +159,7 @@ func ReadSettings(cfg *config.Config) Settings {
 	// A key based service cannot work without its key, so say so once instead of
 	// failing on every request.
 	if settings.Geocoder.Enabled && settings.Geocoder.Key == "" &&
-		settings.Geocoder.Type != "nominatim" {
+		geocoderNeedsKey(settings.Geocoder.Type) {
 		log.Printf("geo: geocoder.type %q needs %s; geocoding stays disabled",
 			settings.Geocoder.Type, KeyGeocoderKey)
 		settings.Geocoder.Enabled = false
@@ -170,6 +170,12 @@ func ReadSettings(cfg *config.Config) Settings {
 	}
 	if settings.Geolocation.Enabled && settings.Geolocation.Key == "" {
 		log.Printf("geo: geolocation needs %s; it stays disabled", KeyGeolocationKey)
+		settings.Geolocation.Enabled = false
+	}
+	if settings.Geolocation.Enabled && settings.Geolocation.Type == "universal" &&
+		settings.Geolocation.URL == "" {
+		log.Printf("geo: geolocation.type universal needs %s; it stays disabled",
+			KeyGeolocationURL)
 		settings.Geolocation.Enabled = false
 	}
 	return settings

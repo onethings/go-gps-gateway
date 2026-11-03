@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func (s *Store) UserGrants(ctx context.Context, userID int64) ([]int64, []int64,
 		 ORDER BY property_type, property_id`,
 		userID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("postgres: query grants of user %d: %w", userID, err)
+		return nil, nil, fmt.Errorf("storage: query grants of user %d: %w", userID, err)
 	}
 	defer rows.Close()
 
@@ -39,7 +39,7 @@ func (s *Store) UserGrants(ctx context.Context, userID int64) ([]int64, []int64,
 			propertyID   int64
 		)
 		if err := rows.Scan(&propertyType, &propertyID); err != nil {
-			return nil, nil, fmt.Errorf("postgres: scan grant of user %d: %w", userID, err)
+			return nil, nil, fmt.Errorf("storage: scan grant of user %d: %w", userID, err)
 		}
 		if propertyType == string(permissions.ObjectDevice) {
 			devices = append(devices, propertyID)
@@ -48,7 +48,7 @@ func (s *Store) UserGrants(ctx context.Context, userID int64) ([]int64, []int64,
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("postgres: query grants of user %d: %w", userID, err)
+		return nil, nil, fmt.Errorf("storage: query grants of user %d: %w", userID, err)
 	}
 	return devices, groups, nil
 }
@@ -69,9 +69,9 @@ func (s *Store) inheritedDeviceIDs(ctx context.Context, groupIDs []int64) ([]int
 // than a recursive query that would have to be repeated per device.
 func (s *Store) GroupParents(ctx context.Context) (map[int64]int64, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, COALESCE(group_id, 0) FROM groups ORDER BY id`)
+		`SELECT id, COALESCE(group_id, 0) FROM device_groups ORDER BY id`)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query group tree: %w", err)
+		return nil, fmt.Errorf("storage: query group tree: %w", err)
 	}
 	defer rows.Close()
 
@@ -79,12 +79,12 @@ func (s *Store) GroupParents(ctx context.Context) (map[int64]int64, error) {
 	for rows.Next() {
 		var id, parentID int64
 		if err := rows.Scan(&id, &parentID); err != nil {
-			return nil, fmt.Errorf("postgres: scan group tree: %w", err)
+			return nil, fmt.Errorf("storage: scan group tree: %w", err)
 		}
 		parents[id] = parentID
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query group tree: %w", err)
+		return nil, fmt.Errorf("storage: query group tree: %w", err)
 	}
 	return parents, nil
 }
@@ -100,7 +100,7 @@ func (s *Store) DevicesInGroups(ctx context.Context, groupIDs []int64) ([]int64,
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT id FROM devices WHERE "+clause+" ORDER BY id", args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query devices in groups: %w", err)
+		return nil, fmt.Errorf("storage: query devices in groups: %w", err)
 	}
 	defer rows.Close()
 
@@ -108,12 +108,12 @@ func (s *Store) DevicesInGroups(ctx context.Context, groupIDs []int64) ([]int64,
 	for rows.Next() {
 		var deviceID int64
 		if err := rows.Scan(&deviceID); err != nil {
-			return nil, fmt.Errorf("postgres: scan device in group: %w", err)
+			return nil, fmt.Errorf("storage: scan device in group: %w", err)
 		}
 		deviceIDs = append(deviceIDs, deviceID)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query devices in groups: %w", err)
+		return nil, fmt.Errorf("storage: query devices in groups: %w", err)
 	}
 	return deviceIDs, nil
 }
@@ -127,7 +127,7 @@ func (s *Store) DeviceGroup(ctx context.Context, deviceID int64) (int64, error) 
 		return 0, model.ErrDeviceNotFound
 	}
 	if err != nil {
-		return 0, fmt.Errorf("postgres: device %d group: %w", deviceID, err)
+		return 0, fmt.Errorf("storage: device %d group: %w", deviceID, err)
 	}
 	return groupID.Int64, nil
 }
@@ -168,7 +168,7 @@ func (s *Store) Permissions(ctx context.Context, owner permissions.Object, owner
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query permissions: %w", err)
+		return nil, fmt.Errorf("storage: query permissions: %w", err)
 	}
 	defer rows.Close()
 
@@ -179,7 +179,7 @@ func (s *Store) Permissions(ctx context.Context, owner permissions.Object, owner
 			ownerRowID, propertyRowID int64
 		)
 		if err := rows.Scan(&ownerType, &ownerRowID, &propertyType, &propertyRowID); err != nil {
-			return nil, fmt.Errorf("postgres: scan permission: %w", err)
+			return nil, fmt.Errorf("storage: scan permission: %w", err)
 		}
 		pair, err := permissions.New(
 			permissions.Object(ownerType), ownerRowID,
@@ -188,13 +188,13 @@ func (s *Store) Permissions(ctx context.Context, owner permissions.Object, owner
 		if err != nil {
 			// A row that cannot be expressed as a permission was written by
 			// something other than this store; surface it instead of hiding it.
-			return nil, fmt.Errorf("postgres: stored permission %s %d -> %s %d: %w",
+			return nil, fmt.Errorf("storage: stored permission %s %d -> %s %d: %w",
 				ownerType, ownerRowID, propertyType, propertyRowID, err)
 		}
 		pairs = append(pairs, pair)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query permissions: %w", err)
+		return nil, fmt.Errorf("storage: query permissions: %w", err)
 	}
 	return pairs, nil
 }
@@ -207,12 +207,11 @@ func (s *Store) AddPermission(ctx context.Context, permission permissions.Permis
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO permissions (owner_type, owner_id, property_type, property_id)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT DO NOTHING`,
+		 VALUES ($1, $2, $3, $4)`,
 		string(permission.Owner), permission.OwnerID,
 		string(permission.Property), permission.PropertyID)
-	if err != nil {
-		return fmt.Errorf("postgres: add permission %s: %w", permission, err)
+	if err != nil && !s.db.dialect.isDuplicate(err) {
+		return fmt.Errorf("storage: add permission %s: %w", permission, err)
 	}
 	s.invalidateTokenCache()
 	return nil
@@ -230,7 +229,7 @@ func (s *Store) RemovePermission(ctx context.Context, permission permissions.Per
 		string(permission.Owner), permission.OwnerID,
 		string(permission.Property), permission.PropertyID)
 	if err != nil {
-		return fmt.Errorf("postgres: remove permission %s: %w", permission, err)
+		return fmt.Errorf("storage: remove permission %s: %w", permission, err)
 	}
 	s.invalidateTokenCache()
 	return nil
@@ -246,7 +245,7 @@ func (s *Store) ClearPermissions(ctx context.Context, object permissions.Object,
 		    OR (property_type = $1 AND property_id = $2)`,
 		string(object), objectID)
 	if err != nil {
-		return fmt.Errorf("postgres: clear permissions of %s %d: %w", object, objectID, err)
+		return fmt.Errorf("storage: clear permissions of %s %d: %w", object, objectID, err)
 	}
 	s.invalidateTokenCache()
 	return nil

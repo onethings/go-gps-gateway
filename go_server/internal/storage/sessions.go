@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -22,7 +22,7 @@ func (s *Store) SetDeviceStatus(
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE devices SET status = $2 WHERE id = $1`, deviceID, status)
 	if err != nil {
-		return fmt.Errorf("postgres: set status of device %d: %w", deviceID, err)
+		return fmt.Errorf("storage: set status of device %d: %w", deviceID, err)
 	}
 	return nil
 }

@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -25,14 +25,14 @@ func (s *Store) CreateMediaFile(ctx context.Context, file *model.MediaFile) erro
 	if mediaTime.IsZero() {
 		mediaTime = time.Now()
 	}
-	if err := s.db.QueryRowContext(ctx,
+	id, err := insertReturningID(ctx, s.db,
 		`INSERT INTO media (device_id, file_name, type, size, media_time, attributes)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id`,
-		file.DeviceID, file.FileName, file.Type, file.Size, mediaTime.UTC(), attributes,
-	).Scan(&file.ID); err != nil {
-		return fmt.Errorf("postgres: create media file: %w", err)
+		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		file.DeviceID, file.FileName, file.Type, file.Size, mediaTime.UTC(), attributes)
+	if err != nil {
+		return fmt.Errorf("storage: create media file: %w", err)
 	}
+	file.ID = id
 	file.MediaTime = mediaTime.UTC()
 	return nil
 }
@@ -46,7 +46,7 @@ func (s *Store) MediaFile(ctx context.Context, id int64) (*model.MediaFile, erro
 		return nil, model.ErrMediaFileNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query media file %d: %w", id, err)
+		return nil, fmt.Errorf("storage: query media file %d: %w", id, err)
 	}
 	return file, nil
 }
@@ -61,7 +61,7 @@ func (s *Store) MediaFiles(
 		 ORDER BY media_time DESC, id DESC`,
 		deviceID, from.UTC(), to.UTC())
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query media: %w", err)
+		return nil, fmt.Errorf("storage: query media: %w", err)
 	}
 	defer rows.Close()
 
@@ -74,7 +74,7 @@ func (s *Store) MediaFiles(
 		files = append(files, *file)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query media: %w", err)
+		return nil, fmt.Errorf("storage: query media: %w", err)
 	}
 	return files, nil
 }
@@ -83,11 +83,11 @@ func (s *Store) MediaFiles(
 func (s *Store) DeleteMediaFile(ctx context.Context, id int64) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM media WHERE id = $1`, id)
 	if err != nil {
-		return fmt.Errorf("postgres: delete media file %d: %w", id, err)
+		return fmt.Errorf("storage: delete media file %d: %w", id, err)
 	}
 	deleted, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: delete media file %d: %w", id, err)
+		return fmt.Errorf("storage: delete media file %d: %w", id, err)
 	}
 	if deleted == 0 {
 		return model.ErrMediaFileNotFound

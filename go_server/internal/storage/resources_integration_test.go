@@ -1,9 +1,8 @@
-package postgres
+package storage
 
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,13 +12,13 @@ import (
 )
 
 // requireResourceStore opens the database the resource CRUD tests run against,
-// or skips when TRACCAR_POSTGRES_DSN is not set, like every other integration
+// or skips when TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set, like every other integration
 // test in this package.
 func requireResourceStore(t *testing.T) *Store {
 	t.Helper()
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 	store, err := New(context.Background(), dsn)
 	if err != nil {

@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 )
 
 var groupSpec = resourceSpec[model.Group]{
-	table:   "groups",
+	table:   "device_groups",
 	columns: []string{"name", "group_id", "attributes"},
 	keyword: []string{"name"},
 	values: func(group *model.Group) ([]any, error) {
@@ -24,12 +24,12 @@ var groupSpec = resourceSpec[model.Group]{
 			attributes []byte
 		)
 		if err := row.Scan(&group.ID, &group.Name, &parentID, &attributes); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan group: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan group: %w", err))
 		}
 		group.GroupID = parentID.Int64
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: group %d: %w", group.ID, err)
+			return nil, fmt.Errorf("storage: group %d: %w", group.ID, err)
 		}
 		group.Attributes = decoded
 		return &group, nil

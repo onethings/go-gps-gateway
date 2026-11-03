@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -35,11 +35,11 @@ var openCommandStatuses = []string{
 
 // ErrMissingCommand is returned when a command cannot be recorded because it
 // is nil or carries no device id.
-var ErrMissingCommand = errors.New("postgres: command without device id")
+var ErrMissingCommand = errors.New("storage: command without device id")
 
 // ErrInvalidRetention is returned for a retention age that would delete the
 // whole table, which is never what the caller meant.
-var ErrInvalidRetention = errors.New("postgres: retention age must be positive")
+var ErrInvalidRetention = errors.New("storage: retention age must be positive")
 
 // CreateCommand inserts a pending row and stores its id on the command.
 func (s *Store) CreateCommand(ctx context.Context, command *model.Command) error {
@@ -56,15 +56,16 @@ func (s *Store) CreateCommand(ctx context.Context, command *model.Command) error
 	}
 	encoded, err := json.Marshal(attributes)
 	if err != nil {
-		return fmt.Errorf("postgres: encode command attributes: %w", err)
+		return fmt.Errorf("storage: encode command attributes: %w", err)
 	}
 
-	if err := s.db.QueryRowContext(ctx, `INSERT INTO commands (device_id, type, attributes, serial)
+	id, err := insertReturningID(ctx, s.db, `INSERT INTO commands (device_id, type, attributes, serial)
 		VALUES ($1, $2, $3, NULLIF($4, 0)) RETURNING id`,
-		command.DeviceID, command.Type, string(encoded), command.Serial,
-	).Scan(&command.ID); err != nil {
-		return fmt.Errorf("postgres: insert command: %w", err)
+		command.DeviceID, command.Type, string(encoded), command.Serial)
+	if err != nil {
+		return fmt.Errorf("storage: insert command: %w", err)
 	}
+	command.ID = id
 
 	command.Status = model.CommandStatusPending
 	return nil
@@ -77,11 +78,11 @@ func (s *Store) CreateCommand(ctx context.Context, command *model.Command) error
 // the device saw the command.
 func (s *Store) MarkCommandSent(ctx context.Context, commandID int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE commands
-		SET status = $2, sent_at = COALESCE(sent_at, now()), attempts = attempts + 1
-		WHERE id = $1 AND status = ANY($3)`,
-		commandID, model.CommandStatusSent, openCommandStatuses)
+		SET status = $2, sent_at = COALESCE(sent_at, CURRENT_TIMESTAMP), attempts = attempts + 1
+		WHERE id = $1 AND status IN ($3, $4)`,
+		commandID, model.CommandStatusSent, openCommandStatuses[0], openCommandStatuses[1])
 	if err != nil {
-		return fmt.Errorf("postgres: mark command sent: %w", err)
+		return fmt.Errorf("storage: mark command sent: %w", err)
 	}
 	return nil
 }
@@ -92,11 +93,11 @@ func (s *Store) MarkCommandSent(ctx context.Context, commandID int64) error {
 // column a device answer fills.
 func (s *Store) MarkCommandFailed(ctx context.Context, commandID int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE commands
-		SET status = $2, done_at = now()
-		WHERE id = $1 AND status = ANY($3)`,
-		commandID, model.CommandStatusFailed, openCommandStatuses)
+		SET status = $2, done_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND status IN ($3, $4)`,
+		commandID, model.CommandStatusFailed, openCommandStatuses[0], openCommandStatuses[1])
 	if err != nil {
-		return fmt.Errorf("postgres: mark command failed: %w", err)
+		return fmt.Errorf("storage: mark command failed: %w", err)
 	}
 	return nil
 }
@@ -106,11 +107,9 @@ func (s *Store) MarkCommandFailed(ctx context.Context, commandID int64) error {
 // is taken, which is all the protocols that carry no serial allow. When nothing
 // is waiting, the call is a no-op.
 func (s *Store) AcknowledgeCommand(ctx context.Context, deviceID int64, ack codec.CommandAck) error {
-	query, args := acknowledgeQuery(deviceID, ack)
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("postgres: acknowledge command: %w", err)
+		return fmt.Errorf("storage: acknowledge command: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -119,67 +118,75 @@ func (s *Store) AcknowledgeCommand(ctx context.Context, deviceID int64, ack code
 		}
 	}()
 
-	var (
-		commandID int64
-		result    sql.NullInt64
-		doneAt    time.Time
-	)
-	err = tx.QueryRowContext(ctx, query+" RETURNING id, result_code, done_at", args...).
-		Scan(&commandID, &result, &doneAt)
+	query, args := acknowledgeSelectQuery(deviceID, ack, s.db.dialect.name != "sqlite")
+	var commandID int64
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&commandID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Nothing was waiting for an answer; an unsolicited ack is not an error.
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("postgres: acknowledge command: %w", err)
+		return fmt.Errorf("storage: acknowledge command: %w", err)
+	}
+
+	status := model.CommandStatusDone
+	if ack.Code != 0 {
+		status = model.CommandStatusFailed
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE commands SET status = $2, result_code = $3, done_at = CURRENT_TIMESTAMP
+		 WHERE id = $1`, commandID, status, ack.Code); err != nil {
+		return fmt.Errorf("storage: acknowledge command: %w", err)
+	}
+
+	var doneAt time.Time
+	if err := tx.QueryRowContext(ctx,
+		`SELECT done_at FROM commands WHERE id = $1`, commandID).Scan(&doneAt); err != nil {
+		return fmt.Errorf("storage: acknowledge command: %w", err)
 	}
 
 	// The command result event is written in the same transaction as the
 	// acknowledgement, so a command can never end without its event and an
 	// event can never point at a command that is still waiting.
-	var code any
-	if result.Valid {
-		code = result.Int64
+	attributes := map[string]any{"commandId": commandID, "result": ack.Code}
+	encoded, err := json.Marshal(attributes)
+	if err != nil {
+		return fmt.Errorf("storage: record command result event: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO events (device_id, event_time, type, attributes)
-		 VALUES ($1, $2, $3, jsonb_build_object('result', $4::bigint, 'commandId', $5::bigint))`,
-		deviceID, doneAt, model.EventCommandResult, code, commandID,
+		 VALUES ($1, $2, $3, $4)`,
+		deviceID, doneAt, model.EventCommandResult, string(encoded),
 	); err != nil {
-		return fmt.Errorf("postgres: record command result event: %w", err)
+		return fmt.Errorf("storage: record command result event: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("postgres: acknowledge command: %w", err)
+		return fmt.Errorf("storage: acknowledge command: %w", err)
 	}
 	committed = true
 	return nil
 }
 
-// acknowledgeQuery builds the statement that closes one waiting command.
-func acknowledgeQuery(deviceID int64, ack codec.CommandAck) (string, []any) {
-	status := model.CommandStatusDone
-	if ack.Code != 0 {
-		status = model.CommandStatusFailed
-	}
-
+// acknowledgeSelectQuery builds the statement that finds one waiting command.
+// A serial narrows it to the row the device named; without one the newest
+// waiting row is taken, which is all the protocols that carry no serial allow.
+func acknowledgeSelectQuery(deviceID int64, ack codec.CommandAck, forUpdate bool) (string, []any) {
 	args := []any{deviceID}
 	filter := ""
 	if ack.Serial != nil {
 		args = append(args, *ack.Serial)
 		filter = fmt.Sprintf(" AND serial = $%d", len(args))
 	}
-	args = append(args, status, ack.Code, model.CommandStatusSent)
-
-	return fmt.Sprintf(`UPDATE commands SET status = $%d, result_code = $%d, done_at = now()
-		WHERE id = (
-			SELECT id FROM commands
-			WHERE device_id = $1%s AND status = $%d
-			ORDER BY id DESC
-			LIMIT 1
-		)`,
-		len(args)-2, len(args)-1, filter, len(args),
-	), args
+	args = append(args, model.CommandStatusSent)
+	query := fmt.Sprintf(`SELECT id FROM commands
+		WHERE device_id = $1%s AND status = $%d
+		ORDER BY id DESC
+		LIMIT 1`, filter, len(args))
+	if forUpdate {
+		query += " FOR UPDATE"
+	}
+	return query, args
 }
 
 // PendingCommands returns the commands of device that were recorded but never
@@ -195,7 +202,7 @@ func (s *Store) PendingCommands(ctx context.Context, deviceID int64, limit int) 
 		ORDER BY id ASC
 		LIMIT $3`, deviceID, model.CommandStatusPending, limit)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query pending commands: %w", err)
+		return nil, fmt.Errorf("storage: query pending commands: %w", err)
 	}
 	defer rows.Close()
 
@@ -210,17 +217,17 @@ func (s *Store) DeleteCommandsBefore(ctx context.Context, age time.Duration) (in
 		return 0, ErrInvalidRetention
 	}
 
+	cutoff := time.Now().UTC().Add(-age)
 	result, err := s.db.ExecContext(ctx, `DELETE FROM commands
-		WHERE (done_at IS NOT NULL AND done_at < now() - make_interval(secs => $1))
-		   OR (done_at IS NULL AND created_at < now() - make_interval(secs => $1))`,
-		age.Seconds())
+		WHERE (done_at IS NOT NULL AND done_at < $1)
+		   OR (done_at IS NULL AND created_at < $1)`, cutoff)
 	if err != nil {
-		return 0, fmt.Errorf("postgres: delete old commands: %w", err)
+		return 0, fmt.Errorf("storage: delete old commands: %w", err)
 	}
 
 	deleted, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("postgres: delete old commands: %w", err)
+		return 0, fmt.Errorf("storage: delete old commands: %w", err)
 	}
 	return deleted, nil
 }
@@ -232,7 +239,7 @@ func (s *Store) QueryCommands(ctx context.Context, filter model.CommandFilter) (
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query commands: %w", err)
+		return nil, fmt.Errorf("storage: query commands: %w", err)
 	}
 	defer rows.Close()
 
@@ -256,13 +263,13 @@ func scanCommands(rows *sql.Rows) ([]model.Command, error) {
 			&command.Status, &resultCode, &serial, &command.Attempts,
 			&sentAt, &doneAt, &command.CreatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("postgres: scan command: %w", err)
+			return nil, fmt.Errorf("storage: scan command: %w", err)
 		}
 
 		command.Attributes = map[string]any{}
 		if len(attributes) > 0 {
 			if err := json.Unmarshal(attributes, &command.Attributes); err != nil {
-				return nil, fmt.Errorf("postgres: decode command attributes: %w", err)
+				return nil, fmt.Errorf("storage: decode command attributes: %w", err)
 			}
 		}
 		if resultCode.Valid {
@@ -281,7 +288,7 @@ func scanCommands(rows *sql.Rows) ([]model.Command, error) {
 		commands = append(commands, command)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query commands: %w", err)
+		return nil, fmt.Errorf("storage: query commands: %w", err)
 	}
 	return commands, nil
 }

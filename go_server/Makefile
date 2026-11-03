@@ -5,8 +5,8 @@ PREFIX   ?= $(HOME)/.local
 BINARIES := traccar-gateway device-sim
 
 .DEFAULT_GOAL := help
-.PHONY: help build test race vet fmt smoke rest-e2e run run-db install uninstall \
-	docker-check db-up db-down docker-build compose-up compose-down clean
+.PHONY: help build test race vet fmt smoke rest-e2e run run-db run-sqlite install uninstall \
+	docker-check db-up db-down db-up-mysql db-down-mysql docker-build compose-up compose-down clean
 
 help: ## list the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -37,8 +37,11 @@ rest-e2e: build ## replay the scenes with PostgreSQL and check positions, alerts
 run: build ## run with no database: positions are logged as JSON
 	./$(BIN_DIR)/traccar-gateway
 
-run-db: build ## run against PostgreSQL (set TRACCAR_DSN, or pass DSN=...)
+run-db: build ## run against a database (TRACCAR_DSN=postgres:// / mysql:// / sqlite://)
 	./$(BIN_DIR)/traccar-gateway -dsn "$${DSN:-$${TRACCAR_DSN}}"
+
+run-sqlite: build ## run against the embedded SQLite file ./traccar.db
+	./$(BIN_DIR)/traccar-gateway -dsn "sqlite://$(CURDIR)/traccar.db"
 
 install: build ## install the binaries into $(PREFIX)/bin
 	@mkdir -p "$(DESTDIR)$(PREFIX)/bin"
@@ -61,6 +64,13 @@ db-up: docker-check ## start a throwaway PostgreSQL on 55432
 
 db-down: ## stop the throwaway PostgreSQL
 	-docker rm -f traccar-pg
+
+db-up-mysql: docker-check ## start a throwaway MySQL 8.0 on 53306
+	docker run --rm -d --name traccar-mysql -p 53306:3306 \
+		-e MYSQL_ROOT_PASSWORD=traccar -e MYSQL_DATABASE=traccar mysql:8.0
+
+db-down-mysql: ## stop the throwaway MySQL
+	-docker rm -f traccar-mysql
 
 docker-build: docker-check ## build the container image
 	docker build -t traccar-server-go:dev .

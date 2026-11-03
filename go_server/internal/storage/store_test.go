@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -12,6 +12,16 @@ import (
 	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/model"
 )
+
+// testDSN is the database the integration tests run against. TRACCAR_TEST_DSN
+// takes precedence; TRACCAR_POSTGRES_DSN is kept because the suite used that
+// name before the store supported more than PostgreSQL.
+func testDSN() string {
+	if dsn := os.Getenv("TRACCAR_TEST_DSN"); dsn != "" {
+		return dsn
+	}
+	return os.Getenv("TRACCAR_POSTGRES_DSN")
+}
 
 func samplePosition() *model.Position {
 	position := model.NewPosition("gt06")
@@ -180,11 +190,11 @@ func (w *recordingWriter) snapshot() ([][]*model.Position, int) {
 //
 //	docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=traccar postgres:16
 //	TRACCAR_POSTGRES_DSN='postgres://postgres:traccar@localhost:5432/postgres?sslmode=disable' \
-//	  go test ./internal/storage/postgres -run TestStoreIntegration -v
+//	  go test ./internal/storage -run TestStoreIntegration -v
 func TestStoreIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()
@@ -321,9 +331,9 @@ func findDevice(t *testing.T, store *Store, ctx context.Context, deviceID int64)
 
 // TestDeviceStoreIntegration covers the CRUD path against a real database.
 func TestDeviceStoreIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()
@@ -372,7 +382,7 @@ func TestDeviceStoreIntegration(t *testing.T) {
 	}
 
 	if _, err := store.DB().ExecContext(ctx,
-		`UPDATE devices SET attributes = '{"speedLimit": 45, "powerCutVolts": "8"}'::jsonb WHERE id = $1`,
+		`UPDATE devices SET attributes = '{"speedLimit": 45, "powerCutVolts": "8"}' WHERE id = $1`,
 		created.ID); err != nil {
 		t.Fatalf("set attributes: %v", err)
 	}
@@ -399,9 +409,9 @@ func TestDeviceStoreIntegration(t *testing.T) {
 // query in it selects users.password_hash, so it also proves migration 0006
 // ran against an existing database.
 func TestUserPasswordIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()
@@ -469,9 +479,9 @@ func TestUserPasswordIntegration(t *testing.T) {
 // TestPasswordSelfServiceIntegration covers the lockout, reset code and token
 // revocation queries. It needs migrations 0008 applied.
 func TestPasswordSelfServiceIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()

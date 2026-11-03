@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -22,11 +22,11 @@ var calendarSpec = resourceSpec[model.Calendar]{
 			attributes []byte
 		)
 		if err := row.Scan(&calendar.ID, &calendar.Name, &calendar.Data, &attributes); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan calendar: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan calendar: %w", err))
 		}
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: calendar %d: %w", calendar.ID, err)
+			return nil, fmt.Errorf("storage: calendar %d: %w", calendar.ID, err)
 		}
 		calendar.Attributes = decoded
 		return &calendar, nil

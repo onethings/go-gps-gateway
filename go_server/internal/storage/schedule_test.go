@@ -1,8 +1,7 @@
-package postgres
+package storage
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -12,9 +11,9 @@ import (
 // TestTemporaryCleanupStoreIntegration covers the query behind the scheduled
 // cleanup of share accounts. It runs only when TRACCAR_POSTGRES_DSN is set.
 func TestTemporaryCleanupStoreIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()

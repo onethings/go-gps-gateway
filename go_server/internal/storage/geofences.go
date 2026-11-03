@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -19,7 +19,7 @@ func (s *Store) Geofences(ctx context.Context) ([]*geofence.Geofence, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, area, attributes FROM geofences ORDER BY id`)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query geofences: %w", err)
+		return nil, fmt.Errorf("storage: query geofences: %w", err)
 	}
 	defer rows.Close()
 
@@ -35,25 +35,25 @@ func (s *Store) Geofences(ctx context.Context) ([]*geofence.Geofence, error) {
 			attributes []byte
 		)
 		if err := rows.Scan(&id, &name, &area, &attributes); err != nil {
-			return nil, fmt.Errorf("postgres: scan geofence: %w", err)
+			return nil, fmt.Errorf("storage: scan geofence: %w", err)
 		}
 
 		parsed, err := geofence.Parse(area)
 		if err != nil {
-			failures = append(failures, fmt.Errorf("postgres: geofence %d: %w", id, err))
+			failures = append(failures, fmt.Errorf("storage: geofence %d: %w", id, err))
 			continue
 		}
 
 		fence := &geofence.Geofence{ID: id, Name: name, Area: parsed}
 		if len(attributes) > 0 {
 			if err := json.Unmarshal(attributes, &fence.Attributes); err != nil {
-				failures = append(failures, fmt.Errorf("postgres: geofence %d attributes: %w", id, err))
+				failures = append(failures, fmt.Errorf("storage: geofence %d attributes: %w", id, err))
 			}
 		}
 		geofences = append(geofences, fence)
 	}
 	if err := rows.Err(); err != nil {
-		return geofences, fmt.Errorf("postgres: query geofences: %w", err)
+		return geofences, fmt.Errorf("storage: query geofences: %w", err)
 	}
 	return geofences, errors.Join(failures...)
 }
@@ -72,7 +72,7 @@ var geofenceSpec = resourceSpec[geofence.Geofence]{
 		}
 		area := fence.WKT()
 		if area == "" {
-			return nil, fmt.Errorf("postgres: geofence %d has no area", fence.ID)
+			return nil, fmt.Errorf("storage: geofence %d has no area", fence.ID)
 		}
 		return []any{nullableID(fence.CalendarID), fence.Name, fence.Description, area, attributes}, nil
 	},
@@ -85,17 +85,17 @@ var geofenceSpec = resourceSpec[geofence.Geofence]{
 		)
 		if err := row.Scan(&fence.ID, &calendarID, &fence.Name, &fence.Description,
 			&area, &attributes); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan geofence: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan geofence: %w", err))
 		}
 		fence.CalendarID = calendarID.Int64
 		parsed, err := geofence.Parse(area)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: geofence %d: %w", fence.ID, err)
+			return nil, fmt.Errorf("storage: geofence %d: %w", fence.ID, err)
 		}
 		fence.Area = parsed
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: geofence %d: %w", fence.ID, err)
+			return nil, fmt.Errorf("storage: geofence %d: %w", fence.ID, err)
 		}
 		fence.Attributes = decoded
 		return &fence, nil

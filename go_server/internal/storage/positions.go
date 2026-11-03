@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func (s *Store) QueryPositions(ctx context.Context, filter model.PositionFilter)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query positions: %w", err)
+		return nil, fmt.Errorf("storage: query positions: %w", err)
 	}
 	defer rows.Close()
 
@@ -39,7 +39,7 @@ func (s *Store) QueryPositions(ctx context.Context, filter model.PositionFilter)
 		positions = append(positions, *position)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query positions: %w", err)
+		return nil, fmt.Errorf("storage: query positions: %w", err)
 	}
 	return positions, nil
 }
@@ -52,7 +52,7 @@ func (s *Store) LatestPositions(ctx context.Context, deviceIDs []int64) ([]model
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query latest positions: %w", err)
+		return nil, fmt.Errorf("storage: query latest positions: %w", err)
 	}
 	defer rows.Close()
 
@@ -65,20 +65,29 @@ func (s *Store) LatestPositions(ctx context.Context, deviceIDs []int64) ([]model
 		positions = append(positions, *position)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query latest positions: %w", err)
+		return nil, fmt.Errorf("storage: query latest positions: %w", err)
 	}
 	return positions, nil
 }
 
-// latestPositionsQuery builds the DISTINCT ON statement. A nil list means every
-// device; an empty non-nil list matches nothing, like every other scope clause.
+// latestPositionsQuery builds the newest-row-per-device statement. A window
+// function is used instead of PostgreSQL's DISTINCT ON so the same SQL runs on
+// every supported database. A nil list means every device; an empty non-nil
+// list matches nothing, like every other scope clause.
 func latestPositionsQuery(deviceIDs []int64) (string, []any) {
 	args := make([]any, 0, len(deviceIDs))
-	query := `SELECT DISTINCT ON (device_id) ` + positionSelectColumns + ` FROM positions`
+	where := ""
 	if deviceIDs != nil {
-		query += " WHERE " + deviceIDsClause(&args, "device_id", deviceIDs)
+		where = " WHERE " + deviceIDsClause(&args, "device_id", deviceIDs)
 	}
-	query += " ORDER BY device_id, device_time DESC, id DESC"
+	query := `SELECT ` + positionSelectColumns + ` FROM (
+			SELECT ` + positionSelectColumns + `,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY device_id
+			           ORDER BY device_time DESC, id DESC
+			       ) AS rn
+			FROM positions` + where + `
+		) ranked WHERE rn = 1 ORDER BY device_id`
 	return query, args
 }
 
@@ -100,7 +109,7 @@ func scanPosition(row interface{ Scan(dest ...any) error }) (*model.Position, er
 		&position.ServerTime, &position.Valid, &latitude, &longitude,
 		&altitude, &speed, &course, &accuracy, &attributes, &geofenceIDs,
 	); err != nil {
-		return nil, fmt.Errorf("postgres: scan position: %w", err)
+		return nil, fmt.Errorf("storage: scan position: %w", err)
 	}
 
 	position.Latitude = latitude.Float64
@@ -114,12 +123,12 @@ func scanPosition(row interface{ Scan(dest ...any) error }) (*model.Position, er
 	position.Attributes = map[string]any{}
 	if len(attributes) > 0 {
 		if err := json.Unmarshal(attributes, &position.Attributes); err != nil {
-			return nil, fmt.Errorf("postgres: decode position attributes: %w", err)
+			return nil, fmt.Errorf("storage: decode position attributes: %w", err)
 		}
 	}
 	if len(geofenceIDs) > 0 {
 		if err := json.Unmarshal(geofenceIDs, &position.GeofenceIDs); err != nil {
-			return nil, fmt.Errorf("postgres: decode position geofences: %w", err)
+			return nil, fmt.Errorf("storage: decode position geofences: %w", err)
 		}
 	}
 	return &position, nil

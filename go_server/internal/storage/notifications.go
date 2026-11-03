@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -6,18 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"traccar-server_go/go_server/internal/model"
 )
 
 // notificationColumns is the SELECT list shared by the notification queries.
-// notificators is rendered as JSON so the driver never has to deal with a
-// PostgreSQL array type.
+// notificators is a JSON column, so every dialect returns the same text.
 const (
-	notificationColumns = `id, type, to_jsonb(notificators)::text, description,
+	notificationColumns = `id, type, notificators, description,
 		always, command_id, calendar_id, attributes, created_at`
 	// notificationJoinedColumns is the same list qualified for joins.
-	notificationJoinedColumns = `n.id, n.type, to_jsonb(n.notificators)::text, n.description,
+	notificationJoinedColumns = `n.id, n.type, n.notificators, n.description,
 		n.always, n.command_id, n.calendar_id, n.attributes, n.created_at`
 )
 
@@ -26,7 +26,7 @@ func (s *Store) Notifications(ctx context.Context) ([]model.Notification, error)
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT "+notificationColumns+" FROM notifications ORDER BY id")
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query notifications: %w", err)
+		return nil, fmt.Errorf("storage: query notifications: %w", err)
 	}
 	defer rows.Close()
 
@@ -39,7 +39,7 @@ func (s *Store) Notifications(ctx context.Context) ([]model.Notification, error)
 		notifications = append(notifications, *notification)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query notifications: %w", err)
+		return nil, fmt.Errorf("storage: query notifications: %w", err)
 	}
 	return notifications, nil
 }
@@ -53,7 +53,7 @@ func (s *Store) Notification(ctx context.Context, notificationID int64) (*model.
 		return nil, model.ErrNotificationNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query notification %d: %w", notificationID, err)
+		return nil, fmt.Errorf("storage: query notification %d: %w", notificationID, err)
 	}
 	return notification, nil
 }
@@ -70,16 +70,15 @@ func (s *Store) CreateNotification(ctx context.Context, create model.Notificatio
 		return nil, err
 	}
 
-	notification, err := scanNotification(s.db.QueryRowContext(ctx,
+	id, err := insertReturningID(ctx, s.db,
 		`INSERT INTO notifications (type, notificators, description, always, command_id, calendar_id, attributes)
-		 VALUES ($1, ARRAY(SELECT jsonb_array_elements_text($2::jsonb)), $3, $4, $5, $6, $7)
-		 RETURNING `+notificationColumns,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 		create.Type, notificators, create.Description, create.Always, create.CommandID,
-		nullableID(create.CalendarID), attributes))
+		nullableID(create.CalendarID), attributes)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: create notification: %w", err)
+		return nil, fmt.Errorf("storage: create notification: %w", err)
 	}
-	return notification, nil
+	return s.Notification(ctx, id)
 }
 
 // UpdateNotification replaces the non-nil fields of a preset.
@@ -101,39 +100,62 @@ func (s *Store) UpdateNotification(ctx context.Context, notificationID int64, up
 		attributes = &value
 	}
 
-	notification, err := scanNotification(s.db.QueryRowContext(ctx,
-		`UPDATE notifications
-		 SET type = COALESCE($2, type),
-		     notificators = CASE WHEN $3::jsonb IS NULL THEN notificators
-		                         ELSE ARRAY(SELECT jsonb_array_elements_text($3::jsonb)) END,
-		     description = COALESCE($4, description),
-		     always = COALESCE($5, always),
-		     command_id = COALESCE($6, command_id),
-		     calendar_id = CASE WHEN $7::bigint IS NULL THEN calendar_id ELSE $7 END,
-		     attributes = COALESCE($8::jsonb, attributes)
-		 WHERE id = $1
-		 RETURNING `+notificationColumns,
-		notificationID, update.Type, encoded, update.Description, update.Always,
-		update.CommandID, update.CalendarID, attributes))
-	if errors.Is(err, sql.ErrNoRows) {
+	assignments := make([]string, 0, 8)
+	args := []any{notificationID}
+	add := func(column string, value any) {
+		args = append(args, value)
+		assignments = append(assignments, fmt.Sprintf("%s = $%d", column, len(args)))
+	}
+	if update.Type != nil {
+		add("type", *update.Type)
+	}
+	if encoded != nil {
+		add("notificators", *encoded)
+	}
+	if update.Description != nil {
+		add("description", *update.Description)
+	}
+	if update.Always != nil {
+		add("always", *update.Always)
+	}
+	if update.CommandID != nil {
+		add("command_id", *update.CommandID)
+	}
+	if update.CalendarID != nil {
+		add("calendar_id", nullableID(*update.CalendarID))
+	}
+	if attributes != nil {
+		add("attributes", *attributes)
+	}
+	if len(assignments) == 0 {
+		return s.Notification(ctx, notificationID)
+	}
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE notifications SET `+strings.Join(assignments, ", ")+` WHERE id = $1`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: update notification %d: %w", notificationID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("storage: update notification %d: %w", notificationID, err)
+	}
+	if affected == 0 {
 		return nil, model.ErrNotificationNotFound
 	}
-	if err != nil {
-		return nil, fmt.Errorf("postgres: update notification %d: %w", notificationID, err)
-	}
-	return notification, nil
+	return s.Notification(ctx, notificationID)
 }
 
 // DeleteNotification removes a preset. Subscriptions cascade.
 func (s *Store) DeleteNotification(ctx context.Context, notificationID int64) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM notifications WHERE id = $1`, notificationID)
 	if err != nil {
-		return fmt.Errorf("postgres: delete notification %d: %w", notificationID, err)
+		return fmt.Errorf("storage: delete notification %d: %w", notificationID, err)
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: delete notification %d: %w", notificationID, err)
+		return fmt.Errorf("storage: delete notification %d: %w", notificationID, err)
 	}
 	if affected == 0 {
 		return model.ErrNotificationNotFound
@@ -151,7 +173,7 @@ func (s *Store) UserNotifications(ctx context.Context, userID int64) ([]model.No
 		 ORDER BY n.id`,
 		userID)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query user %d notifications: %w", userID, err)
+		return nil, fmt.Errorf("storage: query user %d notifications: %w", userID, err)
 	}
 	defer rows.Close()
 
@@ -164,7 +186,7 @@ func (s *Store) UserNotifications(ctx context.Context, userID int64) ([]model.No
 		notifications = append(notifications, *notification)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query user %d notifications: %w", userID, err)
+		return nil, fmt.Errorf("storage: query user %d notifications: %w", userID, err)
 	}
 	return notifications, nil
 }
@@ -173,10 +195,10 @@ func (s *Store) UserNotifications(ctx context.Context, userID int64) ([]model.No
 // no-op.
 func (s *Store) AssignNotification(ctx context.Context, userID, notificationID int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO user_notifications (user_id, notification_id) VALUES ($1, $2)
-		 ON CONFLICT DO NOTHING`, userID, notificationID)
-	if err != nil {
-		return fmt.Errorf("postgres: assign notification %d to user %d: %w", notificationID, userID, err)
+		`INSERT INTO user_notifications (user_id, notification_id) VALUES ($1, $2)`,
+		userID, notificationID)
+	if err != nil && !s.db.dialect.isDuplicate(err) {
+		return fmt.Errorf("storage: assign notification %d to user %d: %w", notificationID, userID, err)
 	}
 	return nil
 }
@@ -188,7 +210,7 @@ func (s *Store) UnassignNotification(ctx context.Context, userID, notificationID
 		`DELETE FROM user_notifications WHERE user_id = $1 AND notification_id = $2`,
 		userID, notificationID)
 	if err != nil {
-		return fmt.Errorf("postgres: unassign notification %d from user %d: %w", notificationID, userID, err)
+		return fmt.Errorf("storage: unassign notification %d from user %d: %w", notificationID, userID, err)
 	}
 	return nil
 }
@@ -201,7 +223,7 @@ func (s *Store) UnassignNotification(ctx context.Context, userID, notificationID
 // (alarms, geofenceIds) and still send each recipient once.
 func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertType string) ([]model.NotificationSubscription, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT u.id, u.email, to_jsonb(n.notificators)::text, u.attributes,
+		`SELECT u.id, u.email, n.notificators, u.attributes,
 		        n.id, n.type, n.always, n.attributes
 		 FROM notifications n
 		 JOIN user_notifications un ON un.notification_id = n.id
@@ -218,7 +240,7 @@ func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertTy
 		 ORDER BY u.id, n.id`,
 		deviceID, alertType)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query device %d subscriptions: %w", deviceID, err)
+		return nil, fmt.Errorf("storage: query device %d subscriptions: %w", deviceID, err)
 	}
 	defer rows.Close()
 
@@ -227,7 +249,7 @@ func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertTy
 		var (
 			userID           int64
 			email            string
-			notificatorsJSON string
+			notificatorsJSON []byte
 			attributesJSON   []byte
 			notificationJSON []byte
 		)
@@ -238,20 +260,20 @@ func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertTy
 		if err := rows.Scan(&userID, &email, &notificatorsJSON, &attributesJSON,
 			&subscription.NotificationID, &subscription.NotificationType, &always,
 			&notificationJSON); err != nil {
-			return nil, fmt.Errorf("postgres: scan device %d subscription: %w", deviceID, err)
+			return nil, fmt.Errorf("storage: scan device %d subscription: %w", deviceID, err)
 		}
 
 		var notificators []string
-		if err := json.Unmarshal([]byte(notificatorsJSON), &notificators); err != nil {
-			return nil, fmt.Errorf("postgres: decode notification channels: %w", err)
+		if err := json.Unmarshal(notificatorsJSON, &notificators); err != nil {
+			return nil, fmt.Errorf("storage: decode notification channels: %w", err)
 		}
 		attributes, err := decodeAttributes(attributesJSON)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: user %d subscription: %w", userID, err)
+			return nil, fmt.Errorf("storage: user %d subscription: %w", userID, err)
 		}
 		notificationAttributes, err := decodeAttributes(notificationJSON)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: notification %d: %w", subscription.NotificationID, err)
+			return nil, fmt.Errorf("storage: notification %d: %w", subscription.NotificationID, err)
 		}
 
 		subscription.UserID = userID
@@ -263,7 +285,7 @@ func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertTy
 		subscriptions = append(subscriptions, subscription)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query device %d subscriptions: %w", deviceID, err)
+		return nil, fmt.Errorf("storage: query device %d subscriptions: %w", deviceID, err)
 	}
 	return subscriptions, nil
 }
@@ -272,7 +294,7 @@ func (s *Store) DeviceSubscriptions(ctx context.Context, deviceID int64, alertTy
 func scanNotification(row interface{ Scan(dest ...any) error }) (*model.Notification, error) {
 	var (
 		notification     model.Notification
-		notificatorsJSON string
+		notificatorsJSON []byte
 		calendarID       sql.NullInt64
 		attributesJSON   []byte
 	)
@@ -282,21 +304,21 @@ func scanNotification(row interface{ Scan(dest ...any) error }) (*model.Notifica
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("postgres: scan notification: %w", err)
+		return nil, fmt.Errorf("storage: scan notification: %w", err)
 	}
 	if calendarID.Valid {
 		notification.CalendarID = calendarID.Int64
 	}
 
-	if err := json.Unmarshal([]byte(notificatorsJSON), &notification.Notificators); err != nil {
-		return nil, fmt.Errorf("postgres: decode notification channels: %w", err)
+	if err := json.Unmarshal(notificatorsJSON, &notification.Notificators); err != nil {
+		return nil, fmt.Errorf("storage: decode notification channels: %w", err)
 	}
 	if notification.Notificators == nil {
 		notification.Notificators = []string{}
 	}
 	attributes, err := decodeAttributes(attributesJSON)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: notification %d: %w", notification.ID, err)
+		return nil, fmt.Errorf("storage: notification %d: %w", notification.ID, err)
 	}
 	notification.Attributes = attributes
 	return &notification, nil
@@ -310,7 +332,7 @@ func encodeNotificators(values []string) (string, error) {
 	}
 	encoded, err := json.Marshal(values)
 	if err != nil {
-		return "", fmt.Errorf("postgres: encode notification channels: %w", err)
+		return "", fmt.Errorf("storage: encode notification channels: %w", err)
 	}
 	return string(encoded), nil
 }

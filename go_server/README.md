@@ -1,11 +1,13 @@
 # traccar-server-go：Go 協議網關
 
-用 Go 重寫 Traccar 的設備協議與伺服器：設備幀 → 標準 `Position` → PostgreSQL，
-並提供對齊母本的 REST API、告警 / 地理圍欄、通知、命令下發與處理鏈。
+用 Go 重寫 Traccar 的設備協議與伺服器：設備幀 → 標準 `Position` → SQL 資料庫
+（PostgreSQL / MySQL / SQLite），並提供對齊母本的 REST API、告警 / 地理圍欄、通知、
+命令下發與處理鏈。
 
 - 母本：`../traccar-master`（Java）；每個 Go 檔案都標明對應的 Java 類別。
 - 協議層是純函式（`[]byte` → `*model.Position`），I/O 集中在 `internal/gateway`。
-- 需求：Go 1.22+；PostgreSQL 只在 REST / 告警 / 命令歷史時需要。
+- 需求：Go 1.22+；資料庫只在 REST / 告警 / 命令歷史時需要。PostgreSQL、MySQL 8.0+、
+  SQLite 三選一，由 `database.url` 的 scheme 決定。
 
 ## 現況
 
@@ -45,6 +47,11 @@ make db-up                                      # postgres:16 → 127.0.0.1:5543
 TRACCAR_DSN='postgres://.../traccar?sslmode=disable' make run-db
 make rest-e2e                                   # 重播 + 驗證 REST 位置 / 告警 / 命令
 
+# MySQL（8.0+；本機 socket 或 TCP 皆可）
+TRACCAR_DSN='mysql://user:pass@127.0.0.1:3306/traccar' make run-db
+# SQLite（內嵌，取代 Java 版的 H2；檔案不存在會自動建立）
+TRACCAR_DSN='sqlite:///var/lib/traccar/traccar.db' make run-db
+
 docker compose up --build -d
 curl -H 'X-Api-Key: dev-key' http://127.0.0.1:8082/api/health
 docker compose down -v
@@ -59,6 +66,8 @@ docker compose down -v
 <properties>
     <entry key='web.address'>0.0.0.0:8082</entry>
     <entry key='database.url'>postgres://127.0.0.1:5432/traccar?sslmode=disable</entry>
+    <!-- 或 mysql://user:pass@127.0.0.1:3306/traccar -->
+    <!-- 或 sqlite:///var/lib/traccar/traccar.db -->
     <entry key='protocol.gt06.address'>0.0.0.0:5023</entry>
     <entry key='protocol.gt06.timeout'>30s</entry>
 </properties>
@@ -121,10 +130,37 @@ docker compose down -v
 
 ## 資料庫
 
-`internal/storage/postgres/migrations/*.sql`（18 支）由 `Store.Migrate` 套用；主要表：
-`devices`、`positions`、`events`、`geofences`、`groups`、`calendars`、`drivers`、
-`maintenances`、`orders`、`reports`、`users`、`user_devices`、`api_tokens`、`commands`、
-`password_resets`、`notifications`、`notification_rules`、`permissions`、`media`、`protocols`。
+`database.url` 的 scheme 決定方言，`Store.Migrate` 自動套用對應的 migration：
+
+| 方言 | DSN 範例 | Migration |
+| --- | --- | --- |
+| PostgreSQL | `postgres://user:pass@host:5432/traccar?sslmode=disable` | `internal/storage/migrations/postgres/`（20 支） |
+| MySQL 8.0+ | `mysql://user:pass@host:3306/traccar` | `internal/storage/migrations/mysql/` |
+| SQLite | `sqlite:///var/lib/traccar/traccar.db` | `internal/storage/migrations/sqlite/` |
+
+
+> 這裡用的是 Go 版自己的 schema，不是母本 `traccar-master` 的 `tc_*` schema。
+> 直接接既有的 Java 版 MySQL 資料庫還需要一層 schema 對應（見「與母本差距」）。
+
+MySQL 也可用本機 socket：`mysql://root@localhost/traccar?socket=/tmp/mysql.sock`。
+SQLite 是純 Go（`modernc.org/sqlite`，無 cgo），用來取代 Java 版的 H2；
+`sqlite::memory:` 適合測試。H2 本身是 Java 專屬，Go 版不支援。
+
+主要表：`devices`、`positions`、`events`、`geofences`、`device_groups`、`calendars`、
+`drivers`、`maintenances`、`orders`、`reports`、`users`、`api_tokens`、`commands`、
+`password_resets`、`notifications`、`user_notifications`、`permissions`、`media`、
+`protocol_settings`、`server_settings`、`actions`、`statistics`、`attributes`。
+
+整合測試用 `TRACCAR_TEST_DSN`（舊名 `TRACCAR_POSTGRES_DSN` 仍相容）：
+
+```bash
+# SQLite，不需外部服務
+TRACCAR_TEST_DSN='sqlite:///tmp/traccar-test.db' go test ./internal/storage
+# MySQL
+TRACCAR_TEST_DSN='mysql://root@127.0.0.1:3306/traccar' go test ./internal/storage
+# PostgreSQL
+TRACCAR_TEST_DSN='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' go test ./internal/storage
+```
 
 ## REST API
 
@@ -159,6 +195,7 @@ docker compose down -v
 - 群組授權只影響可見裝置；通知收件者仍只認 `user → device`。
 - 分享帳號由 admin 或 `schedule.temporary.interval` 到期刪除；`/api/socket` token 在 query string。
 - `suntech` 只能收不能下命令；記憶體模式僅適合開發。
+- MySQL 需 8.0+（`ROW_NUMBER` 窗函式）；SQLite 適合單節點，不建議多程序共用同一檔案。
 - TOTP / OpenID / LDAP / HLS / 裝置影像 / Redis 推播都要設定後才啟用，未設定回 501。
 
 ## 與母本差距
@@ -171,11 +208,11 @@ docker compose down -v
 | OpenAPI 路徑 | 76 | 0 |
 | 地理 provider | geocoder 26、geolocation 6 | — |
 | 外送 | JSON、URL、MQTT、Redis、Wialon、Network、AMQP、Kafka | — |
-| 資料庫 | PostgreSQL | MySQL / H2；schema 與母本不相容 |
+| 資料庫 | PostgreSQL、MySQL 8.0+、SQLite（內嵌取代 H2） | H2（Java 專屬）；母本 `tc_*` schema 尚未相容 |
 | 認證 | 密碼、token、TOTP、OpenID、LDAP | 0 |
 | 水平擴展 | Redis 推播 | multicast；跨節點 device session |
 | 影像 | 上傳 / 下載、HLS 端點 | JT1078 解碼與切片 |
 | 排程 | 10 | — |
 
 後續順序：依客戶設備補協議與 Encoder → 要接母本資料庫再處理
-storage / schema → 要即時影像再做 JT1078。
+母本 `tc_*` schema 相容 → 要即時影像再做 JT1078。

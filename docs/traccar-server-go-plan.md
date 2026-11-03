@@ -40,9 +40,9 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
   - [ ] PR-2 與 PR-4 在 PR-1 之後開，否則 lane 只能用手寫的 python 腳本硬湊。
   - [ ] PR-4 不依賴 PR-2，兩支碰的檔案沒有交集。
 - [ ] 檔案邊界。PR-1 只碰 `go_server/cmd/device-sim/`、`go_server/scripts/`、`go_server/cmd/traccar-gateway/main.go`、`go_server/internal/gateway/server_bench_test.go` 與 `go_server/README.md`。
-- [ ] 檔案邊界。PR-2 只碰 `go_server/internal/codec/codec.go`、`go_server/internal/gateway/directory.go`、`go_server/internal/storage/postgres/store.go`、GT06 與 JT808 的 decoder 與測試。
-- [ ] 檔案邊界。PR-3 只碰 `go_server/internal/api/auth.go`、`go_server/internal/api/users.go`、`go_server/internal/auth/`、`go_server/internal/storage/postgres/users.go`、`0006_users_password.sql`。
-- [ ] 檔案邊界。PR-4 只碰 `go_server/internal/gateway/`、`go_server/internal/model/command.go`、`go_server/internal/storage/postgres/commands.go`、`0007_commands.sql`、`go_server/internal/api/server.go` 的命令段。
+- [ ] 檔案邊界。PR-2 只碰 `go_server/internal/codec/codec.go`、`go_server/internal/gateway/directory.go`、`go_server/internal/storage/store.go`、GT06 與 JT808 的 decoder 與測試。
+- [ ] 檔案邊界。PR-3 只碰 `go_server/internal/api/auth.go`、`go_server/internal/api/users.go`、`go_server/internal/auth/`、`go_server/internal/storage/users.go`、`0006_users_password.sql`。
+- [ ] 檔案邊界。PR-4 只碰 `go_server/internal/gateway/`、`go_server/internal/model/command.go`、`go_server/internal/storage/commands.go`、`0007_commands.sql`、`go_server/internal/api/server.go` 的命令段。
 - [ ] Review gate。PR-3 改的是 API 互動，等 operator 看過 curl transcript 與終端錄影才合。
 
 ### PR mechanics, for every PR
@@ -141,17 +141,17 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 - [x] Edit `go_server/internal/codec/codec.go`.
 - [x] Edit `go_server/internal/gateway/directory.go`.
-- [x] Edit `go_server/internal/storage/postgres/store.go`.
+- [x] Edit `go_server/internal/storage/store.go`.
 - [x] Edit `go_server/internal/protocol/gt06/decoder.go`.
 - [x] Edit `go_server/internal/protocol/jt808/decoder.go`.
 - [x] Edit `go_server/internal/protocol/gt06/decoder_test.go`.
 - [x] Edit `go_server/internal/protocol/jt808/decoder_test.go`.
 - [x] Create `go_server/internal/gateway/directory_test.go`.
-- [x] Edit `go_server/internal/storage/postgres/store_test.go`.
+- [x] Edit `go_server/internal/storage/store_test.go`.
 
 **Build.**
 
-- [x] `codec.DeviceSession` 加 `Model` 欄位。`gateway.MemoryDirectory.Resolve`、`postgres.Store.Resolve` 與 `gateway.Server` 自動註冊那一條路徑一起填它，自動註冊的裝置 model 先留空。
+- [x] `codec.DeviceSession` 加 `Model` 欄位。`gateway.MemoryDirectory.Resolve`、`storage.Store.Resolve` 與 `gateway.Server` 自動註冊那一條路徑一起填它，自動註冊的裝置 model 先留空。
 - [x] `gt06.Decoder.decodePower` 收 `session.Model` 推出的 LW / SEEWORLD / VL 旗標，照 Java `Gt06ProtocolDecoder.decodeAlarm` 的模型分支決定告警名稱。`modelNT` 的 LBS2 / DRIVER 版面差異不在這支 PR，記在附錄 C。
 - [x] `jt808.Decoder.decodeAlarm` 改成收 model，照 Java 的 `PADLOCK_MODELS` 與 `AOVX_MODELS` 與 `VL300` 三條分支走。
 - [x] model 一律先轉大寫再比對，跟 Java 的 `toUpperCase(Locale.ROOT)` 對齊。
@@ -200,16 +200,16 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Files.**
 
-- [x] Create `go_server/internal/storage/postgres/migrations/0006_users_password.sql`.
+- [x] Create `go_server/internal/storage/migrations/postgres/0006_users_password.sql`.
 - [x] Create `go_server/internal/auth/password.go`.
 - [x] Create `go_server/internal/auth/password_test.go`.
 - [x] Edit `go_server/internal/api/auth.go`.
 - [x] Edit `go_server/internal/api/users.go`.
-- [x] Edit `go_server/internal/storage/postgres/users.go`.
+- [x] Edit `go_server/internal/storage/users.go`.
 - [x] Edit `go_server/go.mod`.
 - [x] Edit `go_server/internal/api/server.go`, one route line for `POST /api/login`. Outside the list above;
       see Appendix C 偏差四.
-- [x] Edit `go_server/internal/storage/postgres/store_test.go`, the env gated integration test for the two new
+- [x] Edit `go_server/internal/storage/store_test.go`, the env gated integration test for the two new
       storage methods. Outside the list above; see Appendix C 偏差五.
 
 **Build.**
@@ -231,7 +231,7 @@ Re-read the execution playbook from trunk. Audit the operation against it and fi
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [x] `password_test.go` 涵蓋雜湊可驗、錯密碼不可驗、空密碼被拒。`users_test.go` 涵蓋非 admin 只能碰自己的 token。跑 `go test ./internal/auth/... ./internal/api/... ./internal/storage/postgres/...`。
+- [x] `password_test.go` 涵蓋雜湊可驗、錯密碼不可驗、空密碼被拒。`users_test.go` 涵蓋非 admin 只能碰自己的 token。跑 `go test ./internal/auth/... ./internal/api/... ./internal/storage/...`。
       Evidence. `go vet ./...`、`go build ./...`、`go test ./...` 全綠，`go test -race` 在三個受影響的 package 也乾淨。
       `auth`：`TestHashPasswordVerifies`（含 cost 12）、`TestHashPasswordIsSalted`、`TestHashPasswordRejectsEmpty`、
       `TestVerifyPasswordRejectsBrokenHash`、`TestHashPasswordRejectsTooLong`、`TestVerifyPasswordEmptyHashStillCosts`。`api`：`TestLoginIssuesUsableToken`（登入 token 打得到 `/api/devices`）、
@@ -262,7 +262,7 @@ unit 那格用 `httptest` 蓋掉 lane 2 / 3 / 4 / 6 / 7 / 9 / 10 的判斷條件
 - [x] Metric. `POST /api/login` 的 p95 延遲與每個請求的 DB round trip 數。
       量到 login p50 594 ms、p95 740 ms（20 次，`httptest` 內同一 process，假 store，所以扣掉了 DB 時間）。
       DB round trip 是 2：`CredentialByEmail` 一次 SELECT，`issueToken` 一次
-      `INSERT ... SELECT ... RETURNING`（`go_server/internal/storage/postgres/users.go`）。
+      `INSERT ... SELECT ... RETURNING`（`go_server/internal/storage/users.go`）。
 - [ ] Probe. `ab -n 200 -c 5 -p login.json -T application/json 127.0.0.1:8082/api/login`，對 head 跑；trunk 沒有這個端點，改量 trunk 的 `GET /api/devices` 當基準。
       Unchecked，因為沒有可 bind 的 socket，`ab` 無從連起。上面那組數字是 in-process 替代，不是這條探針。
 - [ ] Baseline. 先記 trunk 的 `GET /api/devices` p95。
@@ -296,9 +296,9 @@ unit 那格用 `httptest` 蓋掉 lane 2 / 3 / 4 / 6 / 7 / 9 / 10 的判斷條件
 
 **Files.**
 
-- [x] Create `go_server/internal/storage/postgres/migrations/0007_commands.sql`.
-- [x] Create `go_server/internal/storage/postgres/commands.go`.
-- [x] Create `go_server/internal/storage/postgres/commands_test.go`.
+- [x] Create `go_server/internal/storage/migrations/postgres/0007_commands.sql`.
+- [x] Create `go_server/internal/storage/commands.go`.
+- [x] Create `go_server/internal/storage/commands_test.go`.
 - [x] Edit `go_server/internal/model/command.go`.
 - [x] Edit `go_server/internal/codec/codec.go`.
 - [x] Edit `go_server/internal/gateway/server.go`.
@@ -337,9 +337,9 @@ unit 那格用 `httptest` 蓋掉 lane 2 / 3 / 4 / 6 / 7 / 9 / 10 的判斷條件
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
 - [x] `commands_test.go` 涵蓋四種狀態轉移與 `GET /api/commands` 的擁有權過濾。`decoder_test.go` 各加一個 ACK
-      解析 case。跑 `go test ./internal/storage/postgres/... ./internal/api/... ./internal/protocol/...`。
+      解析 case。跑 `go test ./internal/storage/... ./internal/api/... ./internal/protocol/...`。
       Evidence. `go vet ./...`、`go build ./...`、`go test ./...` 全綠，`go test -race` 在
-      `api` / `gateway` / `storage/postgres` / 兩個 protocol package 也乾淨。
+      `api` / `gateway` / `storage` / 兩個 protocol package 也乾淨。
       `postgres`：`TestCommandQueryDefaults`、`TestCommandQueryFilters`、`TestCommandQueryOwnership`
       （空授權清單產生 `WHERE false`）、`TestCommandQueryClamps`、`TestCreateCommandRejectsMissingDevice`，
       以及 `TestCommandStoreIntegration`（pending → sent → done、離線失敗、裝置回 1 變 failed、
@@ -438,7 +438,7 @@ PR-2 刻意不搬 GT06 的 `modelNT` 分支。它改的是 `MSG_GPS_LBS_2` 與 `
 偏差四，PR-3 動了 `go_server/internal/api/server.go` 的一行路由註冊。`Handler()` 是唯一掛路由的地方，
 `handleLogin` 放在同一個 package 的另一個檔案也只能靠它註冊，所以這一行無法留在檔案邊界外。它落在
 認證段，與 PR-4 會改的命令段不同行，rebase 時不會撞。
-偏差五，PR-3 動了 `go_server/internal/storage/postgres/store_test.go`。新增的兩條 SQL 沒有其他行為驗證，
+偏差五，PR-3 動了 `go_server/internal/storage/store_test.go`。新增的兩條 SQL 沒有其他行為驗證，
 不補一個 env gated 的整合測試就只剩編譯檢查。這個檔案不屬於 PR-4 的檔案邊界。
 偏差六，PR-4 動了 `go_server/internal/protocol/jt808/message.go`。`0x0001` 這個訊息型別常數跟其他
 `MSG_*` 放在一起，塞進 decoder.go 只為了守檔案邊界會讓它變成孤兒。
@@ -477,7 +477,7 @@ session 時用選配介面 `DeviceConnectHook` 通知派送器，儲存層沒實
 每小時跑一次（`-command-retention`，0 = 不清理）：結束的列看 `done_at`，沒結束的看 `created_at`。
 
 **已驗證。** `go vet ./...`、`go build ./...`、`go test ./...` 全綠，`go test -race` 在 `gateway`、
-`storage/postgres`、`jt808` 與 `metrics` 也乾淨。`dispatch_test.go` 十條：在線直送、離線排隊後
+`storage`、`jt808` 與 `metrics` 也乾淨。`dispatch_test.go` 十條：在線直送、離線排隊後
 重連補送、重送到次數用完、排隊逾時、以流水號配對、無流水號時收最新一列、重啟後從 `pending`
 復原、佇列滿回錯、協議沒在聽時直接失敗、一台裝置的佇列不擋另一台。`commands_test.go` 另加
 `TestAcknowledgeQuery`（無資料庫）與整合測試的流水號、`attempts`、`PendingCommands`、

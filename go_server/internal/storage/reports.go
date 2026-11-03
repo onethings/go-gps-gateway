@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -24,12 +24,12 @@ var reportSpec = resourceSpec[model.Report]{
 			attributes []byte
 		)
 		if err := row.Scan(&report.ID, &calendarID, &report.Type, &report.Description, &attributes); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan report: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan report: %w", err))
 		}
 		report.CalendarID = calendarID.Int64
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: report %d: %w", report.ID, err)
+			return nil, fmt.Errorf("storage: report %d: %w", report.ID, err)
 		}
 		report.Attributes = decoded
 		return &report, nil

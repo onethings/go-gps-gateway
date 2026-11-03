@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 
 // ErrUnknownUser is returned when a token is issued for an email that has no
 // users row.
-var ErrUnknownUser = errors.New("postgres: unknown user")
+var ErrUnknownUser = errors.New("storage: unknown user")
 
 const (
 	defaultUserLimit = 100
@@ -30,15 +30,9 @@ const (
 		(SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id),
 		u.attributes`
 
-	// tokenColumns is the SELECT list shared by every token query. The scopes
-	// column is rendered as JSON so the driver never has to deal with a
-	// PostgreSQL array type.
-	tokenColumns = `id, user_id, to_jsonb(scopes)::text, expires_at, created_at`
-
-	// tokenReturningColumns is the same list qualified with the target table
-	// name, because the INSERT below also reads from users.
-	tokenReturningColumns = `api_tokens.id, api_tokens.user_id,
-		to_jsonb(api_tokens.scopes)::text, api_tokens.expires_at, api_tokens.created_at`
+	// tokenColumns is the SELECT list shared by every token query. scopes is a
+	// JSON column, so every dialect returns the same text.
+	tokenColumns = `id, user_id, scopes, expires_at, created_at`
 )
 
 // LookupToken resolves a hashed bearer token to its principal. A token that
@@ -57,31 +51,19 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 	}
 
 	var (
-		tokenID     int64
-		userID      int64
-		admin       bool
-		scopesJSON  string
-		devicesJSON string
-		groupsJSON  string
+		tokenID int64
+		userID  int64
+		admin   bool
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT t.id, u.id, u.admin,
-		        to_jsonb(t.scopes)::text,
-		        COALESCE((SELECT jsonb_agg(p.property_id)
-		                  FROM permissions p
-		                  WHERE p.owner_type = 'user' AND p.owner_id = u.id
-		                    AND p.property_type = 'device'), '[]'::jsonb)::text,
-		        COALESCE((SELECT jsonb_agg(p.property_id)
-		                  FROM permissions p
-		                  WHERE p.owner_type = 'user' AND p.owner_id = u.id
-		                    AND p.property_type = 'group'), '[]'::jsonb)::text
+		`SELECT t.id, u.id, u.admin
 		 FROM api_tokens t
 		 JOIN users u ON u.id = t.user_id
 		 WHERE t.token_hash = $1
 		   AND NOT u.disabled
-		   AND (t.expires_at IS NULL OR t.expires_at > now())`,
-		tokenHash,
-	).Scan(&tokenID, &userID, &admin, &scopesJSON, &devicesJSON, &groupsJSON)
+		   AND (t.expires_at IS NULL OR t.expires_at > $2)`,
+		tokenHash, time.Now().UTC(),
+	).Scan(&tokenID, &userID, &admin)
 	if errors.Is(err, sql.ErrNoRows) {
 		if cache := s.tokens; cache != nil {
 			// Cache the miss so an unknown token does not hammer the database;
@@ -92,20 +74,25 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("postgres: lookup token: %w", err)
+		return nil, fmt.Errorf("storage: lookup token: %w", err)
 	}
 
+	var scopesJSON []byte
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT scopes FROM api_tokens WHERE id = $1`, tokenID).Scan(&scopesJSON); err != nil {
+		return nil, fmt.Errorf("storage: lookup token scopes: %w", err)
+	}
 	var rawScopes []string
-	if err := json.Unmarshal([]byte(scopesJSON), &rawScopes); err != nil {
-		return nil, fmt.Errorf("postgres: decode token scopes: %w", err)
+	if err := json.Unmarshal(scopesJSON, &rawScopes); err != nil {
+		return nil, fmt.Errorf("storage: decode token scopes: %w", err)
 	}
-	var deviceIDs []int64
-	if err := json.Unmarshal([]byte(devicesJSON), &deviceIDs); err != nil {
-		return nil, fmt.Errorf("postgres: decode token devices: %w", err)
+	deviceIDs, err := s.permissionIDs(ctx, userID, "device")
+	if err != nil {
+		return nil, err
 	}
-	var groupIDs []int64
-	if err := json.Unmarshal([]byte(groupsJSON), &groupIDs); err != nil {
-		return nil, fmt.Errorf("postgres: decode token groups: %w", err)
+	groupIDs, err := s.permissionIDs(ctx, userID, "group")
+	if err != nil {
+		return nil, err
 	}
 
 	// Group grants are expanded once per request instead of per query, which is
@@ -136,7 +123,7 @@ func (s *Store) LookupToken(ctx context.Context, tokenHash string) (*auth.Princi
 // Ping reports whether the database is reachable, for the health probe.
 func (s *Store) Ping(ctx context.Context) error {
 	if err := s.db.PingContext(ctx); err != nil {
-		return fmt.Errorf("postgres: ping: %w", err)
+		return fmt.Errorf("storage: ping: %w", err)
 	}
 	return nil
 }
@@ -167,7 +154,7 @@ func (s *Store) Users(ctx context.Context, filter model.UserFilter) ([]model.Use
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query users: %w", err)
+		return nil, fmt.Errorf("storage: query users: %w", err)
 	}
 	defer rows.Close()
 
@@ -180,7 +167,7 @@ func (s *Store) Users(ctx context.Context, filter model.UserFilter) ([]model.Use
 		users = append(users, *user)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query users: %w", err)
+		return nil, fmt.Errorf("storage: query users: %w", err)
 	}
 	return users, nil
 }
@@ -193,7 +180,7 @@ func (s *Store) User(ctx context.Context, userID int64) (*model.User, error) {
 		return nil, model.ErrUserNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query user %d: %w", userID, err)
+		return nil, fmt.Errorf("storage: query user %d: %w", userID, err)
 	}
 	return user, nil
 }
@@ -213,11 +200,11 @@ func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 			// their own "not found" sentinel.
 			return nil, err
 		}
-		return nil, fmt.Errorf("postgres: scan user: %w", err)
+		return nil, fmt.Errorf("storage: scan user: %w", err)
 	}
 	decoded, err := decodeAttributes(attributes)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: user %d: %w", user.ID, err)
+		return nil, fmt.Errorf("storage: user %d: %w", user.ID, err)
 	}
 	user.Attributes = decoded
 	return &user, nil
@@ -255,7 +242,7 @@ func (s *Store) credential(ctx context.Context, predicate string, arg any) (*aut
 		return nil, model.ErrUserNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("postgres: credential: %w", err)
+		return nil, fmt.Errorf("storage: credential: %w", err)
 	}
 	if lockedUntil.Valid {
 		lock := lockedUntil.Time
@@ -278,7 +265,7 @@ func (s *Store) UserTOTP(ctx context.Context, userID int64) (string, bool, error
 		return "", false, model.ErrUserNotFound
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("postgres: user totp: %w", err)
+		return "", false, fmt.Errorf("storage: user totp: %w", err)
 	}
 	return secret, enabled, nil
 }
@@ -294,11 +281,11 @@ func (s *Store) SetUserTOTP(ctx context.Context, userID int64, secret string, en
 		`UPDATE users SET totp_key = $2, totp_enabled = $3 WHERE id = $1`,
 		userID, key, enabled && secret != "")
 	if err != nil {
-		return fmt.Errorf("postgres: set user totp: %w", err)
+		return fmt.Errorf("storage: set user totp: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: set user totp: %w", err)
+		return fmt.Errorf("storage: set user totp: %w", err)
 	}
 	if affected == 0 {
 		return model.ErrUserNotFound
@@ -323,7 +310,7 @@ func (s *Store) RecordLoginFailure(ctx context.Context, userID int64, threshold 
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: record login failure of user %d: %w", userID, err)
+		return nil, fmt.Errorf("storage: record login failure of user %d: %w", userID, err)
 	}
 	defer tx.Rollback()
 
@@ -331,18 +318,19 @@ func (s *Store) RecordLoginFailure(ctx context.Context, userID int64, threshold 
 		attempts    int
 		lockedUntil sql.NullTime
 	)
-	err = tx.QueryRowContext(ctx,
-		`SELECT failed_login_attempts, locked_until FROM users WHERE id = $1 FOR UPDATE`,
-		userID,
-	).Scan(&attempts, &lockedUntil)
+	selectQuery := `SELECT failed_login_attempts, locked_until FROM users WHERE id = $1`
+	if s.db.dialect.name != "sqlite" {
+		selectQuery += " FOR UPDATE"
+	}
+	err = tx.QueryRowContext(ctx, selectQuery, userID).Scan(&attempts, &lockedUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrUserNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("postgres: record login failure of user %d: %w", userID, err)
+		return nil, fmt.Errorf("storage: record login failure of user %d: %w", userID, err)
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	if lockedUntil.Valid && !lockedUntil.Time.After(now) {
 		attempts = 0
 	}
@@ -361,10 +349,10 @@ func (s *Store) RecordLoginFailure(ctx context.Context, userID int64, threshold 
 		`UPDATE users SET failed_login_attempts = $2, locked_until = $3 WHERE id = $1`,
 		userID, attempts, lockedUntil,
 	); err != nil {
-		return nil, fmt.Errorf("postgres: record login failure of user %d: %w", userID, err)
+		return nil, fmt.Errorf("storage: record login failure of user %d: %w", userID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("postgres: record login failure of user %d: %w", userID, err)
+		return nil, fmt.Errorf("storage: record login failure of user %d: %w", userID, err)
 	}
 	return lock, nil
 }
@@ -375,11 +363,11 @@ func (s *Store) ResetLoginFailures(ctx context.Context, userID int64) error {
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`, userID)
 	if err != nil {
-		return fmt.Errorf("postgres: reset login failures of user %d: %w", userID, err)
+		return fmt.Errorf("storage: reset login failures of user %d: %w", userID, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: reset login failures of user %d: %w", userID, err)
+		return fmt.Errorf("storage: reset login failures of user %d: %w", userID, err)
 	}
 	if affected == 0 {
 		return model.ErrUserNotFound
@@ -395,19 +383,15 @@ func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model
 		return nil, err
 	}
 
-	var userID int64
-	err = s.db.QueryRowContext(ctx,
+	userID, err := insertReturningID(ctx, s.db,
 		`INSERT INTO users (email, name, admin, temporary, attributes)
-		 VALUES ($1, $2, $3, $4, $5::jsonb)
-		 ON CONFLICT (email) DO NOTHING
-		 RETURNING id`,
-		create.Email, create.Name, create.Admin, create.Temporary, attributes,
-	).Scan(&userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, model.ErrDuplicateUser
-	}
+		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		create.Email, create.Name, create.Admin, create.Temporary, attributes)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: create user %q: %w", create.Email, err)
+		if s.db.dialect.isDuplicate(err) {
+			return nil, model.ErrDuplicateUser
+		}
+		return nil, fmt.Errorf("storage: create user %q: %w", create.Email, err)
 	}
 	s.invalidateTokenCache()
 	return s.User(ctx, userID)
@@ -424,25 +408,30 @@ func (s *Store) UpdateUser(ctx context.Context, userID int64, update model.UserU
 		attributes = encoded
 	}
 
-	var updatedID int64
-	err := s.db.QueryRowContext(ctx,
-		`UPDATE users
+	query := `UPDATE users
 		 SET name = COALESCE($2, name),
 		     admin = COALESCE($3, admin),
-		     disabled = COALESCE($4, disabled),
-		     attributes = COALESCE($5::jsonb, attributes)
-		 WHERE id = $1
-		 RETURNING id`,
-		userID, update.Name, update.Admin, update.Disabled, attributes,
-	).Scan(&updatedID)
-	if errors.Is(err, sql.ErrNoRows) {
+		     disabled = COALESCE($4, disabled)`
+	args := []any{userID, update.Name, update.Admin, update.Disabled}
+	if attributes != nil {
+		query += ", attributes = $5"
+		args = append(args, attributes)
+	}
+	query += " WHERE id = $1"
+
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: update user %d: %w", userID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("storage: update user %d: %w", userID, err)
+	}
+	if affected == 0 {
 		return nil, model.ErrUserNotFound
 	}
-	if err != nil {
-		return nil, fmt.Errorf("postgres: update user %d: %w", userID, err)
-	}
 	s.invalidateTokenCache()
-	return s.User(ctx, updatedID)
+	return s.User(ctx, userID)
 }
 
 // SetPassword replaces the stored bcrypt hash of an account. It is a separate
@@ -452,12 +441,12 @@ func (s *Store) SetPassword(ctx context.Context, userID int64, passwordHash stri
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE users SET password_hash = $2 WHERE id = $1`, userID, passwordHash)
 	if err != nil {
-		return fmt.Errorf("postgres: set password of user %d: %w", userID, err)
+		return fmt.Errorf("storage: set password of user %d: %w", userID, err)
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: set password of user %d: %w", userID, err)
+		return fmt.Errorf("storage: set password of user %d: %w", userID, err)
 	}
 	if affected == 0 {
 		return model.ErrUserNotFound
@@ -469,12 +458,12 @@ func (s *Store) SetPassword(ctx context.Context, userID int64, passwordHash stri
 func (s *Store) DeleteUser(ctx context.Context, userID int64) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, userID)
 	if err != nil {
-		return fmt.Errorf("postgres: delete user %d: %w", userID, err)
+		return fmt.Errorf("storage: delete user %d: %w", userID, err)
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: delete user %d: %w", userID, err)
+		return fmt.Errorf("storage: delete user %d: %w", userID, err)
 	}
 	if affected == 0 {
 		return model.ErrUserNotFound
@@ -493,38 +482,43 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) error {
 
 // UserDevices returns the device ids granted to a user, in id order.
 func (s *Store) UserDevices(ctx context.Context, userID int64) ([]int64, error) {
+	return s.permissionIDs(ctx, userID, "device")
+}
+
+// permissionIDs reads the property ids of one grant type. It is the portable
+// replacement for the jsonb_agg subqueries the PostgreSQL-only version used.
+func (s *Store) permissionIDs(ctx context.Context, userID int64, propertyType string) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT property_id FROM permissions
-		  WHERE owner_type = 'user' AND owner_id = $1 AND property_type = 'device'
+		  WHERE owner_type = 'user' AND owner_id = $1 AND property_type = $2
 		  ORDER BY property_id`,
-		userID)
+		userID, propertyType)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query user %d devices: %w", userID, err)
+		return nil, fmt.Errorf("storage: query user %d %s permissions: %w", userID, propertyType, err)
 	}
 	defer rows.Close()
 
-	deviceIDs := make([]int64, 0, 4)
+	ids := make([]int64, 0, 4)
 	for rows.Next() {
-		var deviceID int64
-		if err := rows.Scan(&deviceID); err != nil {
-			return nil, fmt.Errorf("postgres: scan user %d device: %w", userID, err)
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("storage: scan user %d %s permission: %w", userID, propertyType, err)
 		}
-		deviceIDs = append(deviceIDs, deviceID)
+		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query user %d devices: %w", userID, err)
+		return nil, fmt.Errorf("storage: query user %d %s permissions: %w", userID, propertyType, err)
 	}
-	return deviceIDs, nil
+	return ids, nil
 }
 
 // AssignDevice grants a user access to a device. Repeating the call is a no-op.
 func (s *Store) AssignDevice(ctx context.Context, userID, deviceID int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO permissions (owner_type, owner_id, property_type, property_id)
-		 VALUES ('user', $1, 'device', $2)
-		 ON CONFLICT DO NOTHING`, userID, deviceID)
-	if err != nil {
-		return fmt.Errorf("postgres: assign device %d to user %d: %w", deviceID, userID, err)
+		 VALUES ('user', $1, 'device', $2)`, userID, deviceID)
+	if err != nil && !s.db.dialect.isDuplicate(err) {
+		return fmt.Errorf("storage: assign device %d to user %d: %w", deviceID, userID, err)
 	}
 	s.invalidateTokenCache()
 	return nil
@@ -539,7 +533,7 @@ func (s *Store) UnassignDevice(ctx context.Context, userID, deviceID int64) erro
 		    AND property_type = 'device' AND property_id = $2`,
 		userID, deviceID)
 	if err != nil {
-		return fmt.Errorf("postgres: unassign device %d from user %d: %w", deviceID, userID, err)
+		return fmt.Errorf("storage: unassign device %d from user %d: %w", deviceID, userID, err)
 	}
 	s.invalidateTokenCache()
 	return nil
@@ -551,7 +545,7 @@ func (s *Store) Tokens(ctx context.Context, userID int64) ([]model.APIToken, err
 		"SELECT "+tokenColumns+" FROM api_tokens WHERE user_id = $1 ORDER BY id DESC",
 		userID)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query user %d tokens: %w", userID, err)
+		return nil, fmt.Errorf("storage: query user %d tokens: %w", userID, err)
 	}
 	defer rows.Close()
 
@@ -564,7 +558,7 @@ func (s *Store) Tokens(ctx context.Context, userID int64) ([]model.APIToken, err
 		tokens = append(tokens, *token)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query user %d tokens: %w", userID, err)
+		return nil, fmt.Errorf("storage: query user %d tokens: %w", userID, err)
 	}
 	return tokens, nil
 }
@@ -604,20 +598,31 @@ func (s *Store) issueToken(ctx context.Context, predicate string, userArg any, s
 	}
 	encoded, err := json.Marshal(scopes)
 	if err != nil {
-		return nil, "", fmt.Errorf("postgres: encode token scopes: %w", err)
+		return nil, "", fmt.Errorf("storage: encode token scopes: %w", err)
 	}
 
-	record, err := scanToken(s.db.QueryRowContext(ctx,
-		`INSERT INTO api_tokens (user_id, token_hash, scopes, expires_at)
-		 SELECT u.id, $2, ARRAY(SELECT jsonb_array_elements_text($3::jsonb)), $4
-		 FROM users u WHERE `+predicate+`
-		 RETURNING `+tokenReturningColumns,
-		userArg, auth.HashToken(token), string(encoded), expiresAt))
+	var userID int64
+	err = s.db.QueryRowContext(ctx,
+		`SELECT u.id FROM users u WHERE `+predicate, userArg).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", notFound
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("postgres: issue token: %w", err)
+		return nil, "", fmt.Errorf("storage: issue token: %w", err)
+	}
+
+	tokenID, err := insertReturningID(ctx, s.db,
+		`INSERT INTO api_tokens (user_id, token_hash, scopes, expires_at)
+		 VALUES ($1, $2, $3, $4) RETURNING id`,
+		userID, auth.HashToken(token), string(encoded), expiresAt)
+	if err != nil {
+		return nil, "", fmt.Errorf("storage: issue token: %w", err)
+	}
+
+	record, err := scanToken(s.db.QueryRowContext(ctx,
+		"SELECT "+tokenColumns+" FROM api_tokens WHERE id = $1", tokenID))
+	if err != nil {
+		return nil, "", fmt.Errorf("storage: issue token: %w", err)
 	}
 	s.invalidateTokenCache()
 	return record, token, nil
@@ -629,12 +634,12 @@ func (s *Store) RevokeToken(ctx context.Context, userID, tokenID int64) error {
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM api_tokens WHERE id = $1 AND user_id = $2`, tokenID, userID)
 	if err != nil {
-		return fmt.Errorf("postgres: revoke token %d: %w", tokenID, err)
+		return fmt.Errorf("storage: revoke token %d: %w", tokenID, err)
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: revoke token %d: %w", tokenID, err)
+		return fmt.Errorf("storage: revoke token %d: %w", tokenID, err)
 	}
 	if affected == 0 {
 		return model.ErrTokenNotFound
@@ -650,7 +655,7 @@ func (s *Store) RevokeTokensExcept(ctx context.Context, userID, keepTokenID int6
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM api_tokens WHERE user_id = $1 AND id <> $2`, userID, keepTokenID)
 	if err != nil {
-		return fmt.Errorf("postgres: revoke tokens of user %d: %w", userID, err)
+		return fmt.Errorf("storage: revoke tokens of user %d: %w", userID, err)
 	}
 	s.invalidateTokenCache()
 	return nil
@@ -660,18 +665,18 @@ func (s *Store) RevokeTokensExcept(ctx context.Context, userID, keepTokenID int6
 func scanToken(row interface{ Scan(dest ...any) error }) (*model.APIToken, error) {
 	var (
 		token      model.APIToken
-		scopesJSON string
+		scopesJSON []byte
 		expiresAt  sql.NullTime
 	)
 	if err := row.Scan(&token.ID, &token.UserID, &scopesJSON, &expiresAt, &token.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("postgres: scan token: %w", err)
+		return nil, fmt.Errorf("storage: scan token: %w", err)
 	}
 
-	if err := json.Unmarshal([]byte(scopesJSON), &token.Scopes); err != nil {
-		return nil, fmt.Errorf("postgres: decode token scopes: %w", err)
+	if err := json.Unmarshal(scopesJSON, &token.Scopes); err != nil {
+		return nil, fmt.Errorf("storage: decode token scopes: %w", err)
 	}
 	if token.Scopes == nil {
 		token.Scopes = []string{}

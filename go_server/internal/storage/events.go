@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 )
 
 // ErrMissingEventType is returned when an event has no type.
-var ErrMissingEventType = errors.New("postgres: event without type")
+var ErrMissingEventType = errors.New("storage: event without type")
 
 // eventColumns is the number of bound values per event row.
 const eventColumns = 6
@@ -28,6 +28,7 @@ const (
 type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // InsertEvents writes a batch of events in a single statement and fills in the
@@ -38,6 +39,29 @@ func (s *Store) InsertEvents(ctx context.Context, events []*model.Event) error {
 }
 
 func insertEventsWith(ctx context.Context, db execer, events []*model.Event) error {
+	if !dialectOf(db).returning {
+		// MySQL has no RETURNING, so a batch cannot report the ids it created.
+		// One insert per event keeps the ids tied to their rows; an event
+		// batch is small because it follows one position.
+		for _, event := range events {
+			row, err := eventArgs(event)
+			if err != nil {
+				if errors.Is(err, ErrMissingDevice) || errors.Is(err, ErrMissingEventType) {
+					continue
+				}
+				return err
+			}
+			id, err := insertReturningID(ctx, db,
+				`INSERT INTO events (device_id, position_id, geofence_id, type, event_time, attributes)
+				 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, row...)
+			if err != nil {
+				return fmt.Errorf("storage: insert events: %w", err)
+			}
+			event.ID = id
+		}
+		return nil
+	}
+
 	query, args, err := eventsInsert(events)
 	if err != nil {
 		return err
@@ -48,7 +72,7 @@ func insertEventsWith(ctx context.Context, db execer, events []*model.Event) err
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("postgres: insert events: %w", err)
+		return fmt.Errorf("storage: insert events: %w", err)
 	}
 	defer rows.Close()
 
@@ -59,13 +83,13 @@ func insertEventsWith(ctx context.Context, db execer, events []*model.Event) err
 		}
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("postgres: scan event id: %w", err)
+			return fmt.Errorf("storage: scan event id: %w", err)
 		}
 		events[index].ID = id
 		index++
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("postgres: insert events: %w", err)
+		return fmt.Errorf("storage: insert events: %w", err)
 	}
 	return nil
 }
@@ -93,8 +117,6 @@ func eventsInsert(events []*model.Event) (string, []any, error) {
 		for column := 0; column < eventColumns; column++ {
 			placeholders[column] = fmt.Sprintf("$%d", len(args)+column+1)
 		}
-		placeholders[eventColumns-1] += "::jsonb"
-
 		values = append(values, "("+strings.Join(placeholders, ", ")+")")
 		args = append(args, row...)
 	}
@@ -129,7 +151,7 @@ func eventArgs(event *model.Event) ([]any, error) {
 	}
 	encoded, err := json.Marshal(attributes)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: encode event attributes: %w", err)
+		return nil, fmt.Errorf("storage: encode event attributes: %w", err)
 	}
 
 	return []any{
@@ -165,7 +187,7 @@ func (s *Store) InsertReports(ctx context.Context, reports []*model.PositionRepo
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("postgres: begin report: %w", err)
+		return fmt.Errorf("storage: begin report: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -196,7 +218,7 @@ func (s *Store) InsertReports(ctx context.Context, reports []*model.PositionRepo
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("postgres: commit report: %w", err)
+		return fmt.Errorf("storage: commit report: %w", err)
 	}
 	committed = true
 	return nil
@@ -258,9 +280,36 @@ func (ids positionIDs) take(key positionKey) int64 {
 func insertPositionsReturning(
 	ctx context.Context, db execer, positions []*model.Position,
 ) (positionIDs, map[int64]time.Time, error) {
+	touched := make(map[int64]time.Time, 4)
+	ids := make(positionIDs, len(positions))
+
+	if !dialectOf(db).returning {
+		// MySQL needs one insert per position to learn the generated id.
+		for _, position := range positions {
+			row, err := positionArgs(position)
+			if err != nil {
+				return nil, nil, err
+			}
+			deviceTime := deviceTimeOf(position)
+			if previous, ok := touched[position.DeviceID]; !ok || deviceTime.After(previous) {
+				touched[position.DeviceID] = deviceTime
+			}
+			id, err := insertReturningID(ctx, db, `INSERT INTO positions (
+					device_id, protocol, device_time, valid, latitude, longitude,
+					altitude, speed, course, accuracy, geofenceids, attributes
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+				RETURNING id`, row...)
+			if err != nil {
+				return nil, nil, fmt.Errorf("storage: insert positions: %w", err)
+			}
+			key := positionKey{deviceID: position.DeviceID, at: deviceTime.UTC()}
+			ids[key] = append(ids[key], id)
+		}
+		return ids, touched, nil
+	}
+
 	values := make([]string, 0, len(positions))
 	args := make([]any, 0, len(positions)*positionColumns)
-	touched := make(map[int64]time.Time, 4)
 
 	for _, position := range positions {
 		row, err := positionArgs(position)
@@ -277,9 +326,6 @@ func insertPositionsReturning(
 		for column := 0; column < positionColumns; column++ {
 			placeholders[column] = fmt.Sprintf("$%d", len(args)+column+1)
 		}
-		placeholders[positionColumns-2] += "::jsonb"
-		placeholders[positionColumns-1] += "::jsonb"
-
 		values = append(values, "("+strings.Join(placeholders, ", ")+")")
 		args = append(args, row...)
 	}
@@ -296,11 +342,10 @@ func insertPositionsReturning(
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("postgres: insert positions: %w", err)
+		return nil, nil, fmt.Errorf("storage: insert positions: %w", err)
 	}
 	defer rows.Close()
 
-	ids := make(positionIDs, len(positions))
 	for rows.Next() {
 		var (
 			id       int64
@@ -308,13 +353,13 @@ func insertPositionsReturning(
 			at       time.Time
 		)
 		if err := rows.Scan(&id, &deviceID, &at); err != nil {
-			return nil, nil, fmt.Errorf("postgres: scan position id: %w", err)
+			return nil, nil, fmt.Errorf("storage: scan position id: %w", err)
 		}
 		key := positionKey{deviceID: deviceID, at: at.UTC()}
 		ids[key] = append(ids[key], id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("postgres: insert positions: %w", err)
+		return nil, nil, fmt.Errorf("storage: insert positions: %w", err)
 	}
 	return ids, touched, nil
 }
@@ -326,7 +371,7 @@ func (s *Store) QueryEvents(ctx context.Context, filter model.EventFilter) ([]mo
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query events: %w", err)
+		return nil, fmt.Errorf("storage: query events: %w", err)
 	}
 	defer rows.Close()
 
@@ -340,18 +385,18 @@ func (s *Store) QueryEvents(ctx context.Context, filter model.EventFilter) ([]mo
 			&event.ID, &event.DeviceID, &event.PositionID, &event.Type,
 			&event.Time, &event.GeofenceID, &attributes,
 		); err != nil {
-			return nil, fmt.Errorf("postgres: scan event: %w", err)
+			return nil, fmt.Errorf("storage: scan event: %w", err)
 		}
 		event.Attributes = map[string]any{}
 		if len(attributes) > 0 {
 			if err := json.Unmarshal(attributes, &event.Attributes); err != nil {
-				return nil, fmt.Errorf("postgres: decode event attributes: %w", err)
+				return nil, fmt.Errorf("storage: decode event attributes: %w", err)
 			}
 		}
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query events: %w", err)
+		return nil, fmt.Errorf("storage: query events: %w", err)
 	}
 	return events, nil
 }

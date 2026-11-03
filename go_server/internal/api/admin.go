@@ -48,7 +48,7 @@ type ServerSettingsStore interface {
 }
 
 // StatisticsStore serves the statistics report and the per-device position
-// counts. *postgres.Store implements it.
+// counts. *storage.Store implements it.
 type StatisticsStore interface {
 	QueryStatistics(ctx context.Context, from, to time.Time) ([]*model.Statistics, error)
 	PositionCounts(ctx context.Context, deviceIDs []int64, from, to time.Time) (map[int64]int64, error)

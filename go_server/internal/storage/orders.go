@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -25,11 +25,11 @@ var orderSpec = resourceSpec[model.Order]{
 		)
 		if err := row.Scan(&order.ID, &order.UniqueID, &order.Description,
 			&order.FromAddress, &order.ToAddress, &attributes); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan order: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan order: %w", err))
 		}
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: order %d: %w", order.ID, err)
+			return nil, fmt.Errorf("storage: order %d: %w", order.ID, err)
 		}
 		order.Attributes = decoded
 		return &order, nil

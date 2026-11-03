@@ -37,7 +37,7 @@
 - ⚠️ **gnet / epoll**：四個協議、幾千條連線，goroutine-per-connection 就夠；自己維護 epoll
   狀態機換不到相應好處，先不要。
 - ⚠️ **解析完丟 NATS / Redis Stream / MQTT**：單節點多一層失敗面與運維成本，目前是批次寫
-  PostgreSQL。要拆的時候再拆（真正理由是「多節點共用」，見 `go_server/README.md`「核對結果」）。
+  SQL 資料庫（PostgreSQL / MySQL / SQLite）。要拆的時候再拆（真正理由是「多節點共用」，見 `go_server/README.md`「核對結果」）。
 - ❌ **過渡期「直接寫 Traccar 的後端資料庫」**：等於耦合母本 schema（每個版本都在改），也繞過
   母本的事件、通知與 device 快取。要跟 Java 版共存，走母本支援的 OsmAnd HTTP 端點（5055），
   或把 Go 版當獨立服務。

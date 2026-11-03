@@ -48,7 +48,7 @@ const SessionCookieName = "traccar_session"
 // cookie is revoked on logout, so the value only bounds a forgotten session.
 const sessionCookieTTL = 24 * time.Hour
 
-// TokenLookup resolves a hashed bearer token to a principal. The postgres store
+// TokenLookup resolves a hashed bearer token to a principal. The storage store
 // implements it; tests use a map.
 type TokenLookup interface {
 	LookupToken(ctx context.Context, tokenHash string) (*auth.Principal, error)

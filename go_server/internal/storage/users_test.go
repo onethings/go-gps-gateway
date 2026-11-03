@@ -1,9 +1,8 @@
-package postgres
+package storage
 
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -14,9 +13,9 @@ import (
 // TestTokenStoreIntegration covers the users / user_devices / api_tokens path
 // against a real database. It runs only when TRACCAR_POSTGRES_DSN is set.
 func TestTokenStoreIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()
@@ -29,13 +28,11 @@ func TestTokenStoreIntegration(t *testing.T) {
 	suffix := time.Now().Format("150405.000000")
 	email := "token-" + suffix + "@example.test"
 
-	var userID int64
-	if err := store.db.QueryRowContext(ctx,
-		`INSERT INTO users (email, name) VALUES ($1, 'test') RETURNING id`,
-		email,
-	).Scan(&userID); err != nil {
+	user, err := store.CreateUser(ctx, model.UserCreate{Email: email, Name: "test"})
+	if err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
+	userID := user.ID
 	t.Cleanup(func() {
 		_, _ = store.db.ExecContext(context.Background(),
 			`DELETE FROM users WHERE id = $1`, userID)
@@ -91,9 +88,9 @@ func TestTokenStoreIntegration(t *testing.T) {
 // TestUserAdminStoreIntegration covers the account administration queries:
 // user CRUD, the disabled flag, device grants and token listing/revocation.
 func TestUserAdminStoreIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()

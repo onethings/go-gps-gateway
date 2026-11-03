@@ -1,9 +1,8 @@
-package postgres
+package storage
 
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -135,7 +134,7 @@ func TestEventsInsert(t *testing.T) {
 		t.Fatalf("eventsInsert: %v", err)
 	}
 
-	want := "VALUES ($1, $2, $3, $4, $5, $6::jsonb), ($7, $8, $9, $10, $11, $12::jsonb)"
+	want := "VALUES ($1, $2, $3, $4, $5, $6), ($7, $8, $9, $10, $11, $12)"
 	if !strings.Contains(query, want) {
 		t.Errorf("query does not match %q:\n%s", want, query)
 	}
@@ -167,7 +166,7 @@ func TestEventsInsertWithoutValidRows(t *testing.T) {
 // TestEventsTableMigration checks the embedded DDL still splits cleanly: the
 // migration runner only understands semicolon separated statements.
 func TestEventsTableMigration(t *testing.T) {
-	content, err := migrationsFS.ReadFile("migrations/0002_alerts.sql")
+	content, err := migrationsFS.ReadFile("migrations/postgres/0002_alerts.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
@@ -196,9 +195,9 @@ func TestEventsTableMigration(t *testing.T) {
 
 // TestEventStoreIntegration runs only when TRACCAR_POSTGRES_DSN is set.
 func TestEventStoreIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()
@@ -218,11 +217,10 @@ func TestEventStoreIntegration(t *testing.T) {
 	})
 
 	const area = "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"
-	var geofenceID int64
-	if err := store.DB().QueryRowContext(ctx,
-		`INSERT INTO geofences (name, area, attributes) VALUES ('depot', $1, '{"floor": 0}'::jsonb)
-		 RETURNING id`, area,
-	).Scan(&geofenceID); err != nil {
+	geofenceID, err := insertReturningID(ctx, store.DB(),
+		`INSERT INTO geofences (name, area, attributes) VALUES ('depot', $1, '{"floor": 0}')
+		 RETURNING id`, area)
+	if err != nil {
 		t.Fatalf("insert geofence: %v", err)
 	}
 	t.Cleanup(func() {
@@ -282,10 +280,9 @@ func TestEventStoreIntegration(t *testing.T) {
 	}
 
 	// A malformed area must not hide the healthy geofences.
-	var brokenID int64
-	if err := store.DB().QueryRowContext(ctx,
-		`INSERT INTO geofences (name, area) VALUES ('broken', 'POINT (1 2)') RETURNING id`,
-	).Scan(&brokenID); err != nil {
+	brokenID, err := insertReturningID(ctx, store.DB(),
+		`INSERT INTO geofences (name, area) VALUES ('broken', 'POINT (1 2)') RETURNING id`)
+	if err != nil {
 		t.Fatalf("insert broken geofence: %v", err)
 	}
 	t.Cleanup(func() {

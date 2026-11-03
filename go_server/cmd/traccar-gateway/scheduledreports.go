@@ -235,7 +235,7 @@ type schedulerSettings struct {
 	Commands          time.Duration
 }
 
-// schedulerStore is what every task needs together. The postgres store satisfies
+// schedulerStore is what every task needs together. The storage store satisfies
 // it, a test supplies the fakes it cares about.
 type schedulerStore interface {
 	schedule.ExpirationStore

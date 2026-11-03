@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"strings"
@@ -8,7 +8,7 @@ import (
 // TestEventsMigration checks the embedded DDL still splits into the statements
 // the runner expects, and that the status column lands on devices.
 func TestEventsMigration(t *testing.T) {
-	content, err := migrationsFS.ReadFile("migrations/0010_events.sql")
+	content, err := migrationsFS.ReadFile("migrations/postgres/0010_events.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}

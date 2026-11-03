@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -45,7 +45,7 @@ func encodeAttributes(attributes model.Attributes) (string, error) {
 	}
 	encoded, err := json.Marshal(attributes)
 	if err != nil {
-		return "", fmt.Errorf("postgres: encode attributes: %w", err)
+		return "", fmt.Errorf("storage: encode attributes: %w", err)
 	}
 	return string(encoded), nil
 }
@@ -58,13 +58,13 @@ func decodeAttributes(raw []byte) (model.Attributes, error) {
 		return attributes, nil
 	}
 	if err := json.Unmarshal(raw, &attributes); err != nil {
-		return nil, fmt.Errorf("postgres: decode attributes: %w", err)
+		return nil, fmt.Errorf("storage: decode attributes: %w", err)
 	}
 	return attributes, nil
 }
 
 // createResource inserts value and stores the generated id back into it.
-func createResource[T any](ctx context.Context, db *sql.DB, spec resourceSpec[T], value *T) error {
+func createResource[T any](ctx context.Context, db *DB, spec resourceSpec[T], value *T) error {
 	args, err := spec.values(value)
 	if err != nil {
 		return err
@@ -77,9 +77,9 @@ func createResource[T any](ctx context.Context, db *sql.DB, spec resourceSpec[T]
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) RETURNING id",
 		spec.table, strings.Join(spec.columns, ", "), strings.Join(placeholders, ", "))
 
-	var id int64
-	if err := db.QueryRowContext(ctx, query, args...).Scan(&id); err != nil {
-		return fmt.Errorf("postgres: insert %s: %w", spec.table, err)
+	id, err := insertReturningID(ctx, db, query, args...)
+	if err != nil {
+		return fmt.Errorf("storage: insert %s: %w", spec.table, err)
 	}
 	spec.setID(value, id)
 	return nil
@@ -87,7 +87,7 @@ func createResource[T any](ctx context.Context, db *sql.DB, spec resourceSpec[T]
 
 // updateResource replaces every data column of an existing row. A missing id
 // reports model.ErrResourceNotFound, which the REST layer turns into 404.
-func updateResource[T any](ctx context.Context, db *sql.DB, spec resourceSpec[T], value *T) error {
+func updateResource[T any](ctx context.Context, db *DB, spec resourceSpec[T], value *T) error {
 	id := spec.id(value)
 	if id == 0 {
 		return model.ErrResourceNotFound
@@ -107,16 +107,16 @@ func updateResource[T any](ctx context.Context, db *sql.DB, spec resourceSpec[T]
 
 	result, err := db.ExecContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("postgres: update %s %d: %w", spec.table, id, err)
+		return fmt.Errorf("storage: update %s %d: %w", spec.table, id, err)
 	}
 	return requireAffected(result, spec.table, id)
 }
 
 // deleteResource removes one row.
-func deleteResource(ctx context.Context, db *sql.DB, table string, id int64) error {
+func deleteResource(ctx context.Context, db *DB, table string, id int64) error {
 	result, err := db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE id = $1", table), id)
 	if err != nil {
-		return fmt.Errorf("postgres: delete %s %d: %w", table, id, err)
+		return fmt.Errorf("storage: delete %s %d: %w", table, id, err)
 	}
 	return requireAffected(result, table, id)
 }
@@ -124,7 +124,7 @@ func deleteResource(ctx context.Context, db *sql.DB, table string, id int64) err
 func requireAffected(result sql.Result, table string, id int64) error {
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: %s %d: %w", table, id, err)
+		return fmt.Errorf("storage: %s %d: %w", table, id, err)
 	}
 	if affected == 0 {
 		return model.ErrResourceNotFound
@@ -134,12 +134,12 @@ func requireAffected(result sql.Result, table string, id int64) error {
 
 // listResources reads whole rows selected by filter, ordered by id so paging is
 // stable.
-func listResources[T any](ctx context.Context, db *sql.DB, spec resourceSpec[T], filter model.ResourceFilter) ([]*T, error) {
+func listResources[T any](ctx context.Context, db *DB, spec resourceSpec[T], filter model.ResourceFilter) ([]*T, error) {
 	query, args := resourceQuery(spec, filter)
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query %s: %w", spec.table, err)
+		return nil, fmt.Errorf("storage: query %s: %w", spec.table, err)
 	}
 	defer rows.Close()
 
@@ -152,7 +152,7 @@ func listResources[T any](ctx context.Context, db *sql.DB, spec resourceSpec[T],
 		values = append(values, value)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query %s: %w", spec.table, err)
+		return nil, fmt.Errorf("storage: query %s: %w", spec.table, err)
 	}
 	return values, nil
 }
@@ -171,7 +171,7 @@ func resourceQuery[T any](spec resourceSpec[T], filter model.ResourceFilter) (st
 		placeholder := fmt.Sprintf("$%d", len(args))
 		patterns := make([]string, len(spec.keyword))
 		for index, column := range spec.keyword {
-			patterns[index] = fmt.Sprintf("%s ILIKE %s", column, placeholder)
+			patterns[index] = fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", column, placeholder)
 		}
 		clauses = append(clauses, "("+strings.Join(patterns, " OR ")+")")
 	}

@@ -1,8 +1,7 @@
-package postgres
+package storage
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -75,9 +74,9 @@ func TestEventLinksPositionWithRepeatedKeys(t *testing.T) {
 // TestInsertReportsIntegration runs only when TRACCAR_POSTGRES_DSN is set and
 // proves the transaction end to end.
 func TestInsertReportsIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

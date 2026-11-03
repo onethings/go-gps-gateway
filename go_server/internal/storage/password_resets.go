@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -21,21 +21,21 @@ const passwordResetResendInterval = time.Minute
 func (s *Store) CreatePasswordReset(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("postgres: create password reset: %w", err)
+		return fmt.Errorf("storage: create password reset: %w", err)
 	}
 	defer tx.Rollback()
 
+	cutoff := time.Now().UTC().Add(-passwordResetResendInterval)
 	var recent bool
 	err = tx.QueryRowContext(ctx,
 		`SELECT EXISTS (
 		     SELECT 1 FROM password_resets
-		     WHERE user_id = $1 AND used_at IS NULL
-		       AND created_at > now() - $2::double precision * interval '1 second'
+		     WHERE user_id = $1 AND used_at IS NULL AND created_at > $2
 		 )`,
-		userID, passwordResetResendInterval.Seconds(),
+		userID, cutoff,
 	).Scan(&recent)
 	if err != nil {
-		return fmt.Errorf("postgres: check recent password reset of user %d: %w", userID, err)
+		return fmt.Errorf("storage: check recent password reset of user %d: %w", userID, err)
 	}
 	if recent {
 		return model.ErrResetTooSoon
@@ -43,15 +43,15 @@ func (s *Store) CreatePasswordReset(ctx context.Context, userID int64, tokenHash
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM password_resets WHERE user_id = $1`, userID); err != nil {
-		return fmt.Errorf("postgres: drop password resets of user %d: %w", userID, err)
+		return fmt.Errorf("storage: drop password resets of user %d: %w", userID, err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
 		userID, tokenHash, expiresAt); err != nil {
-		return fmt.Errorf("postgres: create password reset of user %d: %w", userID, err)
+		return fmt.Errorf("storage: create password reset of user %d: %w", userID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("postgres: create password reset of user %d: %w", userID, err)
+		return fmt.Errorf("storage: create password reset of user %d: %w", userID, err)
 	}
 	return nil
 }
@@ -60,18 +60,41 @@ func (s *Store) CreatePasswordReset(ctx context.Context, userID int64, tokenHash
 // account it belongs to. A repeated call with the same code reports
 // model.ErrResetTokenInvalid, which is what makes a code single use.
 func (s *Store) ConsumePasswordReset(ctx context.Context, tokenHash string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("storage: consume password reset: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
 	var userID int64
-	err := s.db.QueryRowContext(ctx,
-		`UPDATE password_resets SET used_at = now()
-		 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
-		 RETURNING user_id`,
-		tokenHash,
+	err = tx.QueryRowContext(ctx,
+		`SELECT user_id FROM password_resets
+		 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > $2`,
+		tokenHash, now,
 	).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, model.ErrResetTokenInvalid
 	}
 	if err != nil {
-		return 0, fmt.Errorf("postgres: consume password reset: %w", err)
+		return 0, fmt.Errorf("storage: consume password reset: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx,
+		`UPDATE password_resets SET used_at = $2
+		 WHERE token_hash = $1 AND used_at IS NULL`, tokenHash, now)
+	if err != nil {
+		return 0, fmt.Errorf("storage: consume password reset: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("storage: consume password reset: %w", err)
+	}
+	if affected == 0 {
+		return 0, model.ErrResetTokenInvalid
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("storage: consume password reset: %w", err)
 	}
 	return userID, nil
 }
@@ -81,7 +104,7 @@ func (s *Store) ConsumePasswordReset(ctx context.Context, tokenHash string) (int
 func (s *Store) DeletePasswordResets(ctx context.Context, userID int64) error {
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM password_resets WHERE user_id = $1`, userID); err != nil {
-		return fmt.Errorf("postgres: delete password resets of user %d: %w", userID, err)
+		return fmt.Errorf("storage: delete password resets of user %d: %w", userID, err)
 	}
 	return nil
 }
@@ -91,7 +114,7 @@ func (s *Store) DeletePasswordResets(ctx context.Context, userID int64) error {
 func (s *Store) DeletePasswordReset(ctx context.Context, tokenHash string) error {
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM password_resets WHERE token_hash = $1`, tokenHash); err != nil {
-		return fmt.Errorf("postgres: delete password reset: %w", err)
+		return fmt.Errorf("storage: delete password reset: %w", err)
 	}
 	return nil
 }

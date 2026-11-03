@@ -1,10 +1,9 @@
-package postgres
+package storage
 
 import (
 	"context"
 	"database/sql"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -86,19 +85,19 @@ func TestCommandQueryClamps(t *testing.T) {
 	}
 }
 
-// TestAcknowledgeQuery pins how an answer picks its row: a serial narrows the
-// statement to the row the device named, and no serial falls back to the newest
-// row that is still waiting.
-func TestAcknowledgeQuery(t *testing.T) {
+// TestAcknowledgeSelectQuery pins how an answer picks its row: a serial narrows
+// the statement to the row the device named, and no serial falls back to the
+// newest row that is still waiting.
+func TestAcknowledgeSelectQuery(t *testing.T) {
 	serial := 11
-	query, args := acknowledgeQuery(7, codec.CommandAck{Code: 0, Serial: &serial})
+	query, args := acknowledgeSelectQuery(7, codec.CommandAck{Code: 0, Serial: &serial}, true)
 	if !strings.Contains(query, "device_id = $1 AND serial = $2") {
 		t.Errorf("query = %s", query)
 	}
-	if !strings.Contains(query, "SET status = $3, result_code = $4") {
+	if !strings.Contains(query, "status = $3") || !strings.Contains(query, "FOR UPDATE") {
 		t.Errorf("query = %s", query)
 	}
-	want := []any{int64(7), 11, model.CommandStatusDone, 0, model.CommandStatusSent}
+	want := []any{int64(7), 11, model.CommandStatusSent}
 	if len(args) != len(want) {
 		t.Fatalf("args = %v", args)
 	}
@@ -108,15 +107,18 @@ func TestAcknowledgeQuery(t *testing.T) {
 		}
 	}
 
-	query, args = acknowledgeQuery(7, codec.CommandAck{Code: 1})
+	query, args = acknowledgeSelectQuery(7, codec.CommandAck{Code: 1}, false)
 	if strings.Contains(query, "serial") {
 		t.Errorf("query without a serial filters on it: %s", query)
 	}
-	if !strings.Contains(query, "SET status = $2, result_code = $3") {
+	if strings.Contains(query, "FOR UPDATE") {
+		t.Errorf("SQLite query asks for FOR UPDATE: %s", query)
+	}
+	if !strings.Contains(query, "status = $2") {
 		t.Errorf("query = %s", query)
 	}
-	want = []any{int64(7), model.CommandStatusFailed, 1, model.CommandStatusSent}
-	if len(args) != len(want) || args[1] != model.CommandStatusFailed || args[2] != 1 {
+	want = []any{int64(7), model.CommandStatusSent}
+	if len(args) != len(want) || args[1] != model.CommandStatusSent {
 		t.Fatalf("args = %v, want %v", args, want)
 	}
 }
@@ -145,9 +147,9 @@ type commandRow struct {
 // pairing, the reconnect query, retention and the ownership filter against a
 // real database. It runs only when TRACCAR_POSTGRES_DSN is set.
 func TestCommandStoreIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()
@@ -348,8 +350,8 @@ func TestCommandStoreIntegration(t *testing.T) {
 		t.Fatalf("mark expired failed: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx,
-		`UPDATE commands SET done_at = now() - interval '30 days' WHERE id = $1`,
-		expired.ID); err != nil {
+		`UPDATE commands SET done_at = $2 WHERE id = $1`,
+		expired.ID, time.Now().UTC().Add(-30*24*time.Hour)); err != nil {
 		t.Fatalf("age command: %v", err)
 	}
 	if _, err := store.DeleteCommandsBefore(ctx, 0); !errors.Is(err, ErrInvalidRetention) {
@@ -362,8 +364,9 @@ func TestCommandStoreIntegration(t *testing.T) {
 	if deleted < 1 {
 		t.Fatalf("deleted = %d, want at least the aged command", deleted)
 	}
-	if _, err := store.db.ExecContext(ctx,
-		`SELECT 1 FROM commands WHERE id = $1`, expired.ID); !errors.Is(err, sql.ErrNoRows) {
+	var one int
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT 1 FROM commands WHERE id = $1`, expired.ID).Scan(&one); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("aged command survived retention: %v", err)
 	}
 	if read := row(queuedOne.ID); read.status != model.CommandStatusPending {

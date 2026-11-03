@@ -37,7 +37,7 @@ import (
 	"traccar-server_go/go_server/internal/schedule"
 	"traccar-server_go/go_server/internal/session"
 	"traccar-server_go/go_server/internal/stats"
-	"traccar-server_go/go_server/internal/storage/postgres"
+	"traccar-server_go/go_server/internal/storage"
 )
 
 // version is what /api/server reports; -ldflags can override it at build time.
@@ -129,8 +129,8 @@ func main() {
 	var (
 		directory     gateway.DeviceDirectory
 		sink          gateway.Sink
-		batcher       *postgres.BatchSink
-		store         *postgres.Store
+		batcher       *storage.BatchSink
+		store         *storage.Store
 		pipeline      *alert.Pipeline
 		dispatcher    *notify.Dispatcher
 		motion        *session.Motion
@@ -147,9 +147,9 @@ func main() {
 	)
 
 	if settings.DatabaseURL != "" {
-		store, err = postgres.New(ctx, settings.DatabaseURL)
+		store, err = storage.New(ctx, settings.DatabaseURL)
 		if err != nil {
-			log.Fatalf("postgres: %v", err)
+			log.Fatalf("storage: %v", err)
 		}
 		defer store.Close()
 
@@ -161,9 +161,9 @@ func main() {
 			return
 		}
 
-		batcher = postgres.NewBatchSink(store, settings.BatchSize, settings.BatchInterval,
-			postgres.WithBatchLogger(log.Printf),
-			postgres.WithBatchMetrics(meters))
+		batcher = storage.NewBatchSink(store, settings.BatchSize, settings.BatchInterval,
+			storage.WithBatchLogger(log.Printf),
+			storage.WithBatchMetrics(meters))
 		directory = store
 
 		engine := alert.New(alert.Config{
@@ -853,7 +853,7 @@ func (g speedLimitGetter) Limit(ctx context.Context, latitude, longitude float64
 
 // issueAPIToken prints a fresh token for an existing user. Only the SHA-256
 // hash is stored, so the value printed here cannot be recovered later.
-func issueAPIToken(ctx context.Context, store *postgres.Store, email, rawScopes string, ttl time.Duration) error {
+func issueAPIToken(ctx context.Context, store *storage.Store, email, rawScopes string, ttl time.Duration) error {
 	if ttl < 0 {
 		return errors.New("token ttl must not be negative")
 	}
@@ -878,13 +878,13 @@ func issueAPIToken(ctx context.Context, store *postgres.Store, email, rawScopes 
 
 // reloadGeofences replaces the engine's geofence set. A row with an
 // unparseable area is reported but does not drop the geofences that parsed.
-func reloadGeofences(ctx context.Context, store *postgres.Store, engine *alert.Engine) error {
+func reloadGeofences(ctx context.Context, store *storage.Store, engine *alert.Engine) error {
 	geofences, err := store.Geofences(ctx)
 	engine.SetGeofences(geofences)
 	return err
 }
 
-func refreshGeofences(ctx context.Context, store *postgres.Store, engine *alert.Engine, interval time.Duration) {
+func refreshGeofences(ctx context.Context, store *storage.Store, engine *alert.Engine, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -903,7 +903,7 @@ func refreshGeofences(ctx context.Context, store *postgres.Store, engine *alert.
 // reloadDeviceAttributes refreshes the per-device threshold snapshot. Devices
 // are created by the gateway itself, so the attributes set later with SQL are
 // picked up on the next reload. A failed query keeps the previous snapshot.
-func reloadDeviceAttributes(ctx context.Context, store *postgres.Store, engine *alert.Engine) error {
+func reloadDeviceAttributes(ctx context.Context, store *storage.Store, engine *alert.Engine) error {
 	attributes, err := store.DeviceAttributes(ctx)
 	if err != nil {
 		return err
@@ -912,7 +912,7 @@ func reloadDeviceAttributes(ctx context.Context, store *postgres.Store, engine *
 	return nil
 }
 
-func refreshDeviceAttributes(ctx context.Context, store *postgres.Store, engine *alert.Engine, interval time.Duration) {
+func refreshDeviceAttributes(ctx context.Context, store *storage.Store, engine *alert.Engine, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -937,7 +937,7 @@ const commandPurgeInterval = time.Hour
 // table stays bounded without an operator remembering to run a query. The first
 // sweep runs after one interval: a gateway that restarts often never spends its
 // startup deleting rows.
-func purgeCommandHistory(ctx context.Context, store *postgres.Store, retention time.Duration) {
+func purgeCommandHistory(ctx context.Context, store *storage.Store, retention time.Duration) {
 	ticker := time.NewTicker(commandPurgeInterval)
 	defer ticker.Stop()
 

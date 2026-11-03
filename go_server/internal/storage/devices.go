@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -30,7 +30,7 @@ func (s *Store) Devices(ctx context.Context, filter model.DeviceFilter) ([]model
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query devices: %w", err)
+		return nil, fmt.Errorf("storage: query devices: %w", err)
 	}
 	defer rows.Close()
 
@@ -43,7 +43,7 @@ func (s *Store) Devices(ctx context.Context, filter model.DeviceFilter) ([]model
 		devices = append(devices, *device)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query devices: %w", err)
+		return nil, fmt.Errorf("storage: query devices: %w", err)
 	}
 	return devices, nil
 }
@@ -76,7 +76,7 @@ func deviceQuery(filter model.DeviceFilter) (string, []any) {
 	} else if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
 		pattern := placeholder("%" + keyword + "%")
 		clauses = append(clauses, fmt.Sprintf(
-			"(name ILIKE %s OR unique_id ILIKE %s OR COALESCE(model, '') ILIKE %s)",
+			"(LOWER(name) LIKE LOWER(%s) OR LOWER(unique_id) LIKE LOWER(%s) OR LOWER(COALESCE(model, '')) LIKE LOWER(%s))",
 			pattern, pattern, pattern))
 	}
 
@@ -105,7 +105,7 @@ func deviceQuery(filter model.DeviceFilter) (string, []any) {
 
 	args = append(args, limit, offset)
 	fmt.Fprintf(&builder,
-		" ORDER BY last_update DESC NULLS LAST, id DESC LIMIT $%d OFFSET $%d",
+		" ORDER BY (last_update IS NULL), last_update DESC, id DESC LIMIT $%d OFFSET $%d",
 		len(args)-1, len(args))
 	return builder.String(), args
 }
@@ -130,7 +130,7 @@ func scanDevice(row interface{ Scan(dest ...any) error }) (*model.Device, error)
 		&phone, &contact, &category, &device.Disabled, &expirationTime,
 		&device.CalendarID, &device.PositionID,
 	); err != nil {
-		return nil, fmt.Errorf("postgres: scan device: %w", err)
+		return nil, fmt.Errorf("storage: scan device: %w", err)
 	}
 
 	device.Model = deviceModel.String
@@ -148,7 +148,7 @@ func scanDevice(row interface{ Scan(dest ...any) error }) (*model.Device, error)
 	device.Attributes = map[string]any{}
 	if len(attributes) > 0 {
 		if err := json.Unmarshal(attributes, &device.Attributes); err != nil {
-			return nil, fmt.Errorf("postgres: decode device attributes: %w", err)
+			return nil, fmt.Errorf("storage: decode device attributes: %w", err)
 		}
 	}
 	return &device, nil
@@ -162,7 +162,7 @@ func (s *Store) Device(ctx context.Context, deviceID int64) (*model.Device, erro
 		return nil, model.ErrDeviceNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("postgres: device %d: %w", deviceID, err)
+		return nil, fmt.Errorf("storage: device %d: %w", deviceID, err)
 	}
 	return device, nil
 }
@@ -173,7 +173,7 @@ func (s *Store) Device(ctx context.Context, deviceID int64) (*model.Device, erro
 func (s *Store) DeviceAttributes(ctx context.Context) (map[int64]map[string]any, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, attributes FROM devices`)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query device attributes: %w", err)
+		return nil, fmt.Errorf("storage: query device attributes: %w", err)
 	}
 	defer rows.Close()
 
@@ -184,21 +184,21 @@ func (s *Store) DeviceAttributes(ctx context.Context) (map[int64]map[string]any,
 			encoded  []byte
 		)
 		if err := rows.Scan(&deviceID, &encoded); err != nil {
-			return nil, fmt.Errorf("postgres: scan device attributes: %w", err)
+			return nil, fmt.Errorf("storage: scan device attributes: %w", err)
 		}
 		if len(encoded) == 0 {
 			continue
 		}
 		values := map[string]any{}
 		if err := json.Unmarshal(encoded, &values); err != nil {
-			return nil, fmt.Errorf("postgres: decode device attributes: %w", err)
+			return nil, fmt.Errorf("storage: decode device attributes: %w", err)
 		}
 		if len(values) > 0 {
 			attributes[deviceID] = values
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query device attributes: %w", err)
+		return nil, fmt.Errorf("storage: query device attributes: %w", err)
 	}
 	return attributes, nil
 }
@@ -206,24 +206,23 @@ func (s *Store) DeviceAttributes(ctx context.Context) (map[int64]map[string]any,
 // CreateDevice inserts a device and returns the stored row. A unique id that
 // already exists returns model.ErrDuplicateDevice instead of touching the row.
 func (s *Store) CreateDevice(ctx context.Context, create model.DeviceCreate) (*model.Device, error) {
-	device, err := scanDevice(s.db.QueryRowContext(ctx,
+	id, err := insertReturningID(ctx, s.db,
 		`INSERT INTO devices (unique_id, name, model, protocol, phone, contact,
-			category, disabled, expiration_time, calendar_id)
+			category, disabled, expiration_time, calendar_id, attributes)
 		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''),
-			NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10)
-		 ON CONFLICT (unique_id) DO NOTHING
-		 RETURNING `+deviceColumns,
+			NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, '{}')
+		 RETURNING id`,
 		create.UniqueID, create.Name, create.Model, create.Protocol,
 		create.Phone, create.Contact, create.Category, create.Disabled,
-		nullTime(create.ExpirationTime), create.CalendarID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, model.ErrDuplicateDevice
-	}
+		nullTime(create.ExpirationTime), create.CalendarID)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: create device %q: %w", create.UniqueID, err)
+		if s.db.dialect.isDuplicate(err) {
+			return nil, model.ErrDuplicateDevice
+		}
+		return nil, fmt.Errorf("storage: create device %q: %w", create.UniqueID, err)
 	}
 	s.invalidateTokenCache()
-	return device, nil
+	return s.Device(ctx, id)
 }
 
 // UpdateDevice replaces the mutable fields of a device. A nil Attributes
@@ -239,24 +238,34 @@ func (s *Store) UpdateDevice(ctx context.Context, deviceID int64, update model.D
 		encodedAttributes = &encoded
 	}
 
-	device, err := scanDevice(s.db.QueryRowContext(ctx,
-		`UPDATE devices SET name = $2, model = NULLIF($3, ''),
+	query := `UPDATE devices SET name = $2, model = NULLIF($3, ''),
 			phone = NULLIF($4, ''), contact = NULLIF($5, ''),
 			category = NULLIF($6, ''), disabled = $7, expiration_time = $8,
-			calendar_id = $9, attributes = COALESCE($10::jsonb, attributes)
-		 WHERE id = $1
-		 RETURNING `+deviceColumns,
+			calendar_id = $9`
+	args := []any{
 		deviceID, update.Name, update.Model, update.Phone, update.Contact,
 		update.Category, update.Disabled, nullTime(update.ExpirationTime),
-		update.CalendarID, encodedAttributes))
-	if errors.Is(err, sql.ErrNoRows) {
+		update.CalendarID,
+	}
+	if encodedAttributes != nil {
+		query += ", attributes = $10"
+		args = append(args, *encodedAttributes)
+	}
+	query += " WHERE id = $1"
+
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: update device %d: %w", deviceID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("storage: update device %d: %w", deviceID, err)
+	}
+	if affected == 0 {
 		return nil, model.ErrDeviceNotFound
 	}
-	if err != nil {
-		return nil, fmt.Errorf("postgres: update device %d: %w", deviceID, err)
-	}
 	s.invalidateTokenCache()
-	return device, nil
+	return s.Device(ctx, deviceID)
 }
 
 // DeleteDevice removes a device. Positions and events cascade; the grants that
@@ -265,12 +274,12 @@ func (s *Store) UpdateDevice(ctx context.Context, deviceID int64, update model.D
 func (s *Store) DeleteDevice(ctx context.Context, deviceID int64) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM devices WHERE id = $1`, deviceID)
 	if err != nil {
-		return fmt.Errorf("postgres: delete device %d: %w", deviceID, err)
+		return fmt.Errorf("storage: delete device %d: %w", deviceID, err)
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("postgres: delete device %d: %w", deviceID, err)
+		return fmt.Errorf("storage: delete device %d: %w", deviceID, err)
 	}
 	if affected == 0 {
 		return model.ErrDeviceNotFound

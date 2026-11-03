@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"database/sql"
@@ -18,7 +18,7 @@ func TestDeviceQueryDefaults(t *testing.T) {
 	if strings.Contains(query, "WHERE") {
 		t.Errorf("query has a WHERE clause without filters: %s", query)
 	}
-	if !strings.Contains(query, "ORDER BY last_update DESC NULLS LAST, id DESC") {
+	if !strings.Contains(query, "ORDER BY (last_update IS NULL), last_update DESC, id DESC") {
 		t.Errorf("query = %s", query)
 	}
 	if !strings.HasSuffix(query, "LIMIT $1 OFFSET $2") {
@@ -99,7 +99,7 @@ func TestDeviceQueryLookups(t *testing.T) {
 
 	// The Java lookup branch ignores the keyword, so the clause is skipped.
 	withKeyword, _ := deviceQuery(model.DeviceFilter{UniqueIDs: []string{"A"}, Keyword: "van"})
-	if strings.Contains(withKeyword, "ILIKE") {
+	if strings.Contains(withKeyword, "LIKE") {
 		t.Errorf("query = %s, want no keyword clause next to a uniqueId lookup", withKeyword)
 	}
 }
@@ -107,9 +107,9 @@ func TestDeviceQueryLookups(t *testing.T) {
 func TestDeviceQueryKeyword(t *testing.T) {
 	query, args := deviceQuery(model.DeviceFilter{Keyword: "van"})
 
-	if !strings.Contains(query, "name ILIKE $1") ||
-		!strings.Contains(query, "unique_id ILIKE $1") ||
-		!strings.Contains(query, "COALESCE(model, '') ILIKE $1") {
+	if !strings.Contains(query, "LOWER(name) LIKE LOWER($1)") ||
+		!strings.Contains(query, "LOWER(unique_id) LIKE LOWER($1)") ||
+		!strings.Contains(query, "LOWER(COALESCE(model, '')) LIKE LOWER($1)") {
 		t.Errorf("query = %s", query)
 	}
 	if len(args) != 3 || args[0] != "%van%" {

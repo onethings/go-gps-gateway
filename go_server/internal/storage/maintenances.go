@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 var maintenanceSpec = resourceSpec[model.Maintenance]{
 	table:   "maintenances",
-	columns: []string{"name", "type", "start", "period", "attributes"},
+	columns: []string{"name", "type", "start_value", "period", "attributes"},
 	keyword: []string{"name", "type"},
 	values: func(maintenance *model.Maintenance) ([]any, error) {
 		attributes, err := encodeAttributes(maintenance.Attributes)
@@ -25,11 +25,11 @@ var maintenanceSpec = resourceSpec[model.Maintenance]{
 		)
 		if err := row.Scan(&maintenance.ID, &maintenance.Name, &maintenance.Type,
 			&maintenance.Start, &maintenance.Period, &attributes); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan maintenance: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan maintenance: %w", err))
 		}
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: maintenance %d: %w", maintenance.ID, err)
+			return nil, fmt.Errorf("storage: maintenance %d: %w", maintenance.ID, err)
 		}
 		maintenance.Attributes = decoded
 		return &maintenance, nil

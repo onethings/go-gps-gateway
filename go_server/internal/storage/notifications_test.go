@@ -1,23 +1,23 @@
-package postgres
+package storage
 
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 // TestNotificationStoreIntegration covers notifications / user_notifications
 // and the dispatcher's DeviceSubscriptions query. It runs only when
 // TRACCAR_POSTGRES_DSN is set.
 func TestNotificationStoreIntegration(t *testing.T) {
-	dsn := os.Getenv("TRACCAR_POSTGRES_DSN")
+	dsn := testDSN()
 	if dsn == "" {
-		t.Skip("TRACCAR_POSTGRES_DSN is not set")
+		t.Skip("TRACCAR_TEST_DSN (or TRACCAR_POSTGRES_DSN) is not set")
 	}
 
 	ctx := context.Background()
@@ -92,6 +92,12 @@ func TestNotificationStoreIntegration(t *testing.T) {
 	}
 
 	// A disabled account must not receive anything.
+	if err := store.AddPermission(ctx, permissions.Permission{
+		Owner: permissions.ObjectDevice, OwnerID: deviceID,
+		Property: permissions.ObjectNotification, PropertyID: created.ID,
+	}); err != nil {
+		t.Fatalf("link notification to device: %v", err)
+	}
 	if err := store.AssignNotification(ctx, user.ID, created.ID); err != nil {
 		t.Fatalf("assign notification: %v", err)
 	}
@@ -109,7 +115,8 @@ func TestNotificationStoreIntegration(t *testing.T) {
 		t.Fatalf("subscriptions = %+v", subscriptions)
 	}
 
-	// A wildcard preset merges into the same user instead of duplicating it.
+	// A wildcard preset is a second subscription of the same user; the
+	// dispatcher decides what to do with each row.
 	wildcard, err := store.CreateNotification(ctx, model.NotificationCreate{
 		Type:         "*",
 		Notificators: []string{"webhook"},
@@ -121,6 +128,12 @@ func TestNotificationStoreIntegration(t *testing.T) {
 		_, _ = store.db.ExecContext(context.Background(),
 			`DELETE FROM notifications WHERE id = $1`, wildcard.ID)
 	})
+	if err := store.AddPermission(ctx, permissions.Permission{
+		Owner: permissions.ObjectDevice, OwnerID: deviceID,
+		Property: permissions.ObjectNotification, PropertyID: wildcard.ID,
+	}); err != nil {
+		t.Fatalf("link wildcard to device: %v", err)
+	}
 	if err := store.AssignNotification(ctx, user.ID, wildcard.ID); err != nil {
 		t.Fatalf("assign wildcard: %v", err)
 	}
@@ -137,8 +150,10 @@ func TestNotificationStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("device subscriptions: %v", err)
 	}
-	if len(subscriptions) != 1 || strings.Join(subscriptions[0].Notificators, ",") != "mail,webhook" {
-		t.Fatalf("merged subscriptions = %+v", subscriptions)
+	if len(subscriptions) != 2 ||
+		strings.Join(subscriptions[0].Notificators, ",") != "mail" ||
+		strings.Join(subscriptions[1].Notificators, ",") != "webhook" {
+		t.Fatalf("subscriptions = %+v", subscriptions)
 	}
 
 	userNotifications, err := store.UserNotifications(ctx, user.ID)

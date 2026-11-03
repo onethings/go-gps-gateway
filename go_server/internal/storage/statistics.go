@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -49,19 +49,19 @@ var statisticsSpec = resourceSpec[model.Statistics]{
 			&statistics.MailSent, &statistics.SmsSent,
 			&statistics.GeocoderRequests, &statistics.GeolocationRequests,
 			&protocols, &attributes); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan statistics: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan statistics: %w", err))
 		}
 		if capture.Valid {
 			statistics.CaptureTime = capture.Time
 		}
 		decodedProtocols, err := decodeProtocols(protocols)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: statistics %d: %w", statistics.ID, err)
+			return nil, fmt.Errorf("storage: statistics %d: %w", statistics.ID, err)
 		}
 		statistics.Protocols = decodedProtocols
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: statistics %d: %w", statistics.ID, err)
+			return nil, fmt.Errorf("storage: statistics %d: %w", statistics.ID, err)
 		}
 		statistics.Attributes = decoded
 		return &statistics, nil
@@ -115,7 +115,7 @@ func (s *Store) QueryStatistics(
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query statistics: %w", err)
+		return nil, fmt.Errorf("storage: query statistics: %w", err)
 	}
 	defer rows.Close()
 
@@ -128,7 +128,7 @@ func (s *Store) QueryStatistics(
 		snapshots = append(snapshots, snapshot)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query statistics: %w", err)
+		return nil, fmt.Errorf("storage: query statistics: %w", err)
 	}
 	return snapshots, nil
 }
@@ -144,25 +144,28 @@ func (s *Store) PositionCounts(
 		return counts, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT device_id, count(*) FROM positions
-		 WHERE device_id = ANY($1) AND device_time BETWEEN $2 AND $3
-		 GROUP BY device_id`,
-		deviceIDs, from, to)
+	args := make([]any, 0, len(deviceIDs)+2)
+	clause := deviceIDsClause(&args, "device_id", deviceIDs)
+	args = append(args, from.UTC(), to.UTC())
+	query := fmt.Sprintf(`SELECT device_id, count(*) FROM positions
+		 WHERE %s AND device_time BETWEEN $%d AND $%d
+		 GROUP BY device_id`, clause, len(args)-1, len(args))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: count positions: %w", err)
+		return nil, fmt.Errorf("storage: count positions: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var deviceID, count int64
 		if err := rows.Scan(&deviceID, &count); err != nil {
-			return nil, fmt.Errorf("postgres: scan position count: %w", err)
+			return nil, fmt.Errorf("storage: scan position count: %w", err)
 		}
 		counts[deviceID] = count
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: count positions: %w", err)
+		return nil, fmt.Errorf("storage: count positions: %w", err)
 	}
 	return counts, nil
 }
@@ -173,7 +176,7 @@ func encodeProtocols(protocols map[string]int) (string, error) {
 	}
 	encoded, err := json.Marshal(protocols)
 	if err != nil {
-		return "", fmt.Errorf("postgres: encode protocols: %w", err)
+		return "", fmt.Errorf("storage: encode protocols: %w", err)
 	}
 	return string(encoded), nil
 }
@@ -184,7 +187,7 @@ func decodeProtocols(raw []byte) (map[string]int, error) {
 		return protocols, nil
 	}
 	if err := json.Unmarshal(raw, &protocols); err != nil {
-		return nil, fmt.Errorf("postgres: decode protocols: %w", err)
+		return nil, fmt.Errorf("storage: decode protocols: %w", err)
 	}
 	return protocols, nil
 }
@@ -226,7 +229,7 @@ func (s *Store) InsertStatistics(ctx context.Context, row *model.Statistics) err
 		row.MessagesReceived, row.MessagesStored, row.MailSent, row.SmsSent,
 		row.GeocoderRequests, row.GeolocationRequests, protocols, attributes,
 	); err != nil {
-		return fmt.Errorf("postgres: insert statistics: %w", err)
+		return fmt.Errorf("storage: insert statistics: %w", err)
 	}
 	return nil
 }
@@ -239,15 +242,16 @@ func (s *Store) OnlineCounts(ctx context.Context) (int, int, error) {
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT count(*) FROM devices WHERE status = 'online'`,
 	).Scan(&devices); err != nil {
-		return 0, 0, fmt.Errorf("postgres: count online devices: %w", err)
+		return 0, 0, fmt.Errorf("storage: count online devices: %w", err)
 	}
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT count(DISTINCT ud.user_id)
-		 FROM user_devices ud
-		 JOIN devices d ON d.id = ud.device_id
-		 WHERE d.status = 'online'`,
+		`SELECT count(DISTINCT p.owner_id)
+		 FROM permissions p
+		 JOIN devices d ON d.id = p.property_id
+		 WHERE p.owner_type = 'user' AND p.property_type = 'device'
+		   AND d.status = 'online'`,
 	).Scan(&users); err != nil {
-		return 0, 0, fmt.Errorf("postgres: count online users: %w", err)
+		return 0, 0, fmt.Errorf("storage: count online users: %w", err)
 	}
 	return devices, users, nil
 }

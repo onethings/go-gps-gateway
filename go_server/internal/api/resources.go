@@ -22,7 +22,7 @@ const maxResourceBody = 1 << 20
 // ResourceStore is the storage contract of the configuration routes: the CRUD
 // of every resource the Java server exposes through SimpleObjectResource and
 // ExtendedObjectResource, plus the permission pairs that decide who reaches
-// them. *postgres.Store satisfies it.
+// them. *storage.Store satisfies it.
 type ResourceStore interface {
 	permissions.Store
 

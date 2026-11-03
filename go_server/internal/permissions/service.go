@@ -12,7 +12,7 @@ import (
 // "越權一律 403" asks for.
 var ErrAccessDenied = errors.New("access denied")
 
-// Store is the persistence the service needs. The postgres store implements it;
+// Store is the persistence the service needs. The storage store implements it;
 // tests use an in-memory map.
 type Store interface {
 	// UserGrants returns the direct device and group grants of a user. Group

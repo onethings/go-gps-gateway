@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"traccar-server_go/go_server/internal/model"
-	"traccar-server_go/go_server/internal/storage/postgres"
+	"traccar-server_go/go_server/internal/storage"
 )
 
 // eventState is the per-device state the M4-1 event rules need beyond the
@@ -101,7 +101,7 @@ func (s *eventState) setPosition(position *model.Position) {
 
 // reload refreshes the links, the maintenance intervals and the last position
 // of every linked device from the database.
-func (s *eventState) reload(ctx context.Context, store *postgres.Store) error {
+func (s *eventState) reload(ctx context.Context, store *storage.Store) error {
 	maintenances, err := store.DeviceMaintenances(ctx)
 	if err != nil {
 		return err
@@ -151,7 +151,7 @@ func (s *eventState) reload(ctx context.Context, store *postgres.Store) error {
 
 // loadDevices reads every device in pages, because the device listing is
 // capped at a thousand rows per query.
-func loadDevices(ctx context.Context, store *postgres.Store) (map[int64]*model.Device, error) {
+func loadDevices(ctx context.Context, store *storage.Store) (map[int64]*model.Device, error) {
 	const page = 1000
 	devices := make(map[int64]*model.Device)
 	for offset := 0; ; offset += page {
@@ -172,7 +172,7 @@ func loadDevices(ctx context.Context, store *postgres.Store) (map[int64]*model.D
 // distance and filter stages have a previous position to compare against right
 // after a restart. Without it the first position of a device would start a new
 // trip and reset its running total.
-func (s *eventState) seedLastPositions(ctx context.Context, store *postgres.Store) error {
+func (s *eventState) seedLastPositions(ctx context.Context, store *storage.Store) error {
 	positions, err := store.LatestPositions(ctx, nil)
 	if err != nil {
 		return err
@@ -194,7 +194,7 @@ func (s *eventState) seedLastPositions(ctx context.Context, store *postgres.Stor
 // runEventStateRefresh keeps the links and maintenance intervals current. A
 // failure is logged and the previous snapshot stays in place, so a database
 // blip does not disable the rules.
-func runEventStateRefresh(ctx context.Context, state *eventState, store *postgres.Store, interval time.Duration) {
+func runEventStateRefresh(ctx context.Context, state *eventState, store *storage.Store, interval time.Duration) {
 	if interval <= 0 {
 		return
 	}

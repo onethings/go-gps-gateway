@@ -19,7 +19,7 @@ import (
 
 const maxPermissionBody = 1 << 16
 
-// PermissionStore is what the permission routes need. The postgres store
+// PermissionStore is what the permission routes need. The storage store
 // satisfies it: permissions.Store carries the pairs, and Groups backs the
 // existence check POST /api/share/group does.
 type PermissionStore interface {

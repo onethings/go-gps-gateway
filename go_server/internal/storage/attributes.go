@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -22,7 +22,7 @@ var attributeSpec = resourceSpec[model.Attribute]{
 		var attribute model.Attribute
 		if err := row.Scan(&attribute.ID, &attribute.Description, &attribute.Attribute,
 			&attribute.Expression, &attribute.Type, &attribute.Priority); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan attribute: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan attribute: %w", err))
 		}
 		return &attribute, nil
 	},

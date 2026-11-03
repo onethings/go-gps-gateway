@@ -24,7 +24,7 @@ var ErrTooManyPositions = errors.New("report: position limit exceeded")
 // report.periodLimit.
 var ErrPeriodTooLong = errors.New("report: time period exceeds the limit")
 
-// Store is the persistence the reports read. *postgres.Store implements it.
+// Store is the persistence the reports read. *storage.Store implements it.
 type Store interface {
 	QueryPositions(ctx context.Context, filter model.PositionFilter) ([]model.Position, error)
 	QueryEvents(ctx context.Context, filter model.EventFilter) ([]model.Event, error)

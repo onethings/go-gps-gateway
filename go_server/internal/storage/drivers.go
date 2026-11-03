@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -22,11 +22,11 @@ var driverSpec = resourceSpec[model.Driver]{
 			attributes []byte
 		)
 		if err := row.Scan(&driver.ID, &driver.Name, &driver.UniqueID, &attributes); err != nil {
-			return nil, notFoundAs(fmt.Errorf("postgres: scan driver: %w", err))
+			return nil, notFoundAs(fmt.Errorf("storage: scan driver: %w", err))
 		}
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: driver %d: %w", driver.ID, err)
+			return nil, fmt.Errorf("storage: driver %d: %w", driver.ID, err)
 		}
 		driver.Attributes = decoded
 		return &driver, nil

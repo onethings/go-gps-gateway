@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"strings"
@@ -10,7 +10,7 @@ import (
 func TestResourceQueryDefaults(t *testing.T) {
 	query, args := resourceQuery(groupSpec, model.ResourceFilter{})
 
-	want := "SELECT id, name, group_id, attributes FROM groups ORDER BY id LIMIT $1 OFFSET $2"
+	want := "SELECT id, name, group_id, attributes FROM device_groups ORDER BY id LIMIT $1 OFFSET $2"
 	if query != want {
 		t.Errorf("query = %q, want %q", query, want)
 	}
@@ -49,7 +49,7 @@ func TestResourceQueryIDs(t *testing.T) {
 
 func TestResourceQueryKeyword(t *testing.T) {
 	query, args := resourceQuery(driverSpec, model.ResourceFilter{Keyword: " bob "})
-	if !strings.Contains(query, "(name ILIKE $1 OR unique_id ILIKE $1)") {
+	if !strings.Contains(query, "(LOWER(name) LIKE LOWER($1) OR LOWER(unique_id) LIKE LOWER($1))") {
 		t.Errorf("query = %q, want the keyword over both text columns", query)
 	}
 	if len(args) != 3 || args[0] != "%bob%" {
@@ -57,13 +57,13 @@ func TestResourceQueryKeyword(t *testing.T) {
 	}
 
 	query, _ = resourceQuery(attributeSpec, model.ResourceFilter{Keyword: "   "})
-	if strings.Contains(query, "ILIKE") {
+	if strings.Contains(query, "LIKE") {
 		t.Errorf("query = %q, a blank keyword must not filter", query)
 	}
 }
 
 func TestResourcesMigration(t *testing.T) {
-	content, err := migrationsFS.ReadFile("migrations/0012_resources.sql")
+	content, err := migrationsFS.ReadFile("migrations/postgres/0012_resources.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}

@@ -80,14 +80,14 @@ const (
 	AttrNotifyEmail = "notifyEmail"
 )
 
-// DeviceLookup resolves the device an alert belongs to. *postgres.Store
+// DeviceLookup resolves the device an alert belongs to. *storage.Store
 // implements it, which is why notifications are only wired with -dsn.
 type DeviceLookup interface {
 	Device(ctx context.Context, deviceID int64) (*model.Device, error)
 }
 
 // SubscriptionLookup resolves the user subscriptions that apply to one alert
-// on a device. *postgres.Store implements it. The dispatcher only calls it
+// on a device. *storage.Store implements it. The dispatcher only calls it
 // when a Dispatcher was built with WithSubscriptions.
 type SubscriptionLookup interface {
 	DeviceSubscriptions(ctx context.Context, deviceID int64, alertType string) ([]model.NotificationSubscription, error)

@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"database/sql"
@@ -105,13 +105,13 @@ func TestPositionQueryAscending(t *testing.T) {
 
 func TestLatestPositionsQuery(t *testing.T) {
 	query, args := latestPositionsQuery(nil)
-	if !strings.Contains(query, "SELECT DISTINCT ON (device_id)") {
+	if !strings.Contains(query, "ROW_NUMBER() OVER") {
 		t.Errorf("query = %s", query)
 	}
-	if strings.Contains(query, "WHERE") {
-		t.Errorf("query has a WHERE clause without devices: %s", query)
+	if strings.Contains(query, "WHERE device_id") {
+		t.Errorf("query has a device filter without devices: %s", query)
 	}
-	if !strings.HasSuffix(query, "ORDER BY device_id, device_time DESC, id DESC") {
+	if !strings.HasSuffix(query, "WHERE rn = 1 ORDER BY device_id") {
 		t.Errorf("query = %s", query)
 	}
 	if len(args) != 0 {

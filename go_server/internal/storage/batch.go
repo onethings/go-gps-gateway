@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 
 // ErrSinkFull is returned when the queue is saturated and the position was
 // dropped instead of blocking the device connection.
-var ErrSinkFull = errors.New("postgres: sink queue full")
+var ErrSinkFull = errors.New("storage: sink queue full")
 
 // PositionWriter is the minimal contract the batch sink needs, which keeps it
 // testable without a database.
@@ -183,7 +183,7 @@ func (b *BatchSink) run() {
 			}
 		}
 		if err != nil {
-			b.logf("postgres: batch write (%d positions): %v", len(batch), err)
+			b.logf("storage: batch write (%d positions): %v", len(batch), err)
 		}
 		batch = batch[:0]
 		return err

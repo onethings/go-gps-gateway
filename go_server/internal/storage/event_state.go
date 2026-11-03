@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -13,13 +13,13 @@ import (
 // object link tables.
 func (s *Store) DeviceMaintenances(ctx context.Context) (map[int64][]*model.Maintenance, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT p.owner_id, m.id, m.name, m.type, m.start, m.period, m.attributes
+		`SELECT p.owner_id, m.id, m.name, m.type, m.start_value, m.period, m.attributes
 		 FROM permissions p
 		 JOIN maintenances m ON m.id = p.property_id
 		 WHERE p.owner_type = 'device' AND p.property_type = 'maintenance'
 		 ORDER BY p.owner_id, m.id`)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query device maintenances: %w", err)
+		return nil, fmt.Errorf("storage: query device maintenances: %w", err)
 	}
 	defer rows.Close()
 
@@ -32,17 +32,17 @@ func (s *Store) DeviceMaintenances(ctx context.Context) (map[int64][]*model.Main
 		)
 		if err := rows.Scan(&deviceID, &maintenance.ID, &maintenance.Name, &maintenance.Type,
 			&maintenance.Start, &maintenance.Period, &attributes); err != nil {
-			return nil, fmt.Errorf("postgres: scan device maintenance: %w", err)
+			return nil, fmt.Errorf("storage: scan device maintenance: %w", err)
 		}
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: maintenance %d: %w", maintenance.ID, err)
+			return nil, fmt.Errorf("storage: maintenance %d: %w", maintenance.ID, err)
 		}
 		maintenance.Attributes = decoded
 		result[deviceID] = append(result[deviceID], &maintenance)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query device maintenances: %w", err)
+		return nil, fmt.Errorf("storage: query device maintenances: %w", err)
 	}
 	return result, nil
 }
@@ -56,7 +56,7 @@ func (s *Store) DeviceLinks(ctx context.Context) (map[int64][]int64, error) {
 		 WHERE owner_type = 'device' AND property_type = 'device'
 		 ORDER BY owner_id, property_id`)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query device links: %w", err)
+		return nil, fmt.Errorf("storage: query device links: %w", err)
 	}
 	defer rows.Close()
 
@@ -64,12 +64,12 @@ func (s *Store) DeviceLinks(ctx context.Context) (map[int64][]int64, error) {
 	for rows.Next() {
 		var ownerID, propertyID int64
 		if err := rows.Scan(&ownerID, &propertyID); err != nil {
-			return nil, fmt.Errorf("postgres: scan device link: %w", err)
+			return nil, fmt.Errorf("storage: scan device link: %w", err)
 		}
 		result[ownerID] = append(result[ownerID], propertyID)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query device links: %w", err)
+		return nil, fmt.Errorf("storage: query device links: %w", err)
 	}
 	return result, nil
 }

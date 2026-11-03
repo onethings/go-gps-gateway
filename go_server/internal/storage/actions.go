@@ -1,4 +1,4 @@
-package postgres
+package storage
 
 import (
 	"context"
@@ -28,7 +28,7 @@ func (s *Store) RecordAction(ctx context.Context, action *model.Action) error {
 		at, action.Address, action.UserID, action.ActionType, action.ObjectType, action.ObjectID,
 		attributes,
 	); err != nil {
-		return fmt.Errorf("postgres: record action %s: %w", action.ActionType, err)
+		return fmt.Errorf("storage: record action %s: %w", action.ActionType, err)
 	}
 	return nil
 }
@@ -67,7 +67,7 @@ func (s *Store) QueryActions(
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: query actions: %w", err)
+		return nil, fmt.Errorf("storage: query actions: %w", err)
 	}
 	defer rows.Close()
 
@@ -80,17 +80,17 @@ func (s *Store) QueryActions(
 		if err := rows.Scan(&action.ID, &action.ActionTime, &action.Address, &action.UserID,
 			&action.ActionType, &action.ObjectType, &action.ObjectID, &action.UserEmail,
 			&attributes); err != nil {
-			return nil, fmt.Errorf("postgres: scan action: %w", err)
+			return nil, fmt.Errorf("storage: scan action: %w", err)
 		}
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: action %d: %w", action.ID, err)
+			return nil, fmt.Errorf("storage: action %d: %w", action.ID, err)
 		}
 		action.Attributes = decoded
 		actions = append(actions, action)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: query actions: %w", err)
+		return nil, fmt.Errorf("storage: query actions: %w", err)
 	}
 	return actions, nil
 }

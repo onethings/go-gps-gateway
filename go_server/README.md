@@ -97,7 +97,7 @@ docker compose down -v
 | HLS 串流 | `stream.path`（外部產生器寫 `<path>/<deviceId>/index.m3u8`） |
 | Redis 推播 | `redis.url`、`redis.channel`（預設 `traccar`） |
 | OpenID Connect | `openid.enable`、`openid.issuer`、`openid.clientId`、`openid.clientSecret`、`openid.redirectUrl`、`openid.scopes`、`openid.createMissing`、`openid.successUrl` |
-| LDAP | `ldap.url`、`ldap.user`、`ldap.password`、`ldap.base`、`ldap.userFilter`、`ldap.nameAttribute`、`ldap.mailAttribute`、`ldap.timeout` |
+| LDAP | `ldap.url`、`ldap.user`、`ldap.password`、`ldap.base`、`ldap.idAttribute`、`ldap.searchFilter`（母本名稱；`ldap.userFilter` 為相容別名）、`ldap.nameAttribute`、`ldap.mailAttribute`、`ldap.timeout` |
 | 網路外送 | `forward.network.address`、`forward.network.protocol`（`tcp` / `udp`） |
 | AMQP / Kafka 外送 | `forward.type`（`json` / `url` / `amqp` / `kafka`）、`forward.url`（AMQP 連線 URL 或 Kafka bootstrap）、`forward.exchange`（預設 `traccar`）、`forward.topic`（預設 `positions`）；事件側同名 `event.forward.*`（topic 預設 `events`） |
 | 地理服務 | `geocoder.type`（nominatim / google / opencage / here / locationiq / mapbox / tomtom / photon / pelias）、`geolocation.type`（google / mozilla / opencellid / unwired / here）；其餘用 `*.url` |

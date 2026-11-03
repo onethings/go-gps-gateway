@@ -172,7 +172,7 @@ func (s *Server) passwordLogin(
 		// An address that has no local account may still be a directory
 		// account; the lookup is the same login, not an account enumeration.
 		if s.ldap != nil {
-			return s.ldapLogin(ctx, w, r, email, password)
+			return s.ldapLogin(ctx, w, r, email, password, code)
 		}
 		// An empty hash costs the same as a real one, so an unknown address and
 		// a wrong password take the same time to answer.
@@ -198,7 +198,7 @@ func (s *Server) passwordLogin(
 	// row exists so the account keeps its devices and grants, but the secret
 	// lives in the directory.
 	if credential.PasswordHash == "" && s.ldap != nil {
-		return s.ldapLogin(ctx, w, r, email, password)
+		return s.ldapLogin(ctx, w, r, email, password, code)
 	}
 	// An account that never had a password has an empty hash, which VerifyPassword
 	// charges one bcrypt for, so it answers like a wrong password.
@@ -220,9 +220,7 @@ func (s *Server) passwordLogin(
 	// A wrong code is a failed login too, but it does not count against the
 	// password lockout: the password was already right, so counting it would
 	// let someone with the password lock the owner out of their own account.
-	if credential.TOTPEnabled && !totp.Validate(credential.TOTPSecret, code, s.now()) {
-		s.audit(r, model.ActionDenied, "", 0)
-		writeError(w, http.StatusUnauthorized, errors.New("invalid verification code"))
+	if !s.verifyTOTP(w, r, credential.TOTPSecret, credential.TOTPEnabled, code) {
 		return nil, "", false
 	}
 
@@ -240,6 +238,31 @@ func (s *Server) passwordLogin(
 
 	s.recordLoginContext(ctx, r, credential.UserID)
 	return token, plaintext, true
+}
+
+// verifyTOTP enforces the second factor and writes the failure response. A
+// missing code answers with the "TOTP" challenge the Java server uses, so a
+// client can ask for the code instead of showing a wrong-password error.
+// A wrong code is a failed login too, but neither case counts against the
+// password lockout: the password was already right.
+func (s *Server) verifyTOTP(
+	w http.ResponseWriter, r *http.Request, secret string, enabled bool, code string,
+) bool {
+	if !enabled {
+		return true
+	}
+	if strings.TrimSpace(code) == "" {
+		s.audit(r, model.ActionDenied, "", 0)
+		w.Header().Set("WWW-Authenticate", "TOTP")
+		writeError(w, http.StatusUnauthorized, errors.New("verification code required"))
+		return false
+	}
+	if !totp.Validate(secret, code, s.now()) {
+		s.audit(r, model.ActionDenied, "", 0)
+		writeError(w, http.StatusUnauthorized, errors.New("invalid verification code"))
+		return false
+	}
+	return true
 }
 
 // recordLoginContext writes the audit row of a successful login. The audit row

@@ -25,7 +25,7 @@ func WithLDAP(authenticator LDAPAuthenticator) Option {
 // ldapLogin authenticates against the directory, creates the local account on
 // first sight and issues the same token a password login would.
 func (s *Server) ldapLogin(
-	ctx context.Context, w http.ResponseWriter, r *http.Request, email, password string,
+	ctx context.Context, w http.ResponseWriter, r *http.Request, email, password, code string,
 ) (*model.APIToken, string, bool) {
 	identity, err := s.ldap.Authenticate(ctx, email, password)
 	if err != nil {
@@ -49,6 +49,19 @@ func (s *Server) ldapLogin(
 		s.audit(r, model.ActionDenied, "", 0)
 		writeError(w, http.StatusForbidden, errors.New("account is disabled"))
 		return nil, "", false
+	}
+	// The directory proved the password, but the second factor belongs to the
+	// local account. Skipping it here would let a directory login bypass TOTP.
+	if s.totp != nil {
+		secret, enabled, err := s.totp.UserTOTP(ctx, user.ID)
+		if err != nil {
+			s.logf("api: read totp of ldap user %d: %v", user.ID, err)
+			writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return nil, "", false
+		}
+		if !s.verifyTOTP(w, r, secret, enabled, code) {
+			return nil, "", false
+		}
 	}
 
 	token, plaintext, err := s.users.IssueTokenForUser(ctx, user.ID, []string{string(auth.ScopeAll)}, nil)

@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"traccar-server_go/go_server/internal/auth"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/totp"
 )
 
 func getWith(t *testing.T, handler http.Handler, target string, headers map[string]string) *httptest.ResponseRecorder {
@@ -246,6 +248,61 @@ func TestLoginDisabledAccount(t *testing.T) {
 	}
 	if tokens := store.tokens[1]; len(tokens) != 0 {
 		t.Errorf("login on a disabled account minted %d tokens", len(tokens))
+	}
+}
+
+// totpUsers overlays a two factor secret on the shared fake store.
+type totpUsers struct {
+	*fakeUsers
+	secret  string
+	enabled bool
+}
+
+func (f totpUsers) CredentialByEmail(ctx context.Context, email string) (*auth.Credential, error) {
+	credential, err := f.fakeUsers.CredentialByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	credential.TOTPSecret = f.secret
+	credential.TOTPEnabled = f.enabled
+	return credential, nil
+}
+
+func TestLoginRequiresTOTPCode(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, testEmail))
+	withPassword(t, store, 1)
+	const secret = "JBSWY3DPEHPK3PXP"
+	server := NewServer(nil, WithUsers(totpUsers{fakeUsers: store, secret: secret, enabled: true}))
+	now := time.Unix(1111111109, 0)
+	server.now = func() time.Time { return now }
+	handler := server.Handler()
+
+	body := `{"email":"` + testEmail + `","password":"` + testPassword + `"}`
+	recorder := apiRequest(t, handler, http.MethodPost, "/api/login", body, "")
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body %s)", recorder.Code, recorder.Body)
+	}
+	if got := recorder.Header().Get("WWW-Authenticate"); got != "TOTP" {
+		t.Fatalf("WWW-Authenticate = %q, want the TOTP challenge", got)
+	}
+
+	wrong := `{"email":"` + testEmail + `","password":"` + testPassword + `","code":"000000"}`
+	recorder = apiRequest(t, handler, http.MethodPost, "/api/login", wrong, "")
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong code status = %d, want 401 (body %s)", recorder.Code, recorder.Body)
+	}
+	if got := recorder.Header().Get("WWW-Authenticate"); got != "" {
+		t.Fatalf("wrong code challenge = %q, want none", got)
+	}
+
+	code, err := totp.Code(secret, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := `{"email":"` + testEmail + `","password":"` + testPassword + `","code":"` + code + `"}`
+	recorder = apiRequest(t, handler, http.MethodPost, "/api/login", valid, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid code status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
 	}
 }
 

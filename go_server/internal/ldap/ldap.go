@@ -27,9 +27,12 @@ type Config struct {
 	BindPassword string
 	// BaseDN is where the search starts.
 	BaseDN string
-	// UserFilter is the search filter. {0} is replaced by the escaped login.
-	// Empty means (|(uid={0})(mail={0})).
+	// UserFilter is the search filter. {0} or the Java server's :login is
+	// replaced by the escaped login. Empty uses
+	// (|(uid={0})(mail={0})), with IDAttribute as the uid spelling.
 	UserFilter string
+	// IDAttribute is the attribute the default filter matches. Empty uses uid.
+	IDAttribute string
 	// NameAttribute and MailAttribute map the entry onto the account. Empty
 	// uses cn and mail.
 	NameAttribute string
@@ -92,7 +95,7 @@ func search(ctx context.Context, config Config, username string) (*Identity, err
 		}
 	}
 
-	filter := userFilter(config.UserFilter, username)
+	filter := userFilter(config.UserFilter, config.IDAttribute, username)
 	request := message(1, applicationTag(3,
 		octetString(config.BaseDN),
 		enumerated(2), // whole subtree
@@ -193,14 +196,37 @@ func deadline(ctx context.Context) time.Time {
 }
 
 // userFilter builds the search filter. An escaped login keeps a caller from
-// injecting a filter through the username field.
-func userFilter(template, username string) []byte {
+// injecting a filter through the username field. Both {0} and the Java
+// server's :login placeholder are accepted. An attribute name that could
+// break out of the filter falls back to uid.
+func userFilter(template, idAttribute, username string) []byte {
 	escaped := escape(username)
 	if template == "" {
-		template = "(|(uid={0})(mail={0}))"
+		template = "(|(" + filterAttribute(idAttribute) + "={0})(mail={0}))"
 	}
-	expression := strings.ReplaceAll(template, "{0}", escaped)
+	expression := strings.ReplaceAll(template, ":login", escaped)
+	expression = strings.ReplaceAll(expression, "{0}", escaped)
 	return parseFilter(expression)
+}
+
+// filterAttribute restricts an attribute name to the characters RFC 4512
+// allows in a descriptor, so a configuration typo cannot change the filter
+// structure.
+func filterAttribute(name string) string {
+	if name == "" {
+		return "uid"
+	}
+	for _, character := range name {
+		switch {
+		case character >= 'a' && character <= 'z',
+			character >= 'A' && character <= 'Z',
+			character >= '0' && character <= '9',
+			character == '-', character == '.', character == ';':
+		default:
+			return "uid"
+		}
+	}
+	return name
 }
 
 // escape applies RFC 4515 escaping to a filter value.

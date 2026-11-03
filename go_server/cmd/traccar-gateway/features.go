@@ -90,12 +90,19 @@ func readLDAPConfig(cfg *config.Config) (ldap.Authenticator, bool) {
 		return ldap.Authenticator{}, false
 	}
 	timeout, _ := cfg.Duration(config.LDAPTimeout)
+	// ldap.searchFilter is the Java server's name; ldap.userFilter is the
+	// earlier Go spelling and stays as a fallback.
+	filter := cfg.String(config.LDAPSearchFilter)
+	if filter == "" {
+		filter = cfg.String(config.LDAPUserFilter)
+	}
 	return ldap.Authenticator{Config: ldap.Config{
 		URL:           address,
 		BindDN:        cfg.String(config.LDAPUser),
 		BindPassword:  cfg.String(config.LDAPPassword),
 		BaseDN:        base,
-		UserFilter:    cfg.String(config.LDAPUserFilter),
+		UserFilter:    filter,
+		IDAttribute:   cfg.String(config.LDAPIDAttribute),
 		NameAttribute: cfg.String(config.LDAPNameAttribute),
 		MailAttribute: cfg.String(config.LDAPMailAttribute),
 		Timeout:       timeout,

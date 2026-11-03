@@ -10,13 +10,32 @@ import (
 )
 
 func TestFilterEscapesTheLogin(t *testing.T) {
-	filter := userFilter("(uid={0})", "a*b(c)")
+	filter := userFilter("(uid={0})", "", "a*b(c)")
 	// The value is decoded back to its literal bytes inside the assertion, so
 	// the parentheses and the star cannot become filter syntax.
 	if !containsBytes(filter, []byte("a*b(c)")) {
 		t.Fatalf("filter = %q", filter)
 	}
 
+}
+
+func TestFilterUsesConfiguredIDAttribute(t *testing.T) {
+	filter := userFilter("", "sAMAccountName", "alice")
+	if !containsBytes(filter, []byte("sAMAccountName")) {
+		t.Fatalf("filter = %q, want the configured id attribute", filter)
+	}
+	// A value that cannot be an attribute descriptor falls back to uid
+	// instead of changing the filter structure.
+	if !containsBytes(userFilter("", "uid)(objectClass=*", "alice"), []byte("uid")) {
+		t.Fatal("an invalid id attribute must fall back to uid")
+	}
+}
+
+func TestFilterAcceptsTheJavaLoginPlaceholder(t *testing.T) {
+	filter := userFilter("(uid=:login)", "", "alice")
+	if !containsBytes(filter, []byte("alice")) {
+		t.Fatalf("filter = %q, want the login substituted", filter)
+	}
 }
 
 func TestParseFilterBuildsNestedExpressions(t *testing.T) {

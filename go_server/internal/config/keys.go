@@ -233,6 +233,8 @@ const (
 	LDAPUser          = "ldap.user"
 	LDAPPassword      = "ldap.password"
 	LDAPBase          = "ldap.base"
+	LDAPIDAttribute   = "ldap.idAttribute"
+	LDAPSearchFilter  = "ldap.searchFilter"
 	LDAPUserFilter    = "ldap.userFilter"
 	LDAPNameAttribute = "ldap.nameAttribute"
 	LDAPMailAttribute = "ldap.mailAttribute"
@@ -418,6 +420,8 @@ var KnownKeys = []string{
 	LDAPUser,
 	LDAPPassword,
 	LDAPBase,
+	LDAPIDAttribute,
+	LDAPSearchFilter,
 	LDAPUserFilter,
 	LDAPNameAttribute,
 	LDAPMailAttribute,

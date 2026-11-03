@@ -508,3 +508,40 @@ func TestLDAPLoginRejectsAWrongPassword(t *testing.T) {
 		t.Fatalf("status = %d, body %s", recorder.Code, recorder.Body)
 	}
 }
+
+func TestLDAPLoginRequiresTOTPCode(t *testing.T) {
+	const secret = "JBSWY3DPEHPK3PXP"
+	users := newFakeUsers(&model.User{ID: 1, Email: "alice@example.com", Name: "Alice"})
+	server := NewServer(nil,
+		WithUsers(users),
+		WithLDAP(fakeLDAP{identity: &ldap.Identity{
+			DN:    "cn=alice,dc=example,dc=com",
+			Email: "alice@example.com",
+			Name:  "Alice",
+		}}),
+		WithTOTP(&fakeTOTP{secret: secret, enabled: true}))
+	now := time.Unix(1111111109, 0)
+	server.now = func() time.Time { return now }
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/api/login", bytes.NewBufferString(`{"email":"alice@example.com","password":"secret"}`)))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body %s)", recorder.Code, recorder.Body)
+	}
+	if got := recorder.Header().Get("WWW-Authenticate"); got != "TOTP" {
+		t.Fatalf("WWW-Authenticate = %q, want the TOTP challenge", got)
+	}
+
+	code, err := totp.Code(secret, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/api/login", bytes.NewBufferString(
+			`{"email":"alice@example.com","password":"secret","code":"`+code+`"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+}

@@ -60,6 +60,32 @@ func TestBuildForwardersPicksTheURLType(t *testing.T) {
 	}
 }
 
+func TestBuildForwardersPicksAMQPAndKafka(t *testing.T) {
+	cfg := loadConfig(t, `
+	<entry key='forward.url'>amqp://broker:5672</entry>
+	<entry key='forward.type'>amqp</entry>`)
+
+	var names []string
+	for _, transport := range buildForwarders(cfg, readForwardConfig(cfg)) {
+		names = append(names, transport.Name())
+	}
+	if got := strings.Join(names, ", "); got != "amqp" {
+		t.Fatalf("position transports = %s", got)
+	}
+
+	cfg = loadConfig(t, `
+	<entry key='event.forward.url'>kafka-1:9092,kafka-2:9092</entry>
+	<entry key='event.forward.type'>kafka</entry>
+	<entry key='event.forward.topic'>events</entry>`)
+	names = nil
+	for _, transport := range buildForwarders(cfg, readForwardConfig(cfg)) {
+		names = append(names, transport.Name())
+	}
+	if got := strings.Join(names, ", "); got != "kafka" {
+		t.Fatalf("event transports = %s", got)
+	}
+}
+
 func TestOnlyForKindKeepsOneFeed(t *testing.T) {
 	probe := &probeTransport{}
 	events := onlyForKind(probe, "event")

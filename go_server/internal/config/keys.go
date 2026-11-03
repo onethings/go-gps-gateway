@@ -121,15 +121,20 @@ const (
 	ReportTripNoDataDuration  = "report.trip.minimalNoDataDuration"
 	ReportIgnoreOdometer      = "report.ignoreOdometer"
 
-	// Forwarding. forward.url and event.forward.url are the Java keys; the
+	// Forwarding. forward.url and event.forward.url are the Java keys, and
+	// forward.type selects json, url, amqp or kafka for either of them. The
 	// mqtt, redis and wialon sections are Go only, because the Java server
 	// forwards through its protocol modules instead of a dedicated transport.
 	ForwardURL             = "forward.url"
 	ForwardType            = "forward.type"
 	ForwardHeader          = "forward.header"
+	ForwardExchange        = "forward.exchange"
+	ForwardTopic           = "forward.topic"
 	EventForwardURL        = "event.forward.url"
 	EventForwardType       = "event.forward.type"
 	EventForwardHeader     = "event.forward.header"
+	EventForwardExchange   = "event.forward.exchange"
+	EventForwardTopic      = "event.forward.topic"
 	ForwardMQTTBroker      = "forward.mqtt.broker"
 	ForwardMQTTTopic       = "forward.mqtt.topic"
 	ForwardMQTTClientID    = "forward.mqtt.clientId"
@@ -344,9 +349,13 @@ var KnownKeys = []string{
 	ForwardURL,
 	ForwardType,
 	ForwardHeader,
+	ForwardExchange,
+	ForwardTopic,
 	EventForwardURL,
 	EventForwardType,
 	EventForwardHeader,
+	EventForwardExchange,
+	EventForwardTopic,
 	ForwardMQTTBroker,
 	ForwardMQTTTopic,
 	ForwardMQTTClientID,

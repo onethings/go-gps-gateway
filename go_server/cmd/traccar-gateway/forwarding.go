@@ -82,18 +82,24 @@ func buildForwarders(cfg *config.Config, settings forwardConfig) []forward.Trans
 	}
 
 	// The position and event URL forwarders are the Java forward.url and
-	// event.forward.url keys. Each one only receives its own feed.
+	// event.forward.url keys. forward.type picks the destination: json or url
+	// posts over HTTP, amqp publishes to an exchange and kafka produces to a
+	// topic. Each one only receives its own feed.
 	if url := cfg.String(config.ForwardURL); url != "" {
-		transport, err := newHTTPForwarder(url,
-			cfg.StringOr(config.ForwardType, "json"), cfg.String(config.ForwardHeader), client)
+		transport, err := newForwarder(url, cfg.StringOr(config.ForwardType, "json"),
+			cfg.String(config.ForwardHeader),
+			cfg.StringOr(config.ForwardExchange, "traccar"),
+			cfg.StringOr(config.ForwardTopic, "positions"), client)
 		if err == nil {
 			transport = forward.Only(transport, false)
 		}
 		add(transport, err)
 	}
 	if url := cfg.String(config.EventForwardURL); url != "" {
-		transport, err := newHTTPForwarder(url,
-			cfg.StringOr(config.EventForwardType, "json"), cfg.String(config.EventForwardHeader), client)
+		transport, err := newForwarder(url, cfg.StringOr(config.EventForwardType, "json"),
+			cfg.String(config.EventForwardHeader),
+			cfg.StringOr(config.EventForwardExchange, "traccar"),
+			cfg.StringOr(config.EventForwardTopic, "events"), client)
 		if err == nil {
 			transport = forward.Only(transport, true)
 		}
@@ -152,13 +158,18 @@ func buildForwarders(cfg *config.Config, settings forwardConfig) []forward.Trans
 	return transports
 }
 
-// newHTTPForwarder picks the JSON or the URL destination by the configured type.
-func newHTTPForwarder(target, kind, header string, client *http.Client) (forward.Transport, error) {
+// newForwarder picks the destination by the configured type. json and url post
+// over HTTP, amqp and kafka hand the same document to a broker.
+func newForwarder(target, kind, header, exchange, topic string, client *http.Client) (forward.Transport, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "", "json":
 		return forward.NewJSON(forward.HTTPConfig{URL: target, Header: header, Client: client})
 	case "url":
 		return forward.NewURL(forward.HTTPConfig{URL: target, Header: header, Client: client})
+	case "amqp":
+		return forward.NewAMQP(forward.AMQPConfig{URL: target, Exchange: exchange, Topic: topic})
+	case "kafka":
+		return forward.NewKafka(forward.KafkaConfig{Brokers: target, Topic: topic})
 	default:
 		log.Printf("forward: unknown type %q, using json", kind)
 		return forward.NewJSON(forward.HTTPConfig{URL: target, Header: header, Client: client})

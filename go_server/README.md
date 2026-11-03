@@ -15,7 +15,7 @@
   CopyAttributes / EngineHours、ComputedAttributes（`internal/expr` 求值）、ProximityRule。
 - **REST**：裝置 / 位置 / 事件、帳號與 token、TOTP、權限與分享、資源 CRUD、命令、
   WebSocket、統計、媒體、HLS、OpenID、LDAP、密碼自助。
-- **外送**：JSON、URL、MQTT、Redis、Wialon、Network（TCP/UDP）。
+- **外送**：JSON、URL、MQTT、Redis、Wialon、Network（TCP/UDP）、AMQP 0-9-1、Kafka。
 - **排程**：expiration、cleanup、health、reports、deviceInactive、deviceExpiration，
   以及 events / positions / commands retention。
 
@@ -99,6 +99,7 @@ docker compose down -v
 | OpenID Connect | `openid.enable`、`openid.issuer`、`openid.clientId`、`openid.clientSecret`、`openid.redirectUrl`、`openid.scopes`、`openid.createMissing`、`openid.successUrl` |
 | LDAP | `ldap.url`、`ldap.user`、`ldap.password`、`ldap.base`、`ldap.userFilter`、`ldap.nameAttribute`、`ldap.mailAttribute`、`ldap.timeout` |
 | 網路外送 | `forward.network.address`、`forward.network.protocol`（`tcp` / `udp`） |
+| AMQP / Kafka 外送 | `forward.type`（`json` / `url` / `amqp` / `kafka`）、`forward.url`（AMQP 連線 URL 或 Kafka bootstrap）、`forward.exchange`（預設 `traccar`）、`forward.topic`（預設 `positions`）；事件側同名 `event.forward.*`（topic 預設 `events`） |
 | 地理服務 | `geocoder.type`（nominatim / google / opencage / here / locationiq / mapbox / tomtom / photon / pelias）、`geolocation.type`（google / mozilla / opencellid / unwired / here）；其餘用 `*.url` |
 | 排程 | `schedule.{inactive,deviceExpiration,events,positions,commands}.interval`、`schedule.{events,positions,commands}.retention`（0=不刪） |
 
@@ -169,12 +170,12 @@ docker compose down -v
 | 處理鏈 / 事件 | 15 stage / 12 規則 | 0 |
 | OpenAPI 路徑 | 76 | 0 |
 | 地理 provider | geocoder 9、geolocation 5 | geocoder 15 |
-| 外送 | JSON、URL、MQTT、Redis、Wialon、Network | AMQP、Kafka |
+| 外送 | JSON、URL、MQTT、Redis、Wialon、Network、AMQP、Kafka | — |
 | 資料庫 | PostgreSQL | MySQL / H2；schema 與母本不相容 |
 | 認證 | 密碼、token、TOTP、OpenID、LDAP | 0 |
 | 水平擴展 | Redis 推播 | multicast；跨節點 device session |
 | 影像 | 上傳 / 下載、HLS 端點 | JT1078 解碼與切片 |
 | 排程 | 9 | temporary 帳號到期刪除 |
 
-後續順序：依客戶設備補協議與 Encoder → 需要時補 AMQP/Kafka → 要接母本資料庫再處理
+後續順序：依客戶設備補協議與 Encoder → 要接母本資料庫再處理
 storage / schema → 要即時影像再做 JT1078。

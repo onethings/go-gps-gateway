@@ -64,6 +64,9 @@ type UserCreate struct {
 	// Temporary creates a share account: no password, and refused as the owner
 	// of a further share.
 	Temporary bool
+	// Attributes seeds users.attributes. A share account records its
+	// expirationTime here, which is what the scheduled cleanup reads.
+	Attributes Attributes
 }
 
 // UserUpdate holds the mutable fields of a user. Nil fields are left as they

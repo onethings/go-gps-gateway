@@ -34,6 +34,34 @@ func (s *Store) ExpiredUsers(ctx context.Context, before time.Time) ([]model.Use
 	return users, rows.Err()
 }
 
+// ExpiredTemporaryUsers returns the temporary accounts whose expirationTime
+// attribute is in the past. A temporary account is the password-less one a share
+// link created, so it owns nothing but its grant and token and the scheduled
+// cleanup can delete it outright.
+func (s *Store) ExpiredTemporaryUsers(ctx context.Context, before time.Time) ([]model.User, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+userSelectColumns+`
+		 FROM users u
+		 WHERE temporary = true
+		   AND attributes->>'expirationTime' IS NOT NULL
+		   AND (attributes->>'expirationTime')::timestamptz <= $1
+		 ORDER BY id`, before)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: expired temporary users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []model.User
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, *user)
+	}
+	return users, rows.Err()
+}
+
 // SetUserDisabled flips users.disabled. It goes through the same update path the
 // API uses, so an attribute rewrite cannot clobber the row.
 func (s *Store) SetUserDisabled(ctx context.Context, userID int64, disabled bool) error {

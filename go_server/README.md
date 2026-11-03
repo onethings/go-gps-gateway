@@ -16,7 +16,7 @@
 - **REST**：裝置 / 位置 / 事件、帳號與 token、TOTP、權限與分享、資源 CRUD、命令、
   WebSocket、統計、媒體、HLS、OpenID、LDAP、密碼自助。
 - **外送**：JSON、URL、MQTT、Redis、Wialon、Network（TCP/UDP）、AMQP 0-9-1、Kafka。
-- **排程**：expiration、cleanup、health、reports、deviceInactive、deviceExpiration，
+- **排程**：expiration、temporary、cleanup、health、reports、deviceInactive、deviceExpiration，
   以及 events / positions / commands retention。
 
 > `go build ./...`、`go vet ./...`、`go test ./...` 全綠；gateway / alert / api / notify 另跑 `-race`。
@@ -101,7 +101,7 @@ docker compose down -v
 | 網路外送 | `forward.network.address`、`forward.network.protocol`（`tcp` / `udp`） |
 | AMQP / Kafka 外送 | `forward.type`（`json` / `url` / `amqp` / `kafka`）、`forward.url`（AMQP 連線 URL 或 Kafka bootstrap）、`forward.exchange`（預設 `traccar`）、`forward.topic`（預設 `positions`）；事件側同名 `event.forward.*`（topic 預設 `events`） |
 | 地理服務 | `geocoder.type`（nominatim / google / opencage / here / locationiq / mapbox / tomtom / photon / pelias / autonavi / baidu / tencent / ban / bingmaps / factual / geoapify / geocodefarm / geocodejson / geocodexyz / gisgraphy / mapquest / maptiler / mapmyindia / mygeocode / positionstack / pluscodes）、`geolocation.type`（google / mozilla / opencellid / unwired / here / universal）；其餘用 `*.url`。`nominatim`、`photon`、`ban`、`geocodejson`、`pluscodes` 免 `geocoder.key`（pluscodes 為本地計算） |
-| 排程 | `schedule.{inactive,deviceExpiration,events,positions,commands}.interval`、`schedule.{events,positions,commands}.retention`（0=不刪） |
+| 排程 | `schedule.{expiration,temporary,inactive,deviceExpiration,events,positions,commands}.interval`、`schedule.{events,positions,commands}.retention`（0=不刪） |
 
 ## 協議
 
@@ -157,7 +157,7 @@ docker compose down -v
 - 帳號 API 只有分頁；email 建立後不可改；登入失敗鎖定（bcrypt cost 12）。
 - `PUT /api/devices/{id}` 是整欄取代；`protocol` / `uniqueId` 不可改；`disabled` 尚未擋 ingest。
 - 群組授權只影響可見裝置；通知收件者仍只認 `user → device`。
-- 分享帳號只能由 admin 刪除；`/api/socket` token 在 query string。
+- 分享帳號由 admin 或 `schedule.temporary.interval` 到期刪除；`/api/socket` token 在 query string。
 - `suntech` 只能收不能下命令；記憶體模式僅適合開發。
 - TOTP / OpenID / LDAP / HLS / 裝置影像 / Redis 推播都要設定後才啟用，未設定回 501。
 
@@ -175,7 +175,7 @@ docker compose down -v
 | 認證 | 密碼、token、TOTP、OpenID、LDAP | 0 |
 | 水平擴展 | Redis 推播 | multicast；跨節點 device session |
 | 影像 | 上傳 / 下載、HLS 端點 | JT1078 解碼與切片 |
-| 排程 | 9 | temporary 帳號到期刪除 |
+| 排程 | 10 | — |
 
 後續順序：依客戶設備補協議與 Encoder → 要接母本資料庫再處理
 storage / schema → 要即時影像再做 JT1078。

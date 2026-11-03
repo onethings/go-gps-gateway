@@ -122,12 +122,13 @@ func (f *fakeUsers) CreateUser(_ context.Context, create model.UserCreate) (*mod
 	}
 	f.nextID++
 	user := &model.User{
-		ID:        f.nextID,
-		Email:     create.Email,
-		Name:      create.Name,
-		Admin:     create.Admin,
-		Temporary: create.Temporary,
-		CreatedAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
+		ID:         f.nextID,
+		Email:      create.Email,
+		Name:       create.Name,
+		Admin:      create.Admin,
+		Temporary:  create.Temporary,
+		Attributes: create.Attributes,
+		CreatedAt:  time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
 	}
 	f.users[user.ID] = user
 	copied := *user

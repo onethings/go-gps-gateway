@@ -14,15 +14,19 @@ import (
 type fakeStore struct {
 	mu sync.Mutex
 
-	expired      []model.User
-	disabled     []int64
-	deleteTokens int64
-	deleteResets int64
-	deleteAudit  int64
-	reports      []*model.Report
-	updated      []*model.Report
-	pingErr      error
-	err          error
+	expired          []model.User
+	expiredTemporary []model.User
+	disabled         []int64
+	disabledErr      map[int64]error
+	deletedUsers     []int64
+	deleteErr        map[int64]error
+	deleteTokens     int64
+	deleteResets     int64
+	deleteAudit      int64
+	reports          []*model.Report
+	updated          []*model.Report
+	pingErr          error
+	err              error
 }
 
 func (f *fakeStore) ExpiredUsers(context.Context, time.Time) ([]model.User, error) {
@@ -31,9 +35,28 @@ func (f *fakeStore) ExpiredUsers(context.Context, time.Time) ([]model.User, erro
 	return f.expired, f.err
 }
 
+func (f *fakeStore) ExpiredTemporaryUsers(context.Context, time.Time) ([]model.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.expiredTemporary, f.err
+}
+
+func (f *fakeStore) DeleteUser(_ context.Context, userID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.deleteErr[userID]; err != nil {
+		return err
+	}
+	f.deletedUsers = append(f.deletedUsers, userID)
+	return nil
+}
+
 func (f *fakeStore) SetUserDisabled(_ context.Context, userID int64, disabled bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.disabledErr[userID]; err != nil {
+		return err
+	}
 	if disabled {
 		f.disabled = append(f.disabled, userID)
 	}
@@ -104,6 +127,19 @@ func TestExpirationDisablesExpiredUsers(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	if len(store.disabled) != 2 || store.disabled[0] != 3 || store.disabled[1] != 4 {
+		t.Fatalf("disabled = %v", store.disabled)
+	}
+}
+
+func TestExpirationSkipsAnAccountThatIsAlreadyGone(t *testing.T) {
+	store := &fakeStore{
+		expired:     []model.User{{ID: 3}, {ID: 4}},
+		disabledErr: map[int64]error{3: model.ErrUserNotFound},
+	}
+	if err := (&Expiration{Store: store}).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(store.disabled) != 1 || store.disabled[0] != 4 {
 		t.Fatalf("disabled = %v", store.disabled)
 	}
 }

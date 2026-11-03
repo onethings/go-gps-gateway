@@ -412,9 +412,10 @@ func (s *Server) share(w http.ResponseWriter, r *http.Request, object permission
 	}
 
 	account, err := s.users.CreateUser(ctx, model.UserCreate{
-		Email:     email,
-		Name:      target.name,
-		Temporary: true,
+		Email:      email,
+		Name:       target.name,
+		Temporary:  true,
+		Attributes: shareAttributes(request.expiration),
 	})
 	if err != nil {
 		if errors.Is(err, model.ErrDuplicateUser) {
@@ -451,6 +452,17 @@ func (s *Server) share(w http.ResponseWriter, r *http.Request, object permission
 		response.ExpiresAt = &expiresAt
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// shareAttributes is what a share account stores on the row. The expiration is
+// kept as the users API spells it, an ISO 8601 timestamp under expirationTime,
+// so Expiration and the temporary cleanup read the same key. A share without an
+// expiration has no attribute and is never deleted.
+func shareAttributes(expiration *time.Time) model.Attributes {
+	if expiration == nil {
+		return nil
+	}
+	return model.Attributes{"expirationTime": expiration.UTC().Format(time.RFC3339)}
 }
 
 // shareTarget is the display name of the shared object plus, for a device, the

@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"traccar-server_go/go_server/internal/model"
@@ -43,6 +44,11 @@ func (e *Expiration) Run(ctx context.Context) error {
 	}
 	for _, user := range users {
 		if err := e.Store.SetUserDisabled(ctx, user.ID, true); err != nil {
+			// The temporary cleanup may delete a share account between the query
+			// and this update; a row that is already gone needs no disabling.
+			if errors.Is(err, model.ErrUserNotFound) {
+				continue
+			}
 			return err
 		}
 	}

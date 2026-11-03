@@ -90,6 +90,14 @@ func buildScheduler(
 	if settings.Expiration > 0 {
 		scheduler.Add(&schedule.Expiration{Store: store}, settings.Expiration, true)
 	}
+	if settings.Temporary > 0 {
+		scheduler.Add(&schedule.TemporaryCleanup{
+			Store: store,
+			Report: func(kind string, deleted int64) {
+				logf("schedule: deleted %d expired %s", deleted, kind)
+			},
+		}, settings.Temporary, true)
+	}
 	if settings.Cleanup > 0 {
 		cleanup := &schedule.Cleanup{
 			Store:           store,
@@ -191,6 +199,7 @@ func readSchedulerSettings(cfg *config.Config) schedulerSettings {
 		}
 	}
 	read(config.ScheduleExpiration, &settings.Expiration)
+	read(config.ScheduleTemporary, &settings.Temporary)
 	read(config.ScheduleCleanup, &settings.Cleanup)
 	read(config.ScheduleActionRetention, &settings.ActionRetention)
 	read(config.ScheduleReports, &settings.Reports)
@@ -210,6 +219,7 @@ func readSchedulerSettings(cfg *config.Config) schedulerSettings {
 // schedulerSettings is the resolved task intervals.
 type schedulerSettings struct {
 	Expiration        time.Duration
+	Temporary         time.Duration
 	Cleanup           time.Duration
 	ActionRetention   time.Duration
 	Reports           time.Duration
@@ -229,6 +239,7 @@ type schedulerSettings struct {
 // it, a test supplies the fakes it cares about.
 type schedulerStore interface {
 	schedule.ExpirationStore
+	schedule.TemporaryStore
 	schedule.CleanupStore
 	schedule.ReportStore
 	schedule.Pinger

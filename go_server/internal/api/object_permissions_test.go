@@ -415,10 +415,19 @@ func TestObjectPermissionsStoreErrorIsInternal(t *testing.T) {
 
 func shareServer(t *testing.T, principal *auth.Principal, store *fakePermissions, options ...Option) http.Handler {
 	t.Helper()
+	users := newFakeUsers(&model.User{ID: 2, Email: "owner@example.test", Name: "owner"})
+	return shareServerWithUsers(t, principal, store, users, options...)
+}
+
+// shareServerWithUsers is shareServer with a caller supplied account store, so a
+// test can inspect the share account that was created.
+func shareServerWithUsers(
+	t *testing.T, principal *auth.Principal, store *fakePermissions, users *fakeUsers, options ...Option,
+) http.Handler {
+	t.Helper()
 	devices := &fakeDeviceList{results: []model.Device{
 		{ID: 7, UniqueID: "862000000000007", Name: "van"},
 	}}
-	users := newFakeUsers(&model.User{ID: 2, Email: "owner@example.test", Name: "owner"})
 	base := []Option{
 		WithPermissions(store),
 		WithDevices(devices),
@@ -464,6 +473,64 @@ func TestShareCreatesTemporaryAccountAndToken(t *testing.T) {
 	}
 	if pairs[0].OwnerID != response.UserID {
 		t.Errorf("grant owner = %d, want the share account %d", pairs[0].OwnerID, response.UserID)
+	}
+}
+
+func TestShareRecordsTheExpirationOnTheAccount(t *testing.T) {
+	store := newFakePermissions()
+	store.add(t, permissions.ObjectUser, 2, permissions.ObjectDevice, 7)
+	users := newFakeUsers(&model.User{ID: 2, Email: "owner@example.test", Name: "owner"})
+	handler := shareServerWithUsers(t, sharePrincipal(), store, users)
+
+	expiration := time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)
+	recorder := withForm(t, handler, "/api/share/device", url.Values{
+		"deviceId":   {"7"},
+		"expiration": {expiration.Format(time.RFC3339)},
+	})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+
+	var response shareResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, recorder.Body)
+	}
+
+	account, err := users.User(context.Background(), response.UserID)
+	if err != nil {
+		t.Fatalf("account: %v", err)
+	}
+	if !account.Temporary {
+		t.Error("the share account is not temporary")
+	}
+	if got := account.Attributes["expirationTime"]; got != expiration.Format(time.RFC3339) {
+		// The scheduled cleanup matches on this key, so a share without it is
+		// never deleted.
+		t.Errorf("expirationTime = %v, want %s", got, expiration.Format(time.RFC3339))
+	}
+}
+
+func TestShareWithoutExpirationLeavesNoExpirationTime(t *testing.T) {
+	store := newFakePermissions()
+	store.add(t, permissions.ObjectUser, 2, permissions.ObjectDevice, 7)
+	users := newFakeUsers(&model.User{ID: 2, Email: "owner@example.test", Name: "owner"})
+	handler := shareServerWithUsers(t, sharePrincipal(), store, users)
+
+	recorder := withForm(t, handler, "/api/share/device", url.Values{"deviceId": {"7"}})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+
+	var response shareResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, recorder.Body)
+	}
+	account, err := users.User(context.Background(), response.UserID)
+	if err != nil {
+		t.Fatalf("account: %v", err)
+	}
+	if _, ok := account.Attributes["expirationTime"]; ok {
+		t.Errorf("attributes = %v, want no expirationTime", account.Attributes)
 	}
 }
 

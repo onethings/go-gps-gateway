@@ -184,6 +184,7 @@ const (
 
 	// Scheduled maintenance. The intervals are durations; zero turns a task off.
 	ScheduleExpiration        = "schedule.expiration.interval"
+	ScheduleTemporary         = "schedule.temporary.interval"
 	ScheduleCleanup           = "schedule.cleanup.interval"
 	ScheduleActionRetention   = "schedule.cleanup.actionRetention"
 	ScheduleReports           = "schedule.reports.interval"

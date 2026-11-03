@@ -390,12 +390,18 @@ func (s *Store) ResetLoginFailures(ctx context.Context, userID int64) error {
 // CreateUser inserts an account. An email that already exists returns
 // model.ErrDuplicateUser instead of touching the row.
 func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model.User, error) {
+	attributes, err := encodeAttributes(create.Attributes)
+	if err != nil {
+		return nil, err
+	}
+
 	var userID int64
-	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO users (email, name, admin, temporary) VALUES ($1, $2, $3, $4)
+	err = s.db.QueryRowContext(ctx,
+		`INSERT INTO users (email, name, admin, temporary, attributes)
+		 VALUES ($1, $2, $3, $4, $5::jsonb)
 		 ON CONFLICT (email) DO NOTHING
 		 RETURNING id`,
-		create.Email, create.Name, create.Admin, create.Temporary,
+		create.Email, create.Name, create.Admin, create.Temporary, attributes,
 	).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrDuplicateUser
@@ -479,6 +485,9 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) error {
 	if err := s.ClearPermissions(ctx, permissions.ObjectUser, userID); err != nil {
 		return err
 	}
+	// The tokens went away with the row, so a principal cached for one of them
+	// must not outlive the account.
+	s.invalidateTokenCache()
 	return nil
 }
 

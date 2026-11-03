@@ -109,6 +109,22 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		buf.ReadUnsignedShort() // response serial number
 		result.AddPosition(d.decodeLocation(session, buf))
 
+	case msgLocationBatch, msgLocationBatch2:
+		result.AddResponse(d.generalResponse(h))
+		if h.messageType == msgLocationBatch2 && h.bodyLength == 7 {
+			// A seven byte 0x0210 body is a battery level plus a packed BCD
+			// timestamp for the last known fix, not a batch of locations.
+			position := d.newPosition(session)
+			d.copyLastLocation(position)
+			position.Set(model.KeyBatteryLevel, buf.ReadUnsignedByte())
+			position.Time = readDate(buf, d.location())
+			result.AddPosition(position)
+			break
+		}
+		for _, position := range d.decodeLocationBatch(session, buf, h.messageType) {
+			result.AddPosition(position)
+		}
+
 	case msgTimeSyncRequest:
 		now := d.Time().UTC()
 		payload := []byte{
@@ -203,9 +219,24 @@ func (d *Decoder) generalResponse(h *header) []byte {
 	return buildMessage(h, msgGeneralResponse, payload)
 }
 
-// decodeLocation parses the 0x0200 body: alarm, status, coordinates, motion
-// and time, followed by the variable length extension block.
+// decodeLocation parses the 0x0200 body of a whole frame. The frame buffer
+// still carries the checksum and closing delimiter, so the extension walk stops
+// two bytes before the end.
 func (d *Decoder) decodeLocation(session *codec.DeviceSession, buf *helper.Buffer) *model.Position {
+	return d.decodeLocationData(session, buf, len(buf.Bytes())-2)
+}
+
+// decodeLocationFragment parses a location body sliced out of a batch. The
+// fragment has no checksum or delimiter, so it is walked to its own end.
+func (d *Decoder) decodeLocationFragment(session *codec.DeviceSession, fragment []byte) *model.Position {
+	return d.decodeLocationData(session, helper.NewBuffer(fragment), len(fragment))
+}
+
+// decodeLocationData parses alarm, status, coordinates, motion and time,
+// followed by the variable length extension block. Extensions are bounded by
+// extensionLimit, which excludes the frame trailer when there is one.
+func (d *Decoder) decodeLocationData(
+	session *codec.DeviceSession, buf *helper.Buffer, extensionLimit int) *model.Position {
 	position := d.newPosition(session)
 
 	d.decodeAlarm(position, buf.ReadUnsignedInt(), session.Model)
@@ -243,15 +274,48 @@ func (d *Decoder) decodeLocation(session *codec.DeviceSession, buf *helper.Buffe
 		return position
 	}
 
-	d.decodeExtensions(position, buf)
+	d.decodeExtensions(position, buf, extensionLimit)
 	return position
+}
+
+// decodeLocationBatch parses the batch location bodies. 0x0704 prefixes the
+// items with the item count and the report type, while 0x0210 has no such
+// header; both then carry each location as a length prefixed 0x0200 body. A
+// non-zero 0x0704 report type marks a blind area upload, which is stored as an
+// archived position.
+func (d *Decoder) decodeLocationBatch(
+	session *codec.DeviceSession, buf *helper.Buffer, messageType int) []*model.Position {
+	archive := false
+	if messageType == msgLocationBatch {
+		buf.ReadUnsignedShort() // item count, the item lengths bound the loop
+		archive = buf.ReadUnsignedByte() > 0
+	}
+
+	var positions []*model.Position
+	for buf.ReadableBytes() > 2 {
+		var length int
+		if messageType == msgLocationBatch2 {
+			length = buf.ReadUnsignedByte()
+		} else {
+			length = buf.ReadUnsignedShort()
+		}
+		// Keep the checksum and closing delimiter out of the item: a length
+		// that does not fit in what is left is a corrupt batch.
+		if length <= 0 || length > buf.ReadableBytes()-2 {
+			break
+		}
+		position := d.decodeLocationFragment(session, buf.ReadSlice(length))
+		if archive {
+			position.Set(model.KeyArchive, true)
+		}
+		positions = append(positions, position)
+	}
+	return positions
 }
 
 // decodeExtensions walks the TLVs that follow the location body. Every entry
 // is a one byte id, a one byte length and the value.
-func (d *Decoder) decodeExtensions(position *model.Position, buf *helper.Buffer) {
-	limit := len(buf.Bytes()) - 2 // exclude checksum and closing delimiter
-
+func (d *Decoder) decodeExtensions(position *model.Position, buf *helper.Buffer, limit int) {
 	for buf.ReaderIndex() < limit && buf.ReadableBytes() > 2 {
 		subtype := buf.ReadUnsignedByte()
 		length := buf.ReadUnsignedByte()

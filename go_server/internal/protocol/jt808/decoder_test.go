@@ -480,3 +480,223 @@ func TestDecodeShortTerminalGeneralResponse(t *testing.T) {
 		t.Error("a truncated general response was consumed")
 	}
 }
+
+// TestDecodeLocationBatch0704 pins the 0x0704 framing: an item count, a report
+// type that marks blind area uploads as archived, then a length prefixed 0x0200
+// body per item. The platform acknowledges the batch with a general response.
+func TestDecodeLocationBatch0704(t *testing.T) {
+	frame := mustHex(t, "7e0704003e0184380000500084000101003900000000000c000f01d792b7034f72e600c90000009b26101319020901040000000030011f31010ad00400000000d40164d7030100beda0105e17e")
+
+	result, err := NewDecoder(Base()).Decode(frame)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+
+	position := result.Positions[0]
+	if archived, _ := position.Get(model.KeyArchive); archived != true {
+		t.Errorf("archive = %#v, want true for a blind area batch", archived)
+	}
+	if got, _ := position.Get(model.KeySatellites); got != 10 {
+		t.Errorf("satellites = %#v, want 10", got)
+	}
+	if got, _ := position.Get(model.KeyRSSI); got != 31 {
+		t.Errorf("rssi = %#v, want 31", got)
+	}
+	if math.Abs(position.Latitude-(-30.905015)) > 1e-6 || math.Abs(position.Longitude-(-55.538406)) > 1e-6 {
+		t.Errorf("coordinates = %.6f/%.6f", position.Latitude, position.Longitude)
+	}
+	if position.Altitude != 201 || position.Course != 155 {
+		t.Errorf("altitude = %.0f, course = %.0f, want 201/155", position.Altitude, position.Course)
+	}
+	if want := time.Date(2026, 10, 13, 11, 2, 9, 0, time.UTC); !position.Time.Equal(want) {
+		t.Errorf("time = %s, want %s", position.Time.UTC(), want)
+	}
+
+	if len(result.Responses) != 1 {
+		t.Fatalf("responses = %d, want 1", len(result.Responses))
+	}
+	body, _ := NewFrameDecoder().DecodeFrame(result.Responses[0])
+	if body[1] != 0x80 || body[2] != 0x01 {
+		t.Errorf("response type = %x, want 8001", body[1:3])
+	}
+	if got, want := helper.XOR(body[1:len(body)-2]), body[len(body)-2]; got != want {
+		t.Errorf("response checksum = %02x, want %02x", got, want)
+	}
+	payload := body[1+2+2+6+2 : len(body)-2]
+	if binary.BigEndian.Uint16(payload) != 0x0084 ||
+		binary.BigEndian.Uint16(payload[2:]) != msgLocationBatch ||
+		payload[4] != msgResultSuccess {
+		t.Errorf("response payload = %x", payload)
+	}
+}
+
+// TestDecodeLocationBatchMultiple checks that every item is decoded from its
+// own length delimited fragment, so extensions and times cannot bleed into the
+// next position.
+func TestDecodeLocationBatchMultiple(t *testing.T) {
+	frame := mustHex(t, "7e070401654eb6fb4afd9e485b000601003900000000000c000301f5a58700ca24c5000d0000004925111215454501040000000025040000000030011731010aeb095554432b30383a3030003900000000000c000301f5a58e00ca24cd000d0000002825111215454701040000000025040000000030011731010aeb095554432b30383a3030003900000000000c000301f5a5ad00ca24de000e0000011025111215455901040000000025040000000030011931010aeb095554432b30383a3030003900000000000c000301f5a5b100ca24ed000e0000004625111215461401040000000025040000000030011931010aeb095554432b30383a3030003900000000000c000301f5a5a900ca24f5000e000000a125111215461701040000000025040000000030011931010aeb095554432b30383a3030003900000000000c000301f5a5af00ca24fb000e000000dd25111215463201040000000025040000000030011731010beb095554432b30383a3030537e")
+
+	result, err := NewDecoder(Base()).Decode(frame)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 6 {
+		t.Fatalf("positions = %d, want 6", len(result.Positions))
+	}
+
+	for i, position := range result.Positions {
+		if archived, _ := position.Get(model.KeyArchive); archived != true {
+			t.Errorf("position %d archive = %#v, want true", i, archived)
+		}
+	}
+
+	first := result.Positions[0]
+	if math.Abs(first.Latitude-32.875911) > 1e-6 || math.Abs(first.Longitude-13.247685) > 1e-6 {
+		t.Errorf("first coordinates = %.6f/%.6f", first.Latitude, first.Longitude)
+	}
+	if want := time.Date(2025, 11, 12, 7, 45, 45, 0, time.UTC); !first.Time.Equal(want) {
+		t.Errorf("first time = %s, want %s", first.Time.UTC(), want)
+	}
+	if got, _ := first.Get(model.KeySatellites); got != 10 {
+		t.Errorf("first satellites = %#v, want 10", got)
+	}
+
+	last := result.Positions[5]
+	if math.Abs(last.Latitude-32.875951) > 1e-6 || math.Abs(last.Longitude-13.247739) > 1e-6 {
+		t.Errorf("last coordinates = %.6f/%.6f", last.Latitude, last.Longitude)
+	}
+	if want := time.Date(2025, 11, 12, 7, 46, 32, 0, time.UTC); !last.Time.Equal(want) {
+		t.Errorf("last time = %s, want %s", last.Time.UTC(), want)
+	}
+	if got, _ := last.Get(model.KeySatellites); got != 11 {
+		t.Errorf("last satellites = %#v, want 11", got)
+	}
+}
+
+// TestDecodeLocationBatch2019Header covers the 10 byte identifier and the
+// normal (non archived) report type.
+func TestDecodeLocationBatch2019Header(t *testing.T) {
+	frame := mustHex(t, "7e0704402d0100000866496077582164881d0001000028000000000000000701a00192091f2a4700160000000226050916422701040000258230010031010e507e")
+
+	result, err := NewDecoder(Base()).Decode(frame)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+
+	position := result.Positions[0]
+	if _, ok := position.Get(model.KeyArchive); ok {
+		t.Error("normal batch item marked as archived")
+	}
+	if math.Abs(position.Latitude-(-27.263378)) > 1e-6 || math.Abs(position.Longitude-153.037383) > 1e-6 {
+		t.Errorf("coordinates = %.6f/%.6f", position.Latitude, position.Longitude)
+	}
+	if want := time.Date(2026, 5, 9, 8, 42, 27, 0, time.UTC); !position.Time.Equal(want) {
+		t.Errorf("time = %s, want %s", position.Time.UTC(), want)
+	}
+}
+
+// TestDecodeLocationBatch2Battery pins the seven byte 0x0210 body: a battery
+// level and a timestamp for the last known fix, not a batch.
+func TestDecodeLocationBatch2Battery(t *testing.T) {
+	frame := mustHex(t, "7e0210000704546000231900884f2606180229579c7e")
+
+	result, err := NewDecoder(Base()).Decode(frame)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+
+	position := result.Positions[0]
+	if got, _ := position.Get(model.KeyBatteryLevel); got != 79 {
+		t.Errorf("battery level = %#v, want 79", got)
+	}
+	if want := time.Date(2026, 6, 17, 18, 29, 57, 0, time.UTC); !position.Time.Equal(want) {
+		t.Errorf("time = %s, want %s", position.Time.UTC(), want)
+	}
+}
+
+// batchLocationBody builds one 0x0200 body for a synthetic batch.
+func batchLocationBody(
+	latitude, longitude uint32, timestamp, extensions []byte) []byte {
+	body := make([]byte, 0, 32+len(extensions))
+	body = binary.BigEndian.AppendUint32(body, 0)          // alarm
+	body = binary.BigEndian.AppendUint32(body, 0x00000002) // valid fix
+	body = binary.BigEndian.AppendUint32(body, latitude)
+	body = binary.BigEndian.AppendUint32(body, longitude)
+	body = binary.BigEndian.AppendUint16(body, 100) // altitude
+	body = binary.BigEndian.AppendUint16(body, 500) // speed, 50.0 km/h
+	body = binary.BigEndian.AppendUint16(body, 90)  // course
+	body = append(body, timestamp...)
+	return append(body, extensions...)
+}
+
+// TestDecodeLocationBatch2 covers the 0x0210 framing, where each item is a
+// single byte length plus a 0x0200 body and there is no report type.
+func TestDecodeLocationBatch2(t *testing.T) {
+	first := batchLocationBody(54945350, 24017620,
+		[]byte{0x26, 0x08, 0x27, 0x10, 0x30, 0x11},
+		[]byte{0x31, 0x01, 0x09, 0x30, 0x01, 0x15})
+	second := batchLocationBody(54945351, 24017621,
+		[]byte{0x26, 0x08, 0x27, 0x10, 0x31, 0x22},
+		[]byte{0x31, 0x01, 0x0b})
+
+	payload := []byte{byte(len(first))}
+	payload = append(payload, first...)
+	payload = append(payload, byte(len(second)))
+	payload = append(payload, second...)
+
+	result, err := NewDecoder(Base()).Decode(uplinkFrame(t, msgLocationBatch2, payload))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 2 {
+		t.Fatalf("positions = %d, want 2", len(result.Positions))
+	}
+
+	for i, position := range result.Positions {
+		if _, ok := position.Get(model.KeyArchive); ok {
+			t.Errorf("position %d archived, want no report type on 0x0210", i)
+		}
+	}
+	if got, _ := result.Positions[0].Get(model.KeySatellites); got != 9 {
+		t.Errorf("first satellites = %#v, want 9", got)
+	}
+	if got, _ := result.Positions[0].Get(model.KeyRSSI); got != 21 {
+		t.Errorf("first rssi = %#v, want 21", got)
+	}
+	if got, _ := result.Positions[1].Get(model.KeySatellites); got != 11 {
+		t.Errorf("second satellites = %#v, want 11", got)
+	}
+	if want := time.Date(2026, 8, 27, 2, 30, 11, 0, time.UTC); !result.Positions[0].Time.Equal(want) {
+		t.Errorf("first time = %s, want %s", result.Positions[0].Time.UTC(), want)
+	}
+	if want := time.Date(2026, 8, 27, 2, 31, 22, 0, time.UTC); !result.Positions[1].Time.Equal(want) {
+		t.Errorf("second time = %s, want %s", result.Positions[1].Time.UTC(), want)
+	}
+}
+
+// TestDecodeLocationBatchCorruptLength guards against a batch item whose length
+// runs into the checksum: it must stop instead of panicking or inventing a
+// position from the next frame.
+func TestDecodeLocationBatchCorruptLength(t *testing.T) {
+	payload := []byte{0x00, 0x01, 0x00, 0xff, 0xff}
+
+	result, err := NewDecoder(Base()).Decode(uplinkFrame(t, msgLocationBatch, payload))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 0 {
+		t.Errorf("positions = %d, want 0", len(result.Positions))
+	}
+	if len(result.Responses) != 1 {
+		t.Errorf("responses = %d, want 1", len(result.Responses))
+	}
+}

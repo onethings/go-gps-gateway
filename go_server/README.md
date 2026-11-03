@@ -109,8 +109,8 @@ docker compose down -v
   二進位 32/45 byte 幀、`X` 幀、`R12` 應答。
 - **GT06**：登入 / 心跳 / GPS-LBS 主線、`0x2A` 位址、`0x8A` 對時、`0x94` 電壓，CRC16/X25 ACK；
   `NT_MODELS` 自訂版面。待補：WiFi 掃描、ADAS/DMS。
-- **JT808**：2013/2019 標頭、`0x7E` 轉義、XOR、註冊 / 位置 / 心跳 / ICCID / 對時。待補：批次、
-  駕駛員卡、參數、透傳、ADAS/DMS/胎壓/OBD。
+- **JT808**：2013/2019 標頭、`0x7E` 轉義、XOR、註冊 / 位置 / 批次位置（`0x0704` / `0x0210`）、
+  心跳 / ICCID / 對時。待補：駕駛員卡、參數、透傳、ADAS/DMS/胎壓/OBD。
 - **Teltonika**：IMEI 握手、Codec 8 / 8E / 12 / 13、可變長度元素、LAC/CID。待補：Codec 7/16、BLE。
 - **OsmAnd / MQTT**：OsmAnd 查詢字串；MQTT 3.1.1 重用同一 decoder。
 - **GPS103 / TK103**：`imei:` 文字句、十進位度 + 半球。

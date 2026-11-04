@@ -21,6 +21,9 @@ const (
 	msgTerminalRegisterResp = 0x8100
 	msgTerminalAuth         = 0x0102
 	msgTerminalAttributes   = 0x0107
+	msgParameterQueryResp   = 0x0104
+	msgDriverIdentity       = 0x0702
+	msgTransparent          = 0x0900
 	msgLocationReport       = 0x0200
 	msgLocationQueryResp    = 0x0201
 	msgLocationBatch        = 0x0704

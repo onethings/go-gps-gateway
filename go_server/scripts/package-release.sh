@@ -79,7 +79,7 @@ mkdir -p "$OUT" "$bundle"
 install -m 0755 "$ROOT/deploy/ubuntu/install.sh" "$bundle/install.sh"
 install -m 0644 "$ROOT/deploy/ubuntu/traccar-gateway.service.in" "$bundle/"
 install -m 0644 "$ROOT/deploy/ubuntu/nginx.conf.in" "$bundle/"
-install -m 0644 "$ROOT/LICENSE" "$bundle/"
+install -m 0644 "$ROOT/../LICENSE" "$bundle/"
 cp -a "$ROOT/web" "$bundle/web"
 
 for arch in "${ARCHES[@]}"; do

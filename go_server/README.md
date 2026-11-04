@@ -372,5 +372,4 @@ Java database can be attached → add JT1078 for live video.
 
 ## License
 
-Apache License, Version 2.0 — see [LICENSE](./LICENSE). The license covers everything under this
-`go_server/` directory and does not extend to the rest of the repository.
+Apache License, Version 2.0 — see [LICENSE](../LICENSE).

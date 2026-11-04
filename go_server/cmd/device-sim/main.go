@@ -201,7 +201,9 @@ func readReplies(conn net.Conn, idle time.Duration) ([][]byte, error) {
 		if errors.As(err, &timeout) && timeout.Timeout() {
 			return replies, nil
 		}
-		if errors.Is(err, io.EOF) {
+		// net.Pipe reports a close as ErrClosedPipe, not EOF, so the test
+		// transport and a closed socket both end the reply window.
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
 			return replies, nil
 		}
 		return replies, err

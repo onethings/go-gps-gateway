@@ -1,5 +1,5 @@
-// Command traccar-gateway runs the Go protocol gateway for the H02, GT06,
-// JT808 and Teltonika device families.
+// Command traccar-gateway runs the Go protocol gateway for the device
+// protocols registered in internal/gateway.
 package main
 
 import (

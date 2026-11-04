@@ -11,6 +11,7 @@ import (
 	"traccar-server_go/go_server/internal/codec"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/protocol/gps103"
+	"traccar-server_go/go_server/internal/protocol/gt02"
 	"traccar-server_go/go_server/internal/protocol/gt06"
 	"traccar-server_go/go_server/internal/protocol/h02"
 	"traccar-server_go/go_server/internal/protocol/jt808"
@@ -275,6 +276,14 @@ func DefaultRegistry() *Registry {
 				model.CommandOutputControl, model.CommandSetConnection,
 				model.CommandSetOdometer,
 			},
+		}
+	})
+
+	registry.Add(gt02.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            gt02.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return gt02.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return gt02.NewDecoder(base) },
 		}
 	})
 

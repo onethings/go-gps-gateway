@@ -454,6 +454,34 @@ func TestEnvName(t *testing.T) {
 	}
 }
 
+func TestReportMaxPositionsIsPortable(t *testing.T) {
+	// A traccar.xml copied from a Java installation has to keep its meaning.
+	path := writeConfig(t, `<properties>
+    <entry key='report.maxPositions'>1234</entry>
+</properties>`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if value, err := cfg.Int(ReportMaxPositions); err != nil || value != 1234 {
+		t.Errorf("report.maxPositions = %d (%v), want 1234 from traccar.xml", value, err)
+	}
+
+	// Environment wins over the file, like every other key.
+	if value, err := Load(path, []string{"TRACCAR_REPORT_MAX_POSITIONS=7"}).Int(ReportMaxPositions); err != nil || value != 7 {
+		t.Errorf("report.maxPositions = %d (%v), want 7 from the environment", value, err)
+	}
+
+	// The compiled default is the Java one.
+	defaults, err := Load("", nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if value, err := defaults.Int(ReportMaxPositions); err != nil || value != 50000 {
+		t.Errorf("default report.maxPositions = %d (%v), want 50000", value, err)
+	}
+}
+
 func TestSummaryNamesTheLayers(t *testing.T) {
 	if got := Default().Summary(); got != "defaults only" {
 		t.Errorf("summary = %q", got)

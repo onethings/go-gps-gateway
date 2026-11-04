@@ -66,14 +66,13 @@ func TestPositionQueryFilters(t *testing.T) {
 	}
 }
 
-func TestPositionQueryClamps(t *testing.T) {
+func TestPositionQueryLimits(t *testing.T) {
 	cases := []struct {
 		name   string
 		filter model.PositionFilter
 		want   []any
 	}{
-		{"limit too large", model.PositionFilter{Limit: 5000}, []any{maxPositionLimit, 0}},
-		{"limit negative", model.PositionFilter{Limit: -5}, []any{defaultPositionLimit, 0}},
+		{"no clamp above the default", model.PositionFilter{Limit: 5000}, []any{5000, 0}},
 		{"offset negative", model.PositionFilter{Offset: -3}, []any{defaultPositionLimit, 0}},
 	}
 	for _, test := range cases {
@@ -88,6 +87,15 @@ func TestPositionQueryClamps(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// A negative limit is report.maxPositions = 0: no LIMIT clause at all.
+	query, args := positionQuery(model.PositionFilter{Limit: -1, DeviceID: 7})
+	if strings.Contains(query, "LIMIT") || strings.Contains(query, "OFFSET") {
+		t.Errorf("query = %s, want no LIMIT/OFFSET", query)
+	}
+	if len(args) != 1 || args[0] != int64(7) {
+		t.Errorf("args = %v, want just the device filter", args)
 	}
 }
 

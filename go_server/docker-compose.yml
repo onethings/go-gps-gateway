@@ -2,8 +2,11 @@
 #
 #   docker compose up --build -d
 #   curl -H 'X-Api-Key: dev-key' http://127.0.0.1:8082/api/health
+#   open http://127.0.0.1:8082/          # traccar-web, if ./web is populated
 #
-# The gateway creates its own schema on first start.
+# The gateway creates its own schema on first start. ./web holds the traccar-web
+# build (npm ci && npm run build, then copy build/ here); without it the REST API
+# still works and / returns 404.
 services:
   db:
     image: postgres:16
@@ -28,12 +31,16 @@ services:
     environment:
       TRACCAR_DSN: postgres://postgres:traccar@db:5432/traccar?sslmode=disable
       TRACCAR_API_KEY: dev-key
+      TRACCAR_WEB_PATH: /srv/traccar-web
       TZ: Asia/Taipei
+    volumes:
+      - ./web:/srv/traccar-web
     ports:
       - "5013:5013"
       - "5023:5023"
       - "5027:5027"
       - "8610:8610"
+      - "5055:5055"   # OsmAnd; traccar-web's Emulator posts positions here
       - "8082:8082"
     restart: unless-stopped
 

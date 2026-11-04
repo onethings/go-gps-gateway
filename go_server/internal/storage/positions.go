@@ -11,16 +11,19 @@ import (
 )
 
 const (
+	// defaultPositionLimit is what a caller that sets no limit gets. The REST
+	// history route passes report.maxPositions instead.
 	defaultPositionLimit = 100
-	maxPositionLimit     = 1000
 
 	// positionSelectColumns keeps the SELECT list and the scan order in sync.
 	positionSelectColumns = `id, device_id, protocol, device_time, server_time, valid,
 		latitude, longitude, altitude, speed, course, accuracy, attributes, geofenceids`
 )
 
-// QueryPositions returns the positions matching the filter, newest first.
-// Limit is clamped to the range 1..1000 and Offset to a non-negative value.
+// QueryPositions returns the positions matching the filter.
+// Limit 0 means defaultPositionLimit and a negative Limit means no limit at
+// all, which is how report.maxPositions = 0 is passed down. Offset is clamped to
+// a non-negative value and ignored without a limit.
 func (s *Store) QueryPositions(ctx context.Context, filter model.PositionFilter) ([]model.Position, error) {
 	query, args := positionQuery(filter)
 
@@ -161,18 +164,6 @@ func positionQuery(filter model.PositionFilter) (string, []any) {
 		add("device_time", "<=", filter.To.UTC())
 	}
 
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = defaultPositionLimit
-	}
-	if limit > maxPositionLimit {
-		limit = maxPositionLimit
-	}
-	offset := filter.Offset
-	if offset < 0 {
-		offset = 0
-	}
-
 	var builder strings.Builder
 	builder.WriteString("SELECT " + positionSelectColumns + " FROM positions")
 	if len(clauses) > 0 {
@@ -180,12 +171,29 @@ func positionQuery(filter model.PositionFilter) (string, []any) {
 		builder.WriteString(strings.Join(clauses, " AND "))
 	}
 
-	args = append(args, limit, offset)
 	order := "device_time DESC, id DESC"
 	if filter.Ascending {
 		order = "device_time ASC, id ASC"
 	}
-	fmt.Fprintf(&builder, " ORDER BY %s LIMIT $%d OFFSET $%d",
-		order, len(args)-1, len(args))
+	builder.WriteString(" ORDER BY ")
+	builder.WriteString(order)
+
+	// A negative limit is report.maxPositions = 0, which the Java server
+	// documents as "no limit", so the statement carries no LIMIT clause.
+	if filter.Limit < 0 {
+		return builder.String(), args
+	}
+
+	limit := filter.Limit
+	if limit == 0 {
+		limit = defaultPositionLimit
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	args = append(args, limit, offset)
+	fmt.Fprintf(&builder, " LIMIT $%d OFFSET $%d", len(args)-1, len(args))
 	return builder.String(), args
 }

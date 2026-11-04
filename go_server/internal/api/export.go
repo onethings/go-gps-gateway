@@ -24,8 +24,6 @@ const (
 	// walk the requested window in pages so one statement never reads an
 	// unbounded number of rows.
 	exportPageSize = 1000
-	// maxExportPositions matches the Java report.maxPositions default.
-	maxExportPositions = 50000
 	// exportTimeout covers all pages of one export; the single query timeout
 	// would cut a long track off.
 	exportTimeout = 30 * time.Second
@@ -172,9 +170,21 @@ func (s *Server) handlePositionExport(format exportFormat) http.HandlerFunc {
 // number of rows the Java report reads.
 func (s *Server) exportPositions(ctx context.Context, filter model.PositionFilter, fence *geofence.Geofence) ([]model.Position, error) {
 	positions := make([]model.Position, 0, exportPageSize)
-	for offset := 0; offset < maxExportPositions; offset += exportPageSize {
+	for offset := 0; ; offset += exportPageSize {
+		// report.maxPositions caps the whole export; zero walks the window to
+		// the end.
+		limit := exportPageSize
+		if s.reportMaxPositions > 0 {
+			if remaining := s.reportMaxPositions - offset; remaining < limit {
+				limit = remaining
+			}
+			if limit <= 0 {
+				break
+			}
+		}
+
 		page := filter
-		page.Limit = exportPageSize
+		page.Limit = limit
 		page.Offset = offset
 
 		batch, err := s.positions.QueryPositions(ctx, page)
@@ -182,7 +192,7 @@ func (s *Server) exportPositions(ctx context.Context, filter model.PositionFilte
 			return nil, err
 		}
 		positions = append(positions, insideGeofence(batch, fence)...)
-		if len(batch) < exportPageSize {
+		if len(batch) < limit {
 			break
 		}
 	}

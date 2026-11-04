@@ -36,6 +36,8 @@ type Store interface {
 
 // Config holds the report limits and the trip detection thresholds. The zero
 // value of PeriodLimit disables the period limit, matching the Java default.
+// MaxPositions is report.maxPositions: zero takes the DefaultConfig value and a
+// negative value disables the cap.
 type Config struct {
 	MaxPositions int
 	PeriodLimit  time.Duration
@@ -70,7 +72,7 @@ type Service struct {
 // New creates a service. Missing limits fall back to DefaultConfig.
 func New(store Store, cfg Config) *Service {
 	defaults := DefaultConfig()
-	if cfg.MaxPositions <= 0 {
+	if cfg.MaxPositions == 0 {
 		cfg.MaxPositions = defaults.MaxPositions
 	}
 	if cfg.TripMinDuration <= 0 {
@@ -126,7 +128,7 @@ func (s *Service) Positions(ctx context.Context, deviceID int64, from, to time.T
 			return nil, err
 		}
 		positions = append(positions, batch...)
-		if len(positions) > s.cfg.MaxPositions {
+		if s.cfg.MaxPositions > 0 && len(positions) > s.cfg.MaxPositions {
 			return nil, fmt.Errorf("%w: > %d", ErrTooManyPositions, s.cfg.MaxPositions)
 		}
 		if len(batch) < page {

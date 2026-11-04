@@ -242,3 +242,68 @@ func TestPositionSingleNotFound(t *testing.T) {
 		t.Errorf("status = %d, want 404 (body %s)", recorder.Code, recorder.Body)
 	}
 }
+
+func TestPositionsRangeIsOldestFirst(t *testing.T) {
+	querier := &fakePositions{}
+	handler := NewServer(nil, WithPositions(querier)).Handler()
+
+	// The replay page walks the returned array forwards from index zero, so a
+	// bounded range has to come back oldest first like the Java server.
+	rangeQuery := "/api/positions?deviceId=1" +
+		"&from=2026-11-02T17:30:00.000Z&to=2026-11-03T17:29:59.999Z"
+	if recorder := get(t, handler, rangeQuery); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	if filter := querier.lastFilter(t); !filter.Ascending {
+		t.Errorf("range filter = %+v, want ascending", filter)
+	}
+
+	// Without a range the newest position stays first.
+	if recorder := get(t, handler, "/api/positions?deviceId=1"); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if filter := querier.lastFilter(t); filter.Ascending {
+		t.Errorf("unbounded filter = %+v, want newest first", filter)
+	}
+}
+
+func TestPositionsReportMaxPositions(t *testing.T) {
+	querier := &fakePositions{}
+	handler := NewServer(nil, WithPositions(querier), WithReportMaxPositions(5000)).Handler()
+
+	rangeQuery := "/api/positions?deviceId=1&from=2026-11-02T00:00:00Z&to=2026-11-03T00:00:00Z"
+	if recorder := get(t, handler, rangeQuery); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body)
+	}
+	if filter := querier.lastFilter(t); filter.Limit != 5000 {
+		t.Errorf("limit = %d, want the configured 5000", filter.Limit)
+	}
+
+	// An explicit limit is honoured up to the configured cap, and refused above.
+	if recorder := get(t, handler, rangeQuery+"&limit=50"); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if filter := querier.lastFilter(t); filter.Limit != 50 {
+		t.Errorf("limit = %d, want 50", filter.Limit)
+	}
+	if recorder := get(t, handler, rangeQuery+"&limit=6000"); recorder.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 above the cap", recorder.Code)
+	}
+
+	// A configured zero means no cap, which the storage layer sees as -1.
+	unlimited := NewServer(nil, WithPositions(querier), WithReportMaxPositions(0)).Handler()
+	if recorder := get(t, unlimited, rangeQuery); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if filter := querier.lastFilter(t); filter.Limit != -1 {
+		t.Errorf("limit = %d, want -1 for no cap", filter.Limit)
+	}
+
+	// The unbounded request still asks for the storage default.
+	if recorder := get(t, unlimited, "/api/positions?deviceId=1"); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if filter := querier.lastFilter(t); filter.Limit != 0 {
+		t.Errorf("limit = %d, want 0 so storage applies its default", filter.Limit)
+	}
+}

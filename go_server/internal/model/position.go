@@ -239,8 +239,8 @@ func (p *Position) IsLocated() bool {
 }
 
 // PositionFilter selects positions for a query. Zero values mean "no
-// restriction"; Limit and Offset are clamped by the storage layer. From and To
-// are compared against the device time, which is what the reports use.
+// restriction"; Offset is clamped by the storage layer. From and To are compared
+// against the device time, which is what the reports use.
 type PositionFilter struct {
 	DeviceID int64
 	// IDs restricts the result to a set of position ids, which is what
@@ -251,12 +251,15 @@ type PositionFilter struct {
 	DeviceIDs []int64
 	From      time.Time
 	To        time.Time
-	// Ascending flips the order from newest first to oldest first, which the
-	// KML / GPX / CSV exports need to draw a track in the direction it was
-	// driven.
+	// Ascending flips the order from newest first to oldest first. The KML / GPX
+	// / CSV exports and a bounded /api/positions query need it to draw a track in
+	// the direction it was driven.
 	Ascending bool
-	Limit     int
-	Offset    int
+	// Limit is the maximum number of rows. Zero takes the storage default and a
+	// negative value means no limit, which is how report.maxPositions = 0
+	// travels down to the statement.
+	Limit  int
+	Offset int
 }
 
 // String renders a compact human readable description, used by tests and

@@ -521,6 +521,11 @@ var defaults = map[string]string{
 	SchedulePositions:        "24h",
 	ScheduleCommands:         "24h",
 
+	// report.maxPositions caps a single history request, matching the Java
+	// default. Zero disables the cap, so a configuration ported from traccar.xml
+	// keeps its meaning.
+	ReportMaxPositions: "50000",
+
 	"protocol." + ProtocolTimeout: "10m",
 }
 

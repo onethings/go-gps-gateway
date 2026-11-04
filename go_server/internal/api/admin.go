@@ -144,6 +144,13 @@ func WithTextEnabled(enabled bool) Option {
 	return func(s *Server) { s.textEnabled = enabled }
 }
 
+// WithReportMaxPositions sets report.maxPositions: the cap on one history
+// request and on the exports. Zero means no cap, which is what the Java server
+// documents for that key.
+func WithReportMaxPositions(limit int) Option {
+	return func(s *Server) { s.reportMaxPositions = limit }
+}
+
 // audit records one action unless no audit store is configured. The write uses// its own context so a client that disconnects does not lose the row.
 func (s *Server) audit(r *http.Request, actionType, objectType string, objectID int64) {
 	s.auditWithAttributes(r, actionType, objectType, objectID, nil)

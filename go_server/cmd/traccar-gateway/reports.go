@@ -28,7 +28,16 @@ func reportConfig(cfg *config.Config) report.Config {
 			*target = value
 		}
 	}
-	readInt(config.ReportMaxPositions, &settings.MaxPositions)
+	// report.maxPositions is the one report key where zero is meaningful: the
+	// Java server documents it as "no limit", which this layer spells as -1.
+	switch value, err := cfg.Int(config.ReportMaxPositions); {
+	case err != nil:
+		log.Printf("report: %v", err)
+	case value == 0:
+		settings.MaxPositions = -1
+	case value > 0:
+		settings.MaxPositions = value
+	}
 	if value, err := cfg.Int(config.ReportTripMinDistance); err == nil && value > 0 {
 		settings.TripMinDistance = float64(value)
 	} else if err != nil {
@@ -60,6 +69,21 @@ func reportConfig(cfg *config.Config) report.Config {
 		log.Printf("report: %v", err)
 	}
 	return settings
+}
+
+// reportMaxPositions reads report.maxPositions for the API and the exports, where
+// zero means no cap. A bad value falls back to the Java default instead of
+// silently removing the cap.
+func reportMaxPositions(cfg *config.Config) int {
+	if cfg == nil {
+		return report.DefaultConfig().MaxPositions
+	}
+	value, err := cfg.Int(config.ReportMaxPositions)
+	if err != nil {
+		log.Printf("api: %v", err)
+		return report.DefaultConfig().MaxPositions
+	}
+	return value
 }
 
 // reportMailer sends a report export as an email attachment.

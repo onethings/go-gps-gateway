@@ -173,6 +173,67 @@ func TestWebRootServesSPA(t *testing.T) {
 	}
 }
 
+func TestWebRootFillsPlaceholders(t *testing.T) {
+	root := t.TempDir()
+	document := `<title>${title}</title><meta name="theme-color" content="${colorPrimary}">` +
+		`<meta name="description" content="${description}"><!--${customHead}-->`
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"${title}","theme_color":"${colorPrimary}"}`
+	if err := os.WriteFile(filepath.Join(root, "manifest.webmanifest"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &fakeServerSettings{settings: model.Server{
+		ID: 1,
+		Attributes: model.Attributes{
+			"title":        "Fleet",
+			"description":  "Fleet tracking",
+			"colorPrimary": "#123456",
+			"customHead":   "<script>window.brand=1</script>",
+		},
+	}}
+	handler := NewServer(nil, WithAPIKey(testAdminKey), WithWebPath(root), WithServerSettings(store)).Handler()
+
+	recorder := get(t, handler, "/")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"<title>Fleet</title>",
+		`content="#123456"`,
+		`content="Fleet tracking"`,
+		"<script>window.brand=1</script>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("index body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "${") {
+		t.Errorf("index body kept a placeholder: %s", body)
+	}
+
+	recorder = get(t, handler, "/manifest.webmanifest")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("manifest status = %d", recorder.Code)
+	}
+	body = recorder.Body.String()
+	if !strings.Contains(body, `"name":"Fleet"`) || !strings.Contains(body, `"theme_color":"#123456"`) {
+		t.Errorf("manifest body = %s", body)
+	}
+	if strings.Contains(body, "window.brand") {
+		t.Errorf("manifest got the HTML only custom head: %s", body)
+	}
+
+	// Without a settings store the Java defaults keep the interface branded.
+	recorder = get(t, NewServer(nil, WithAPIKey(testAdminKey), WithWebPath(root)).Handler(), "/")
+	if body := recorder.Body.String(); !strings.Contains(body, "<title>Traccar</title>") {
+		t.Errorf("default title missing: %s", body)
+	}
+}
+
 func TestAlertsRejectsBadQueries(t *testing.T) {
 	tests := []string{
 		"/api/alerts?deviceId=abc",

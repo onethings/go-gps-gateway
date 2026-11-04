@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -154,6 +155,9 @@ type Server struct {
 	version      string
 	webPath      string
 	textEnabled  bool
+	// reportMaxPositions caps one history request and the exports, matching the
+	// Java report.maxPositions. Zero means no cap.
+	reportMaxPositions int
 	// socketHub and latestPositions back GET /api/socket.
 	socketHub       *SocketHub
 	latestPositions LatestPositionQuerier
@@ -405,7 +409,12 @@ func (s *Server) staticHandler(apiHandler http.Handler) http.Handler {
 					return
 				}
 			}
-			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(name))); err == nil {
+			file := filepath.Join(root, filepath.FromSlash(name))
+			if info, err := os.Stat(file); err == nil {
+				if !info.IsDir() && isWebText(name) {
+					s.serveWebText(w, r, file, name == "index.html")
+					return
+				}
 				files.ServeHTTP(w, r)
 				return
 			}
@@ -414,8 +423,84 @@ func (s *Server) staticHandler(apiHandler http.Handler) http.Handler {
 			writeError(w, http.StatusNotFound, errors.New("not found"))
 			return
 		}
-		http.ServeFile(w, r, index)
+		s.serveWebText(w, r, index, true)
 	})
+}
+
+// isWebText reports whether a file of the web build carries the placeholders
+// the server fills in: the interface document and the web app manifest. The
+// Java version decides the same way, on the content type and on the manifest
+// name.
+func isWebText(name string) bool {
+	return name == "index.html" || strings.HasSuffix(name, ".webmanifest")
+}
+
+// webText is the branding the web build leaves as placeholders. Its defaults
+// are the ones org.traccar.web.OverrideTextFilter falls back to.
+type webText struct {
+	Title        string
+	Description  string
+	ColorPrimary string
+	CustomHead   string
+}
+
+// branding reads the branding from the server settings row the administrator
+// edits. Without a settings store, or when the query fails, the defaults keep
+// the interface usable instead of failing the request.
+func (s *Server) branding(ctx context.Context) webText {
+	branding := webText{
+		Title:        "Traccar",
+		Description:  "Traccar GPS Tracking System",
+		ColorPrimary: "#1a237e",
+	}
+	if s.serverSettings == nil {
+		return branding
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+
+	settings, err := s.serverSettings.ServerSettings(ctx)
+	if err != nil {
+		s.logf("api: query server settings for the web interface: %v", err)
+		return branding
+	}
+
+	branding.Title = settings.Attributes.GetString("title", branding.Title)
+	branding.Description = settings.Attributes.GetString("description", branding.Description)
+	branding.ColorPrimary = settings.Attributes.GetString("colorPrimary", branding.ColorPrimary)
+	branding.CustomHead = settings.Attributes.GetString("customHead", "")
+	return branding
+}
+
+// serveWebText answers with a web build file after filling in the placeholders.
+// The custom head markup is HTML only, so the manifest does not get it.
+func (s *Server) serveWebText(w http.ResponseWriter, r *http.Request, file string, isHTML bool) {
+	content, err := os.ReadFile(file)
+	if err != nil {
+		writeError(w, http.StatusNotFound, errors.New("not found"))
+		return
+	}
+
+	branding := s.branding(r.Context())
+	body := strings.NewReplacer(
+		"${title}", branding.Title,
+		"${description}", branding.Description,
+		"${colorPrimary}", branding.ColorPrimary,
+	).Replace(string(content))
+	if isHTML {
+		body = strings.Replace(body, "<!--${customHead}-->", branding.CustomHead, 1)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", "application/manifest+json")
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := io.WriteString(w, body); err != nil {
+		s.logf("api: write web file %q: %v", file, err)
+	}
 }
 
 // isAPIPath reports whether the path belongs to the JSON API or the metrics
@@ -745,7 +830,7 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter, err := positionFilter(r)
+	filter, err := s.positionFilter(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1668,7 +1753,10 @@ func alertFilter(r *http.Request) (model.EventFilter, error) {
 // positionFilter parses and validates the query string:
 //
 //	deviceId=7&from=2026-10-31T00:00:00Z&to=1780000000000&limit=50&offset=0
-func positionFilter(r *http.Request) (model.PositionFilter, error) {
+// positionFilter parses the position query string. The history request is where
+// report.maxPositions applies: without an explicit limit a bounded range is
+// answered up to that cap.
+func (s *Server) positionFilter(r *http.Request) (model.PositionFilter, error) {
 	query := r.URL.Query()
 	var filter model.PositionFilter
 
@@ -1681,14 +1769,42 @@ func positionFilter(r *http.Request) (model.PositionFilter, error) {
 	if filter.From, filter.To, err = parseTimeRange(query); err != nil {
 		return filter, err
 	}
-	if filter.Limit, err = parseLimit(query, maxPositionLimit); err != nil {
+	// A bounded range is answered oldest first, which is what the Java server
+	// does (PositionUtil orders by fixTime ascending) and what traccar-web walks
+	// forward through in the replay and the reports. Without a range the newest
+	// position still comes first.
+	bounded := !filter.From.IsZero() && !filter.To.IsZero()
+	filter.Ascending = bounded
+
+	if filter.Limit, err = parseLimit(query, s.limitCeiling()); err != nil {
 		return filter, err
+	}
+	if bounded && filter.Limit == 0 {
+		filter.Limit = s.historyLimit()
 	}
 	if filter.Offset, err = parseOffset(query); err != nil {
 		return filter, err
 	}
 
 	return filter, nil
+}
+
+// historyLimit is report.maxPositions as a filter value. A configured zero means
+// no cap, which the storage layer spells as a negative limit.
+func (s *Server) historyLimit() int {
+	if s.reportMaxPositions <= 0 {
+		return -1
+	}
+	return s.reportMaxPositions
+}
+
+// limitCeiling bounds an explicit limit= parameter. Without a configured cap the
+// historical 1000 stays, so one request cannot ask for everything.
+func (s *Server) limitCeiling() int {
+	if s.reportMaxPositions > 0 {
+		return s.reportMaxPositions
+	}
+	return maxPositionLimit
 }
 
 // deviceFilter parses and validates the query string:

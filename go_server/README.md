@@ -54,9 +54,10 @@ TRACCAR_DSN='sqlite:///var/lib/traccar/traccar.db' make run-db
 
 docker compose up --build -d
 curl -H 'X-Api-Key: dev-key' http://127.0.0.1:8082/api/health
+open http://127.0.0.1:8082/          # 介面；./web 就是倉庫內的 traccar-web build
 docker compose down -v
 
-# 同一進程託管 traccar-web（把前端 build 出來的 dist 指給 -web-path）
+# 同一進程託管 traccar-web（把前端 build 出來的 build 目錄指給 -web-path）
 ./bin/traccar-gateway -dsn "$TRACCAR_DSN" -api-key dev-key -web-path ./web
 ```
 
@@ -115,6 +116,7 @@ docker compose down -v
 | AMQP / Kafka 外送 | `forward.type`（`json` / `url` / `amqp` / `kafka`）、`forward.url`（AMQP 連線 URL 或 Kafka bootstrap）、`forward.exchange`（預設 `traccar`）、`forward.topic`（預設 `positions`）；事件側同名 `event.forward.*`（topic 預設 `events`） |
 | 地理服務 | `geocoder.type`（nominatim / google / opencage / here / locationiq / mapbox / tomtom / photon / pelias / autonavi / baidu / tencent / ban / bingmaps / factual / geoapify / geocodefarm / geocodejson / geocodexyz / gisgraphy / mapquest / maptiler / mapmyindia / mygeocode / positionstack / pluscodes）、`geolocation.type`（google / mozilla / opencellid / unwired / here / universal）；其餘用 `*.url`。`nominatim`、`photon`、`ban`、`geocodejson`、`pluscodes` 免 `geocoder.key`（pluscodes 為本地計算） |
 | 排程 | `schedule.{expiration,temporary,inactive,deviceExpiration,events,positions,commands}.interval`、`schedule.{events,positions,commands}.retention`（0=不刪） |
+| 歷史查詢上限 | `report.maxPositions`（單次 `/api/positions` 與匯出的位置筆數上限；`0`=不限，預設 `50000`，與母本同名同義） |
 
 ## 協議
 

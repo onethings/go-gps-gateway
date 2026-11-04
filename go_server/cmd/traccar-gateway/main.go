@@ -655,6 +655,7 @@ func main() {
 				api.WithReports(report.New(store, reportConfig(settings.Config))),
 				api.WithVersion(version),
 				api.WithWebPath(settings.WebPath),
+				api.WithReportMaxPositions(reportMaxPositions(settings.Config)),
 				api.WithReboot(stop),
 			}
 			if geoSettings.SpeedLimit.Enabled {

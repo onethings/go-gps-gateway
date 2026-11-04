@@ -55,6 +55,7 @@ type Server struct {
 	factory      Factory
 	directory    DeviceDirectory
 	sink         Sink
+	media        codec.MediaSink
 	locations    *LocationCache
 	conns        *connectionSet
 	commands     CommandTracker
@@ -111,6 +112,16 @@ func WithCommandTracker(tracker CommandTracker) Option {
 	return func(s *Server) {
 		if tracker != nil {
 			s.commands = tracker
+		}
+	}
+}
+
+// WithMediaSink receives the video frames of a media protocol such as JT1078.
+// A server without a sink drops them.
+func WithMediaSink(sink codec.MediaSink) Option {
+	return func(s *Server) {
+		if sink != nil {
+			s.media = sink
 		}
 	}
 }
@@ -178,6 +189,7 @@ func NewServer(
 		LastLocation: s.locations,
 		UniqueIDs:    directory,
 		Config:       s.protocolConfig,
+		Media:        s.media,
 	}
 	return s, nil
 }

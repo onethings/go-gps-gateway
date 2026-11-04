@@ -332,6 +332,37 @@ func TestRouterEncodesEveryAdvertisedH02Command(t *testing.T) {
 	}
 }
 
+// TestRouterEncodesEveryAdvertisedTeltonikaCommand is the same pin for
+// Teltonika: every advertised type must be buildable by the encoder.
+func TestRouterEncodesEveryAdvertisedTeltonikaCommand(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("123456789012345", "teltonika"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory)
+
+	attributes := map[string]map[string]any{
+		model.CommandCustom: {model.CmdKeyData: "setdigout 1"},
+	}
+
+	advertised, ok := router.SupportedCommands("teltonika", false)
+	if !ok {
+		t.Fatal("teltonika is not registered")
+	}
+	if len(advertised) != 3 {
+		t.Fatalf("advertised %d commands, want 3: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		command := model.NewCommand(1, commandType)
+		for key, value := range attributes[commandType] {
+			command.SetAttribute(key, value)
+		}
+		if _, err := router.EncodeCommand("teltonika", command); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}
+
 // TestRouterGT06EngineStopLayouts covers the two engine layouts the
 // configuration and the device model select.
 func TestRouterGT06EngineStopLayouts(t *testing.T) {

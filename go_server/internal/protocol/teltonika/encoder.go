@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 
 	"traccar-server_go/go_server/internal/codec"
 	"traccar-server_go/go_server/internal/helper"
@@ -31,14 +32,10 @@ func (e *Encoder) EncodeCommand(command *model.Command) ([]byte, error) {
 	case model.CommandEngineResume:
 		return encodeContent([]byte("setdigout 0")), nil
 	case model.CommandCustom:
-		data, ok := command.GetAttribute(model.CmdKeyData)
-		if !ok {
-			return nil, ErrUnsupportedCommand
+		if !command.Attributes.Has(model.CmdKeyData) {
+			return nil, fmt.Errorf("%w: missing %s", ErrUnsupportedCommand, model.CmdKeyData)
 		}
-		text, ok := data.(string)
-		if !ok {
-			return nil, ErrUnsupportedCommand
-		}
+		text := command.Attributes.GetString(model.CmdKeyData, "")
 		if isHex(text) {
 			decoded, err := hex.DecodeString(text)
 			if err != nil {
@@ -48,7 +45,7 @@ func (e *Encoder) EncodeCommand(command *model.Command) ([]byte, error) {
 		}
 		return encodeContent([]byte(text)), nil
 	default:
-		return nil, ErrUnsupportedCommand
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedCommand, command.Type)
 	}
 }
 

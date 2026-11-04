@@ -135,7 +135,7 @@ Config / environment only:
 | TK103 | `imei:` text sentence, decimal degrees + hemisphere; encoder covers the reference legacy and SMS2 downlink sets (`AP`, `AR`, `AT`, `AV`, `AX` legacy; `*getposl*`, `*routetrack*`, `*sleep*`, `*sos*`, `*setip*`, `*master*` alternative) | — |
 | Meitrack | `$$` + length + fields + XOR; encoder covers the reference downlink set (`A10` single, `C01` engine/arm, `B21` arm alternative, `D03` photo, `C02` SMS, raw custom) | — |
 | Wondex | `#DD#` + `;`-separated fields; encoder covers the reference downlink set (`REBOOT`, `TEST`, `GSMINFO`, `IMEI`, `GETLOCATION`, `VER`) | — |
-| Suntech | `STT/ALT/EMG/EVT/UEX/BLE`, universal, zip / binary | command encoder |
+| Suntech | `STT/ALT/EMG/EVT/UEX/BLE`, universal, zip / binary; encoder covers the legacy `SA200CMD;...` downlink set (`Reboot`, `StatusReq`, `Enable`/`Disable` outputs, engine and arm/disarm) | universal command layout (needs the live decoder state) |
 | Ruptela | IMEI handshake, Records / Extended, DTC, IO configuration; encoders complete | — |
 
 ## Database

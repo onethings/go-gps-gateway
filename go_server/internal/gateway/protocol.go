@@ -243,13 +243,20 @@ func DefaultRegistry() *Registry {
 	})
 
 	// Suntech splits its stream into length delimited binary frames and
-	// carriage return terminated text frames; the encoder is not implemented, so
-	// the protocol can be received but not commanded.
+	// carriage return terminated text frames. The encoder writes the legacy
+	// text command layout; selecting the universal layout needs the live
+	// decoder state, which the router does not have.
 	registry.Add(suntech.ProtocolName, func(base codec.Base) *Protocol {
 		return &Protocol{
 			Name:            suntech.ProtocolName,
 			NewFrameDecoder: func() codec.FrameDecoder { return suntech.NewFrameDecoder() },
 			NewDecoder:      func() codec.Decoder { return suntech.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return suntech.NewEncoder(base) },
+			TextCommands: []string{
+				model.CommandAlarmArm, model.CommandAlarmDisarm,
+				model.CommandEngineResume, model.CommandEngineStop, model.CommandOutputControl,
+				model.CommandPositionSingle, model.CommandRebootDevice,
+			},
 		}
 	})
 

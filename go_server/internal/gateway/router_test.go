@@ -518,6 +518,40 @@ func TestRouterEncodesEveryAdvertisedWondexCommand(t *testing.T) {
 	}
 }
 
+// TestRouterEncodesEveryAdvertisedSuntechCommand is the same pin for Suntech:
+// every advertised type must be buildable by the legacy command encoder.
+func TestRouterEncodesEveryAdvertisedSuntechCommand(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("123456789012345", "suntech"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory)
+
+	attributes := map[string]map[string]any{
+		model.CommandOutputControl: {
+			model.CmdKeyData:  "1",
+			model.CmdKeyIndex: 1,
+		},
+	}
+
+	advertised, ok := router.SupportedCommands("suntech", true)
+	if !ok {
+		t.Fatal("suntech is not registered")
+	}
+	if len(advertised) != 7 {
+		t.Fatalf("advertised %d commands, want 7: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		command := model.NewCommand(1, commandType)
+		for key, value := range attributes[commandType] {
+			command.SetAttribute(key, value)
+		}
+		if _, err := router.EncodeCommand("suntech", command); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}
+
 // TestRouterGT06EngineStopLayouts covers the two engine layouts the
 // configuration and the device model select.
 func TestRouterGT06EngineStopLayouts(t *testing.T) {

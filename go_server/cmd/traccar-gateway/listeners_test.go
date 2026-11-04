@@ -19,7 +19,7 @@ func newTestListenerSet(t *testing.T, cfg *config.Config) *listenerSet {
 	return newListenerSet(context.Background(), registry, gateway.NewMemoryDirectory(),
 		gateway.SinkFunc(func(*model.Position) error { return nil }),
 		gateway.NewRouter(registry, gateway.NewMemoryDirectory()),
-		metrics.New(), nil, nil, cfg, func(string, ...any) {})
+		metrics.New(), nil, nil, nil, cfg, func(string, ...any) {})
 }
 
 func TestTLSWithoutCertificateIsAnError(t *testing.T) {

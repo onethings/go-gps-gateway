@@ -29,10 +29,15 @@ const (
 	// WebURL is the public address of this server. JT808 uses its host when it
 	// tells a terminal where to stream video.
 	WebURL = "web.url"
-	// JT1078Port is the port a terminal streams JT1078 video to. The gateway
-	// runs no JT1078 listener, so this key only feeds the JT808 videoStart
-	// command.
+	// JT1078Port is the port a terminal streams JT1078 video to. It is the
+	// address the JT808 videoStart command advertises; the listener is a
+	// separate switch so a deployment that already sets this key keeps running
+	// without one.
 	JT1078Port = "jt1078.port"
+	// JT1078Address is where the gateway listens for the JT1078 stream, for
+	// example 0.0.0.0:1078. Empty disables the listener, which is the default.
+	// Set StreamPath as well, because the listener writes the segments there.
+	JT1078Address = "protocol.jt1078.address"
 
 	// Alert rules.
 	AlertOverspeedKnots  = "alert.overspeedKnots"  // Go only
@@ -282,6 +287,7 @@ var KnownKeys = []string{
 	DisableShare,
 	WebURL,
 	JT1078Port,
+	JT1078Address,
 
 	AlertOverspeedKnots,
 	AlertPowerCutVolts,
@@ -490,7 +496,7 @@ var ProtocolKeys = []string{
 
 // Protocols are the sections the gateway ships protocol servers for.
 var Protocols = []string{
-	"h02", "gt06", "jt808", "teltonika",
+	"h02", "gt06", "jt808", "jt1078", "teltonika",
 	"osmand", "mqtt",
 	"gps103", "tk103", "meitrack", "wondex",
 	"suntech", "ruptela",

@@ -121,9 +121,9 @@ type Binder struct {
 type rawFlags struct {
 	config string
 
-	h02, gt06, jt808, teltonika, osmand, mqtt string
-	gps103, tk103, meitrack, wondex           string
-	suntech, ruptela                          string
+	h02, gt06, jt808, jt1078, teltonika, osmand, mqtt string
+	gps103, tk103, meitrack, wondex                   string
+	suntech, ruptela                                  string
 
 	dsn           string
 	batchSize     string
@@ -205,6 +205,12 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 	binder.text(&binder.raw.h02, "h02", protocolAddress(cfg, "h02"), "H02 listen address")
 	binder.text(&binder.raw.gt06, "gt06", protocolAddress(cfg, "gt06"), "GT06 listen address")
 	binder.text(&binder.raw.jt808, "jt808", protocolAddress(cfg, "jt808"), "JT808 listen address")
+	// The JT1078 listen address ignores the legacy jt1078.port key, which means
+	// the port a terminal is told to stream to. Only an explicit address starts
+	// the listener, so an existing deployment keeps running without one.
+	binder.text(&binder.raw.jt1078, "jt1078",
+		cfg.Protocol("jt1078").String(ProtocolAddress),
+		"JT1078 video listen address; empty disables the listener; segments go to stream.path")
 	binder.text(&binder.raw.teltonika, "teltonika", protocolAddress(cfg, "teltonika"),
 		"Teltonika listen address")
 	binder.text(&binder.raw.osmand, "osmand", protocolAddress(cfg, "osmand"),
@@ -468,6 +474,7 @@ func (b *Binder) protocols(raw rawFlags, settings Settings) ([]ProtocolSettings,
 		"h02":       raw.h02,
 		"gt06":      raw.gt06,
 		"jt808":     raw.jt808,
+		"jt1078":    raw.jt1078,
 		"teltonika": raw.teltonika,
 		"osmand":    raw.osmand,
 		"mqtt":      raw.mqtt,

@@ -112,6 +112,7 @@ Config / environment only:
 | GT06 command layouts | `protocol.gt06.alternative` = true sends the engine commands as `DYD,<password>` / `HFYD,<password>`; `protocol.gt06.language` adds the optional english field to every command frame; `protocol.gt06.devicePassword` is the password the alternative layout carries (default `123456`) |
 | TK103 command layouts | `protocol.tk103.alternative` = true sends the SMS2 layout (`[begin]sms2,...[end]`) instead of the legacy parenthesised sentences; `protocol.tk103.devicePassword` fills the `*master*` SOS command (default `123456`) |
 | Meitrack command layouts | `protocol.meitrack.alternative` = true sends arm/disarm as `B21,1` / `B21,0`; the default is the `C01` form |
+| Wondex command password | `protocol.wondex.devicePassword` fills the `$WP+...` sentence (default `0000`) |
 | Redis push | `redis.url`, `redis.channel` (default `traccar`) |
 | OpenID Connect | `openid.{enable,issuer,clientId,clientSecret,redirectUrl,scopes,createMissing,successUrl}` |
 | LDAP | `ldap.{url,user,password,base,idAttribute,searchFilter,nameAttribute,mailAttribute,timeout}` (`ldap.userFilter` kept as alias) |
@@ -133,7 +134,7 @@ Config / environment only:
 | GPS103 | `imei:` text sentence, decimal degrees + hemisphere; encoder covers the reference downlink set (`B` single, `C` periodic, `D` stop, `J`/`K` engine, `L`/`M` arm/disarm, `160` photo, raw custom) | — |
 | TK103 | `imei:` text sentence, decimal degrees + hemisphere; encoder covers the reference legacy and SMS2 downlink sets (`AP`, `AR`, `AT`, `AV`, `AX` legacy; `*getposl*`, `*routetrack*`, `*sleep*`, `*sos*`, `*setip*`, `*master*` alternative) | — |
 | Meitrack | `$$` + length + fields + XOR; encoder covers the reference downlink set (`A10` single, `C01` engine/arm, `B21` arm alternative, `D03` photo, `C02` SMS, raw custom) | — |
-| Wondex | `#DD#` + `;`-separated fields | — |
+| Wondex | `#DD#` + `;`-separated fields; encoder covers the reference downlink set (`REBOOT`, `TEST`, `GSMINFO`, `IMEI`, `GETLOCATION`, `VER`) | — |
 | Suntech | `STT/ALT/EMG/EVT/UEX/BLE`, universal, zip / binary | command encoder |
 | Ruptela | IMEI handshake, Records / Extended, DTC, IO configuration; encoders complete | — |
 

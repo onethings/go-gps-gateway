@@ -495,6 +495,29 @@ func TestRouterEncodesEveryAdvertisedMeitrackCommand(t *testing.T) {
 	}
 }
 
+// TestRouterEncodesEveryAdvertisedWondexCommand is the same pin for Wondex:
+// every advertised type must be buildable by the encoder.
+func TestRouterEncodesEveryAdvertisedWondexCommand(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("123456789012345", "wondex"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory)
+
+	advertised, ok := router.SupportedCommands("wondex", true)
+	if !ok {
+		t.Fatal("wondex is not registered")
+	}
+	if len(advertised) != 6 {
+		t.Fatalf("advertised %d commands, want 6: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		if _, err := router.EncodeCommand("wondex", model.NewCommand(1, commandType)); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}
+
 // TestRouterGT06EngineStopLayouts covers the two engine layouts the
 // configuration and the device model select.
 func TestRouterGT06EngineStopLayouts(t *testing.T) {

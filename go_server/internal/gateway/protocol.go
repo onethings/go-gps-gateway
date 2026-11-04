@@ -203,6 +203,11 @@ func DefaultRegistry() *Registry {
 			Name:            wondex.ProtocolName,
 			NewFrameDecoder: func() codec.FrameDecoder { return &wondex.FrameDecoder{} },
 			NewDecoder:      func() codec.Decoder { return wondex.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return wondex.NewEncoder(base) },
+			TextCommands: []string{
+				model.CommandGetDeviceStatus, model.CommandGetModemStatus, model.CommandGetVersion,
+				model.CommandIdentification, model.CommandPositionSingle, model.CommandRebootDevice,
+			},
 		}
 	})
 

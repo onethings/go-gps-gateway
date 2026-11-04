@@ -363,6 +363,39 @@ func TestRouterEncodesEveryAdvertisedTeltonikaCommand(t *testing.T) {
 	}
 }
 
+// TestRouterEncodesEveryAdvertisedGps103Command is the same pin for GPS103:
+// every type the REST layer advertises must be buildable by the encoder.
+func TestRouterEncodesEveryAdvertisedGps103Command(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("123456789012345", "gps103"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory)
+
+	// The parameters each command needs to be buildable at all.
+	attributes := map[string]map[string]any{
+		model.CommandPositionPeriodic: {model.CmdKeyFrequency: 300},
+		model.CommandCustom:           {model.CmdKeyData: "H,080"},
+	}
+
+	advertised, ok := router.SupportedCommands("gps103", true)
+	if !ok {
+		t.Fatal("gps103 is not registered")
+	}
+	if len(advertised) != 9 {
+		t.Fatalf("advertised %d commands, want 9: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		command := model.NewCommand(1, commandType)
+		for key, value := range attributes[commandType] {
+			command.SetAttribute(key, value)
+		}
+		if _, err := router.EncodeCommand("gps103", command); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}
+
 // TestRouterGT06EngineStopLayouts covers the two engine layouts the
 // configuration and the device model select.
 func TestRouterGT06EngineStopLayouts(t *testing.T) {

@@ -157,6 +157,13 @@ func DefaultRegistry() *Registry {
 			Name:            gps103.ProtocolName,
 			NewFrameDecoder: func() codec.FrameDecoder { return &gps103.FrameDecoder{} },
 			NewDecoder:      func() codec.Decoder { return gps103.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return gps103.NewEncoder(base) },
+			TextCommands: []string{
+				model.CommandAlarmArm, model.CommandAlarmDisarm,
+				model.CommandCustom, model.CommandEngineResume, model.CommandEngineStop,
+				model.CommandPositionPeriodic, model.CommandPositionSingle, model.CommandPositionStop,
+				model.CommandRequestPhoto,
+			},
 		}
 	})
 

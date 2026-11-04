@@ -128,7 +128,8 @@ Config / environment only:
 | JT808 | 2013/2019 headers, `0x7E` escaping, XOR, register / position / batch position (`0x0704`, `0x0210`), heartbeat / ICCID / time sync; all 21 downlink commands from the reference encoder, including the model specific custom and engine layouts | driver card, parameters, pass-through, ADAS/DMS/TPMS/OBD |
 | Teltonika | IMEI handshake, Codec 8 / 8E / 12 / 13, variable-length elements, LAC/CID; encoder covers the reference downlink set (`setdigout` engine stop/resume, raw custom as ASCII or hex) | Codec 7/16, BLE |
 | OsmAnd, MQTT | OsmAnd query string; MQTT 3.1.1 reuses the same decoder | — |
-| GPS103, TK103 | `imei:` text sentence, decimal degrees + hemisphere | — |
+| GPS103 | `imei:` text sentence, decimal degrees + hemisphere; encoder covers the reference downlink set (`B` single, `C` periodic, `D` stop, `J`/`K` engine, `L`/`M` arm/disarm, `160` photo, raw custom) | — |
+| TK103 | `imei:` text sentence, decimal degrees + hemisphere | — |
 | Meitrack | `$$` + length + fields + XOR | — |
 | Wondex | `#DD#` + `;`-separated fields | — |
 | Suntech | `STT/ALT/EMG/EVT/UEX/BLE`, universal, zip / binary | command encoder |

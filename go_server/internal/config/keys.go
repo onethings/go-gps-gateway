@@ -494,7 +494,7 @@ var Protocols = []string{
 	"osmand", "mqtt",
 	"gps103", "tk103", "meitrack", "wondex",
 	"suntech", "ruptela",
-	"gt02", "gps056",
+	"gt02", "gps056", "gator",
 }
 
 // defaults are the compiled-in values, the lowest layer. They match the flag
@@ -576,6 +576,7 @@ var defaultProtocolAddresses = map[string]string{
 	"ruptela": "0.0.0.0:5046",
 	"gt02":    "0.0.0.0:5022",
 	"gps056":  "0.0.0.0:5141",
+	"gator":   "0.0.0.0:5052",
 }
 
 // defaultProtocolTransports overrides the tcp default for the protocols that

@@ -15,7 +15,7 @@ bin_dir=${BIN_DIR:-bin}
 gateway=$bin_dir/traccar-gateway
 simulator=$bin_dir/device-sim
 port_base=${SMOKE_PORT_BASE:-15000}
-scenes=${SMOKE_SCENES:-"gt06 h02 jt808 teltonika gt02 gps056"}
+scenes=${SMOKE_SCENES:-"gt06 h02 jt808 teltonika gt02 gps056 gator"}
 log=$(mktemp "${TMPDIR:-/tmp}/traccar-smoke.XXXXXX")
 
 gateway_pid=""
@@ -33,6 +33,7 @@ port_for() {
 	jt808) echo $((port_base + 610)) ;;
 	gt02) echo $((port_base + 22)) ;;
 	gps056) echo $((port_base + 141)) ;;
+	gator) echo $((port_base + 52)) ;;
 	*) echo "" ;;
 	esac
 }
@@ -58,6 +59,7 @@ echo "==> starting gateway on ports $port_base+ (no database, log sink)"
 	-jt808 "127.0.0.1:$(port_for jt808)" \
 	-gt02 "127.0.0.1:$(port_for gt02)" \
 	-gps056 "127.0.0.1:$(port_for gps056)" \
+	-gator "127.0.0.1:$(port_for gator)" \
 	-http "" \
 	>"$log" 2>&1 &
 gateway_pid=$!

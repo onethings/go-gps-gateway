@@ -126,6 +126,7 @@ type rawFlags struct {
 	suntech, ruptela                          string
 	gt02                                      string
 	gps056                                    string
+	gator                                     string
 
 	dsn           string
 	batchSize     string
@@ -229,6 +230,8 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 		"GT02 listen address")
 	binder.text(&binder.raw.gps056, "gps056", protocolAddress(cfg, "gps056"),
 		"GPS056 listen address")
+	binder.text(&binder.raw.gator, "gator", protocolAddress(cfg, "gator"),
+		"Gator listen address")
 
 	binder.text(&binder.raw.dsn, "dsn", cfg.String(DatabaseURL),
 		"PostgreSQL DSN (defaults to TRACCAR_DSN); empty uses an in-memory directory and a log sink")
@@ -485,6 +488,7 @@ func (b *Binder) protocols(raw rawFlags, settings Settings) ([]ProtocolSettings,
 		"ruptela":   raw.ruptela,
 		"gt02":      raw.gt02,
 		"gps056":    raw.gps056,
+		"gator":     raw.gator,
 	}
 
 	var (

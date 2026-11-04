@@ -139,6 +139,7 @@ Config / environment only:
 | Ruptela | IMEI handshake, Records / Extended, DTC, IO configuration; encoders complete | — |
 | GT02 | `0x68 0x68` length frame, position, heartbeat ACK and command response; decoder only, the reference ships no encoder | — |
 | GPS056 | `$$` length frame, `LOGN` / `GPSL` / `SYNC`, status fields and ACK; decoder only, the reference ships no encoder | — |
+| Gator | `24 24` type + length frame, BCD time and coordinates, M588 Luhn IMEI, alarm bits, ACK; encoder covers `positionSingle`, engine stop/resume, speed limit and odometer with the reference's message-type mapping | — |
 
 ## Database
 
@@ -362,8 +363,8 @@ their own name / attributes / password but cannot grant themselves administrator
 
 | Area | Go version | Gap |
 | --- | --- | --- |
-| Protocol decoders | 14 | 254 |
-| Command encoders | 10 | 49 |
+| Protocol decoders | 15 | 253 |
+| Command encoders | 11 | 48 |
 | Pipeline / events | 15 stages / 12 rules | 0 |
 | OpenAPI paths | 76 | 0 |
 | Geo providers | geocoder 26, geolocation 6 | — |

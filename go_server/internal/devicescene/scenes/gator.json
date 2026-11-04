@@ -1,0 +1,13 @@
+{
+  "name": "gator",
+  "protocol": "gator",
+  "uniqueId": "863221044091021",
+  "handshake": false,
+  "positions": 1,
+  "steps": [
+    {
+      "name": "position",
+      "hex": "24248000278632210440910210250107210008006368860032001400000057c047000000185c050da7f9960d"
+    }
+  ]
+}

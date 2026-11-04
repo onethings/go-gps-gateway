@@ -10,6 +10,7 @@ import (
 
 	"traccar-server_go/go_server/internal/codec"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/protocol/gator"
 	"traccar-server_go/go_server/internal/protocol/gps056"
 	"traccar-server_go/go_server/internal/protocol/gps103"
 	"traccar-server_go/go_server/internal/protocol/gt02"
@@ -276,6 +277,20 @@ func DefaultRegistry() *Registry {
 				model.CommandGetVersion, model.CommandFirmwareUpdate,
 				model.CommandOutputControl, model.CommandSetConnection,
 				model.CommandSetOdometer,
+			},
+		}
+	})
+
+	registry.Add(gator.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            gator.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return gator.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return gator.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return gator.NewEncoder(base) },
+			DataCommands: []string{
+				model.CommandEngineResume, model.CommandEngineStop,
+				model.CommandPositionSingle, model.CommandSetOdometer,
+				model.CommandSetSpeedLimit,
 			},
 		}
 	})

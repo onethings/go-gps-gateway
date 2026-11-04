@@ -147,7 +147,11 @@ func main() {
 	)
 
 	if settings.DatabaseURL != "" {
-		store, err = storage.New(ctx, settings.DatabaseURL)
+		schemaOptions, err := storage.SchemaOption(settings.DatabaseSchema)
+		if err != nil {
+			log.Fatalf("storage: %v", err)
+		}
+		store, err = storage.New(ctx, settings.DatabaseURL, schemaOptions...)
 		if err != nil {
 			log.Fatalf("storage: %v", err)
 		}

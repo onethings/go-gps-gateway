@@ -7,7 +7,7 @@ BINARIES := traccar-gateway device-sim
 .DEFAULT_GOAL := help
 .PHONY: help build test race vet fmt smoke rest-e2e run run-db run-sqlite install uninstall \
 	docker-check db-up db-down db-up-mysql db-down-mysql docker-build compose-up compose-down \
-	compose-up-mysql compose-down-mysql dist clean
+	compose-up-mysql compose-down-mysql dist clean compat-e2e
 
 help: ## list the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -34,6 +34,9 @@ smoke: build ## replay the four protocol scenes against a throwaway gateway
 
 rest-e2e: build ## replay the scenes against PostgreSQL or MySQL (DSN) and check positions, alerts and commands
 	BIN_DIR=$(BIN_DIR) REST_E2E_NO_BUILD=1 ./scripts/rest-e2e.sh
+
+compat-e2e: build ## attach to a Traccar Java database and read and write it (needs docker)
+	BIN_DIR=$(BIN_DIR) COMPAT_E2E_NO_BUILD=1 ./scripts/compat-e2e.sh
 
 run: build ## run with no database: positions are logged as JSON
 	./$(BIN_DIR)/traccar-gateway

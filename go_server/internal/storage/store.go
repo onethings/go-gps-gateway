@@ -42,6 +42,21 @@ type Store struct {
 	// frequency token-authorisation path does not hit the database on every
 	// request.
 	tokens *tokenCache
+	// referenceSchema adopts the Traccar Java tables instead of creating the
+	// Go ones. See WithReferenceSchema.
+	referenceSchema bool
+}
+
+// Option customises a Store.
+type Option func(*Store)
+
+// WithReferenceSchema attaches to a database written by the Java server. On the
+// first start the reference tc_devices and tc_positions tables are adopted in
+// place, so the devices and their history are visible without an export. A
+// database that already has the Go tables is left untouched, and the migration
+// that follows records the schema, so the option is harmless once adopted.
+func WithReferenceSchema() Option {
+	return func(s *Store) { s.referenceSchema = true }
 }
 
 // tokenCacheCapacity bounds the token cache. At this many live entries the next
@@ -51,7 +66,7 @@ const tokenCacheCapacity = 4096
 
 // New opens the database, verifies connectivity and applies pending
 // migrations.
-func New(ctx context.Context, dsn string) (*Store, error) {
+func New(ctx context.Context, dsn string, options ...Option) (*Store, error) {
 	selected, driverDSN, err := parseDSN(dsn)
 	if err != nil {
 		return nil, err
@@ -74,7 +89,14 @@ func New(ctx context.Context, dsn string) (*Store, error) {
 	}
 
 	store := &Store{db: &DB{DB: db, dialect: selected}}
+	for _, option := range options {
+		option(store)
+	}
 	store.tokens = newTokenCache(tokenCacheCapacity)
+	if err := store.adoptReferenceSchema(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := store.Migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err

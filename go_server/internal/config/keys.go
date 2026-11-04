@@ -6,6 +6,7 @@ package config
 const (
 	// Database and the position writer.
 	DatabaseURL             = "database.url"
+	DatabaseSchema          = "database.schema" // Go only: native or reference
 	DatabaseRegisterUnknown = "database.registerUnknown"
 	DatabaseBatchSize       = "database.batchSize"     // Go only: the BatchSink
 	DatabaseBatchInterval   = "database.batchInterval" // Go only: the BatchSink
@@ -264,6 +265,7 @@ const ConfigDefault = "config.default"
 // being read as a value nothing uses.
 var KnownKeys = []string{
 	DatabaseURL,
+	DatabaseSchema,
 	DatabaseRegisterUnknown,
 	DatabaseBatchSize,
 	DatabaseBatchInterval,

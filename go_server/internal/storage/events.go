@@ -179,8 +179,27 @@ func (s *Store) InsertReports(ctx context.Context, reports []*model.PositionRepo
 		}
 		positions = append(positions, report.Position)
 		eventsByPosition[report.Position] = report.Events
-		totalEvents += len(report.Events)
 	}
+	if len(positions) == 0 {
+		return nil
+	}
+
+	// A disabled device must not gain rows here either: this is the write path
+	// every position with an event takes, and the gateway's own check only
+	// knows the flag for protocols that resolve a session before the frame.
+	disabled, err := disabledDevices(ctx, s.db, positions)
+	if err != nil {
+		return err
+	}
+	kept := positions[:0]
+	for _, position := range positions {
+		if disabled[position.DeviceID] {
+			continue
+		}
+		kept = append(kept, position)
+		totalEvents += len(eventsByPosition[position])
+	}
+	positions = kept
 	if len(positions) == 0 {
 		return nil
 	}

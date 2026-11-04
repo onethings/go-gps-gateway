@@ -340,6 +340,12 @@ func (s *Server) processResult(
 		s.sessions.SessionData((*session).DeviceID)
 	}
 
+	if *session != nil && (*session).Disabled {
+		// A disabled device keeps its session and its acknowledgements, so the
+		// terminal does not retry or drop off, but nothing it reports is stored.
+		result.Positions = nil
+	}
+
 	for _, position := range result.Positions {
 		if position.DeviceID == 0 && *session != nil {
 			position.DeviceID = (*session).DeviceID
@@ -439,6 +445,10 @@ func (s *Server) bindSession(uniqueID string) *codec.DeviceSession {
 	}
 
 	if resolved, err := s.directory.Resolve(uniqueID); err == nil && resolved != nil {
+		if resolved.Disabled {
+			s.logf("%s: device %d is disabled, dropping its positions",
+				s.protocolName, resolved.DeviceID)
+		}
 		return resolved
 	}
 

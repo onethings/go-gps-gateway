@@ -286,10 +286,11 @@ func (s *Store) Resolve(uniqueID string) (*codec.DeviceSession, error) {
 	var (
 		deviceID int64
 		model    *string
+		disabled bool
 	)
 	err := s.db.QueryRowContext(context.Background(),
-		`SELECT id, model FROM devices WHERE unique_id = $1`, uniqueID,
-	).Scan(&deviceID, &model)
+		`SELECT id, model, disabled FROM devices WHERE unique_id = $1`, uniqueID,
+	).Scan(&deviceID, &model, &disabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -297,7 +298,11 @@ func (s *Store) Resolve(uniqueID string) (*codec.DeviceSession, error) {
 		return nil, fmt.Errorf("storage: resolve %q: %w", uniqueID, err)
 	}
 
-	session := &codec.DeviceSession{DeviceID: deviceID, UniqueID: uniqueID}
+	session := &codec.DeviceSession{
+		DeviceID: deviceID,
+		UniqueID: uniqueID,
+		Disabled: disabled,
+	}
 	if model != nil {
 		session.Model = *model
 	}
@@ -394,12 +399,20 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 		return nil
 	}
 
+	disabled, err := disabledDevices(ctx, s.db, positions)
+	if err != nil {
+		return err
+	}
+
 	values := make([]string, 0, len(positions))
 	args := make([]any, 0, len(positions)*positionColumns)
 	// Newest device time per device, used to advance devices.last_update.
 	touched := make(map[int64]time.Time, 4)
 
 	for _, position := range positions {
+		if disabled[position.DeviceID] {
+			continue
+		}
 		row, err := positionArgs(position)
 		if err != nil {
 			if errors.Is(err, ErrMissingDevice) {
@@ -435,6 +448,48 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 		return fmt.Errorf("storage: insert positions: %w", err)
 	}
 	return s.updateLastUpdate(ctx, touched)
+}
+
+// disabledDevices reports which of the batch's devices an operator has switched
+// off. The gateway drops those positions itself, but a protocol that identifies
+// the device inside the frame binds a session without knowing the flag, so the
+// write boundary checks too.
+func disabledDevices(
+	ctx context.Context, db execer, positions []*model.Position,
+) (map[int64]bool, error) {
+	ids := make([]int64, 0, len(positions))
+	seen := make(map[int64]bool, len(positions))
+	for _, position := range positions {
+		if position.DeviceID == 0 || seen[position.DeviceID] {
+			continue
+		}
+		seen[position.DeviceID] = true
+		ids = append(ids, position.DeviceID)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	args := make([]any, 0, len(ids))
+	rows, err := db.QueryContext(ctx,
+		`SELECT id FROM devices WHERE disabled AND `+deviceIDsClause(&args, "id", ids), args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: query disabled devices: %w", err)
+	}
+	defer rows.Close()
+
+	disabled := make(map[int64]bool, len(ids))
+	for rows.Next() {
+		var deviceID int64
+		if err := rows.Scan(&deviceID); err != nil {
+			return nil, fmt.Errorf("storage: scan disabled device: %w", err)
+		}
+		disabled[deviceID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: query disabled devices: %w", err)
+	}
+	return disabled, nil
 }
 
 // updateLastUpdate advances devices.last_update for the devices in the batch in

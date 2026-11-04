@@ -516,3 +516,42 @@ func TestQueuedCommandReachesAReconnectingDevice(t *testing.T) {
 		t.Errorf("acks = %v, want one", log.ackIDs())
 	}
 }
+
+// disabledDirectory answers every identifier with a device an operator has
+// switched off.
+type disabledDirectory struct{}
+
+func (disabledDirectory) Resolve(uniqueID string) (*codec.DeviceSession, error) {
+	return &codec.DeviceSession{DeviceID: 1, UniqueID: uniqueID, Disabled: true}, nil
+}
+
+func (disabledDirectory) UniqueID(int64) (string, error) { return "864717003283581", nil }
+
+// TestDisabledDevicePositionsAreDropped pins the policy: a disabled device still
+// logs in and still gets its acknowledgements, so the terminal keeps working,
+// but nothing it reports reaches the sink.
+func TestDisabledDevicePositionsAreDropped(t *testing.T) {
+	positions := make(chan *model.Position, 4)
+	server := newServer(t, "gt06", disabledDirectory{}, gateway.SinkFunc(func(position *model.Position) error {
+		positions <- position
+		return nil
+	}))
+
+	conn := startConn(t, server)
+
+	write(t, conn, mustHex(t, "78780d01086471700328358100093f040d0a"))
+	if ack := readN(t, conn, 10); ack[3] != 0x01 {
+		t.Fatalf("login ack = %x", ack)
+	}
+
+	write(t, conn, mustHex(t, "78781f120f0a140e150bc505e51e780293a9e800540000f601006e0055da00035f240d0a"))
+	if ack := readN(t, conn, 10); ack[3] != 0x12 {
+		t.Fatalf("report ack = %x", ack)
+	}
+
+	select {
+	case position := <-positions:
+		t.Fatalf("disabled device produced position %+v", position)
+	case <-time.After(200 * time.Millisecond):
+	}
+}

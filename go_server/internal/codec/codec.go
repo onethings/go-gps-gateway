@@ -21,6 +21,9 @@ type DeviceSession struct {
 	// change their decode path per model read it here. Empty when the device
 	// has no model set, which selects the generic path.
 	Model string
+	// Disabled marks a device an operator has switched off. It still connects
+	// and gets its acknowledgements, but the gateway drops its positions.
+	Disabled bool
 }
 
 // DeviceResolver maps a device unique identifier (IMEI and friends) to a

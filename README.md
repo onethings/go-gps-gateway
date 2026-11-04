@@ -45,3 +45,9 @@
   要主張就得先量測。
 - ⚠️ **「抓住 80% 市場」「幾天內完成」**：行銷語言，不是工程判斷。母本有 272 個協議解碼器、
   完整業務層與 Web 前端，四個協議的網關不是「重寫 Traccar」，是它的資料入口。
+
+## 資料夾說明
+
+go_server 才是主要用go語言重寫的(deepseek v4 flash+用pateto 的pstack)
+traccar-master 是母版 6.17.0 3/Nov/2026 https://github.com/traccar/traccar
+traccar-web-master 是母版 6.17.0 3/Nov/2026 https://github.com/traccar/traccar-web/

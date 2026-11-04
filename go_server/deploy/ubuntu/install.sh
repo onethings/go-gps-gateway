@@ -13,11 +13,12 @@
 #   unzip traccar-server-go_<version>.zip && cd traccar-server-go_<version>
 #   sudo ./install.sh
 #
-# Defaults: SQLite in /opt/traccar/data, the gateway on 0.0.0.0:8082 with the
-# traccar-web build served from /opt/traccar/web. Device protocol ports
-# (5013, 5023, 5027, 8610, ...) stay at the built-in values. Re-run the same
-# command to upgrade the binary and the web build; the configuration file is
-# kept unless --force is passed.
+# Defaults: SQLite in /opt/traccar/data, the config at
+# /opt/traccar/conf/traccar.xml (the Java server's location), the gateway on
+# 0.0.0.0:8082 with the traccar-web build served from /opt/traccar/web. Device
+# protocol ports (5013, 5023, 5027, 8610, ...) stay at the built-in values.
+# Re-run the same command to upgrade the binary and the web build; the
+# configuration file is kept unless --force is passed.
 set -euo pipefail
 
 TMP_PATHS=()
@@ -49,7 +50,8 @@ arch_name() {
 }
 
 PREFIX=${PREFIX:-/opt/traccar}
-CONF_DIR=${CONF_DIR:-/etc/traccar}
+# Same layout as the Java server: /opt/traccar/conf/traccar.xml.
+CONF_DIR=${CONF_DIR:-}
 SERVICE_USER=${SERVICE_USER:-traccar}
 SERVICE_NAME=${SERVICE_NAME:-traccar-gateway}
 GO_VERSION=${GO_VERSION:-1.22.12}
@@ -98,8 +100,9 @@ Options:
                    127.0.0.1:8082 when --domain is used)
   --domain NAME    also install an nginx site for NAME and proxy /api to the gateway
   --prefix PATH    install prefix (default /opt/traccar)
+  --conf-dir PATH  configuration directory (default <prefix>/conf)
   --user NAME      service account (default traccar)
-  --force          rewrite /etc/traccar/traccar.xml and the API key
+  --force          rewrite the configuration and the API key
   --no-nginx       skip the nginx site even when --domain is set
   --help           show this help
 
@@ -116,6 +119,7 @@ while (($#)); do
 	--http) HTTP_ADDR=${2:?--http needs an address}; shift 2 ;;
 	--domain) DOMAIN=${2:?--domain needs a name}; shift 2 ;;
 	--prefix) PREFIX=${2:?--prefix needs a path}; shift 2 ;;
+	--conf-dir) CONF_DIR=${2:?--conf-dir needs a path}; shift 2 ;;
 	--user) SERVICE_USER=${2:?--user needs a name}; shift 2 ;;
 	--force) FORCE=1; shift ;;
 	--no-nginx) NO_NGINX=1; shift ;;
@@ -123,6 +127,8 @@ while (($#)); do
 	*) die "unknown argument: $1 (try --help)" ;;
 	esac
 done
+
+[[ -n $CONF_DIR ]] || CONF_DIR=$PREFIX/conf
 
 DSN=${DSN:-sqlite://$PREFIX/data/traccar.db}
 if [[ -z $HTTP_ADDR ]]; then
@@ -138,6 +144,7 @@ fi
 
 [[ $EUID -eq 0 ]] || die "run as root: sudo $0"
 [[ $PREFIX == /* ]] || die "--prefix must be an absolute path"
+[[ $CONF_DIR == /* ]] || die "--conf-dir must be an absolute path"
 [[ -n $REPO_DIR || -d $SCRIPT_DIR/bin ]] || die "no source checkout and no bin/ directory; run this script from the release zip or pass --binary"
 
 if [[ -r /etc/os-release ]]; then
@@ -207,6 +214,19 @@ id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system \
 install -d -m 0755 -o root -g root "$PREFIX/bin"
 install -d -m 0755 -o "$SERVICE_USER" -g "$SERVICE_USER" "$PREFIX/data" "$PREFIX/web"
 install -d -m 0750 -o root -g "$SERVICE_USER" "$CONF_DIR"
+
+# Older releases kept the configuration in /etc/traccar. Move it to the Java
+# server's location on upgrade instead of writing a second, empty config.
+LEGACY_CONF_DIR=/etc/traccar
+if [[ $CONF_DIR != "$LEGACY_CONF_DIR" && ! -f $CONF_DIR/traccar.xml && -f $LEGACY_CONF_DIR/traccar.xml ]]; then
+	log "moving the configuration from $LEGACY_CONF_DIR to $CONF_DIR"
+	install -m 0640 -o root -g "$SERVICE_USER" \
+		"$LEGACY_CONF_DIR/traccar.xml" "$CONF_DIR/traccar.xml"
+	if [[ -f $LEGACY_CONF_DIR/api-key ]]; then
+		install -m 0640 -o root -g "$SERVICE_USER" \
+			"$LEGACY_CONF_DIR/api-key" "$CONF_DIR/api-key"
+	fi
+fi
 
 BUILT_BINARY=
 if [[ -n $BINARY ]]; then

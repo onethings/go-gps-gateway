@@ -179,11 +179,44 @@ TRACCAR_TEST_DSN='mysql://root@127.0.0.1:3306/traccar' go test ./internal/storag
 TRACCAR_TEST_DSN='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' go test ./internal/storage
 ```
 
+## 資源需求
+
+| 規模 | CPU | RAM | 磁碟 |
+| --- | --- | --- | --- |
+| 開發 / 1–20 台裝置 | 1 vCPU | 512MB–1GB | 10GB |
+| 20–500 台（10–30 秒一筆） | 1–2 vCPU | 1GB | 25GB，需設 retention |
+| 500 台以上 | 2 vCPU+ | 2GB+ | 依保留期與上報頻率 |
+
+- gateway 常駐記憶體是數十 MB 級；每條裝置長連線一個 goroutine（約 8–16KB 加上讀取緩衝），
+  幾百條連線仍在 100MB 以內。解碼是純函式，單核每秒可處理數千筆。
+- **1GB 機器請用 release zip，不要在機器上編譯**：Go 編譯器峰值可吃 0.5–1GB。真要編譯，
+  先加 2GB swap（`fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`）。
+- 1GB 請用 SQLite；MySQL 8 常駐就要 300–500MB，PostgreSQL 也要 100–200MB。
+- 磁碟成長（positions 含索引約 300B/筆，預設**不**自動刪除）：
+
+  | 裝置數 × 上報間隔 | 每天 | 每年 |
+  | --- | --- | --- |
+  | 1 × 10s | 2.6 MB | 約 1 GB |
+  | 10 × 10s | 26 MB | 約 9.5 GB |
+  | 10 × 30s | 8.6 MB | 約 3 GB |
+  | 100 × 30s | 86 MB | 約 31 GB |
+
+  25GB 磁碟建議在 `traccar.xml` 設定清理（`0` = 不刪）：
+
+  ```xml
+  <!-- 只吃 Go duration 單位（h / m / s），沒有 d：90 天 = 2160h。 -->
+  <entry key='schedule.positions.retention'>2160h</entry>
+  <entry key='schedule.events.retention'>4320h</entry>
+  ```
+
+  對應的 `schedule.positions.interval` / `schedule.events.interval` 預設就是 `24h`，不用另外設；
+  值寫錯（例如 `90d`）只會在日誌留一行 `schedule: ...` 並維持不刪除。
+
 ## VPS 部署（Ubuntu）
 
 `deploy/ubuntu/install.sh` 把下面幾節的步驟收成一支腳本：需要的話安裝 Go、建立 `traccar`
-系統帳號、編譯並安裝 binary、複製 traccar-web build、寫 `/etc/traccar/traccar.xml`
-（含隨機 `api.key`）、安裝並啟動 systemd unit，最後等 `/api/health` 回 200 才結束。
+系統帳號、編譯並安裝 binary、複製 traccar-web build、寫 `/opt/traccar/conf/traccar.xml`
+（與 Java 母版同位置，含隨機 `api.key`）、安裝並啟動 systemd unit，最後等 `/api/health` 回 200 才結束。
 
 ```bash
 # 1. 把 repo 放到 VPS（git clone，或本機 rsync/scp 上傳）
@@ -205,6 +238,7 @@ sudo ./go_server/deploy/ubuntu/install.sh
 | MySQL / PostgreSQL（先建好 DB 與帳號） | `--dsn 'mysql://traccar:密碼@127.0.0.1:3306/traccar'`、`--dsn 'postgres://traccar:密碼@127.0.0.1:5432/traccar?sslmode=disable'` |
 | 在本機（macOS）編譯後只上傳執行檔 | `GOOS=linux GOARCH=amd64 go build -o tg ./go_server/cmd/traccar-gateway`，`scp tg vps:` 後 `sudo ./go_server/deploy/ubuntu/install.sh --binary ./tg` |
 | 升級 | `git pull && sudo ./go_server/deploy/ubuntu/install.sh`（設定檔保留；`--force` 才重寫並換 `api.key`） |
+| 設定檔放 `/etc/traccar`（舊版位置） | `sudo ./go_server/deploy/ubuntu/install.sh --conf-dir /etc/traccar` |
 
 安裝後的檔案：
 
@@ -213,8 +247,8 @@ sudo ./go_server/deploy/ubuntu/install.sh
 | `/opt/traccar/bin/traccar-gateway` | 執行檔（升級時覆蓋） |
 | `/opt/traccar/web` | traccar-web build；同時是 `POST /api/server/file/{path}` 的寫入根目錄 |
 | `/opt/traccar/data/traccar.db` | 預設 SQLite 資料庫（`--dsn` 可換 PostgreSQL / MySQL） |
-| `/etc/traccar/traccar.xml` | `web.address`、`database.url`、`web.path`、`media.path`、`api.key` |
-| `/etc/traccar/api-key` | 隨機產生的 admin API key（`0640 root:traccar`） |
+| `/opt/traccar/conf/traccar.xml` | 設定檔；位置與 Java 母版相同（`--conf-dir` 可改） |
+| `/opt/traccar/conf/api-key` | 隨機產生的 admin API key（`0640 root:traccar`） |
 | `/etc/systemd/system/traccar-gateway.service` | systemd unit（`ProtectSystem=strict`，只放行 `data` / `web` 可寫） |
 
 日常操作：
@@ -222,7 +256,7 @@ sudo ./go_server/deploy/ubuntu/install.sh
 ```bash
 sudo systemctl status traccar-gateway
 sudo journalctl -u traccar-gateway -f
-curl -H "X-Api-Key: $(sudo cat /etc/traccar/api-key)" http://127.0.0.1:8082/api/health
+curl -H "X-Api-Key: $(sudo cat /opt/traccar/conf/api-key)" http://127.0.0.1:8082/api/health
 sudo systemctl restart traccar-gateway
 ```
 
@@ -242,7 +276,9 @@ sudo timedatectl set-timezone Asia/Taipei     # H02 / GT06 的對時與編碼用
 ```bash
 sudo systemctl disable --now traccar-gateway
 sudo rm /etc/systemd/system/traccar-gateway.service
-sudo rm -rf /opt/traccar /etc/traccar
+sudo rm -rf /opt/traccar
+sudo rm -rf /etc/traccar          # 只有從舊版（設定在 /etc）升級上來的才需要
+sudo rm -f /etc/nginx/sites-enabled/traccar-gateway /etc/nginx/sites-available/traccar-gateway
 sudo userdel traccar
 ```
 

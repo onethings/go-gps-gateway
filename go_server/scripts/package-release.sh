@@ -116,14 +116,14 @@ traccar-server-go $VERSION
     /opt/traccar/bin/traccar-gateway    執行檔
     /opt/traccar/web                    前端（同時是上傳根目錄）
     /opt/traccar/data                   SQLite 資料庫與媒體
-    /etc/traccar/traccar.xml            設定檔
-    /etc/traccar/api-key                隨機產生的 admin API key
+    /opt/traccar/conf/traccar.xml            設定檔
+    /opt/traccar/conf/api-key                隨機產生的 admin API key
 
 日常操作：
 
     systemctl status traccar-gateway
     journalctl -u traccar-gateway -f
-    curl -H "X-Api-Key: \$(sudo cat /etc/traccar/api-key)" http://127.0.0.1:8082/api/health
+    curl -H "X-Api-Key: \$(sudo cat /opt/traccar/conf/api-key)" http://127.0.0.1:8082/api/health
 
 瀏覽器開 http://<VPS-IP>:8082/ ，註冊第一個帳號（會成為 administrator）。
 設備要連得進來：ufw 與雲端安全組都要開 5013, 5023, 5027, 8610/tcp

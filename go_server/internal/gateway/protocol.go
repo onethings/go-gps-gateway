@@ -21,6 +21,7 @@ import (
 	"traccar-server_go/go_server/internal/protocol/mqtt"
 	"traccar-server_go/go_server/internal/protocol/osmand"
 	"traccar-server_go/go_server/internal/protocol/ruptela"
+	"traccar-server_go/go_server/internal/protocol/startek"
 	"traccar-server_go/go_server/internal/protocol/suntech"
 	"traccar-server_go/go_server/internal/protocol/teltonika"
 	"traccar-server_go/go_server/internal/protocol/tk103"
@@ -291,6 +292,19 @@ func DefaultRegistry() *Registry {
 				model.CommandEngineResume, model.CommandEngineStop,
 				model.CommandPositionSingle, model.CommandSetOdometer,
 				model.CommandSetSpeedLimit,
+			},
+		}
+	})
+
+	registry.Add(startek.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            startek.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return &startek.FrameDecoder{} },
+			NewDecoder:      func() codec.Decoder { return startek.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return startek.NewEncoder(base) },
+			DataCommands: []string{
+				model.CommandCustom, model.CommandEngineResume,
+				model.CommandEngineStop, model.CommandOutputControl,
 			},
 		}
 	})

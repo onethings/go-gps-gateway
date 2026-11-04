@@ -3,7 +3,7 @@
 # and checks that the positions reach the log sink. This is the shortest way to
 # prove an install works: it needs no PostgreSQL, no hardware and no root.
 #
-#   ./scripts/smoke.sh            # gt06, h02, jt808, teltonika
+#   ./scripts/smoke.sh            # every bundled protocol scene
 #   SMOKE_PORT_BASE=25000 ./scripts/smoke.sh
 #   SMOKE_SCENES="gt06" ./scripts/smoke.sh
 set -uo pipefail
@@ -15,7 +15,7 @@ bin_dir=${BIN_DIR:-bin}
 gateway=$bin_dir/traccar-gateway
 simulator=$bin_dir/device-sim
 port_base=${SMOKE_PORT_BASE:-15000}
-scenes=${SMOKE_SCENES:-"gt06 h02 jt808 teltonika gt02 gps056 gator"}
+scenes=${SMOKE_SCENES:-"gt06 h02 jt808 teltonika gt02 gps056 gator startek"}
 log=$(mktemp "${TMPDIR:-/tmp}/traccar-smoke.XXXXXX")
 
 gateway_pid=""
@@ -34,6 +34,7 @@ port_for() {
 	gt02) echo $((port_base + 22)) ;;
 	gps056) echo $((port_base + 141)) ;;
 	gator) echo $((port_base + 52)) ;;
+	startek) echo $((port_base + 222)) ;;
 	*) echo "" ;;
 	esac
 }
@@ -60,6 +61,7 @@ echo "==> starting gateway on ports $port_base+ (no database, log sink)"
 	-gt02 "127.0.0.1:$(port_for gt02)" \
 	-gps056 "127.0.0.1:$(port_for gps056)" \
 	-gator "127.0.0.1:$(port_for gator)" \
+	-startek "127.0.0.1:$(port_for startek)" \
 	-http "" \
 	>"$log" 2>&1 &
 gateway_pid=$!

@@ -494,7 +494,7 @@ var Protocols = []string{
 	"osmand", "mqtt",
 	"gps103", "tk103", "meitrack", "wondex",
 	"suntech", "ruptela",
-	"gt02", "gps056", "gator",
+	"gt02", "gps056", "gator", "startek",
 }
 
 // defaults are the compiled-in values, the lowest layer. They match the flag
@@ -574,9 +574,12 @@ var defaultProtocolAddresses = map[string]string{
 	// The two codecs that existed but were not wired into the default list.
 	"suntech": "0.0.0.0:5011",
 	"ruptela": "0.0.0.0:5046",
+
+	// The ports the Java server ships for the same protocols in ProtocolConfig.
 	"gt02":    "0.0.0.0:5022",
 	"gps056":  "0.0.0.0:5141",
 	"gator":   "0.0.0.0:5052",
+	"startek": "0.0.0.0:5222",
 }
 
 // defaultProtocolTransports overrides the tcp default for the protocols that

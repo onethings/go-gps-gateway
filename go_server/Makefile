@@ -3,19 +3,30 @@ GO       ?= go
 BIN_DIR  ?= bin
 PREFIX   ?= $(HOME)/.local
 BINARIES := traccar-gateway device-sim
+WEB_DIR  ?= web
 
 .DEFAULT_GOAL := help
-.PHONY: help build test race vet fmt smoke rest-e2e run run-db run-sqlite install uninstall \
-	docker-check db-up db-down db-up-mysql db-down-mysql docker-build compose-up compose-down \
-	compose-up-mysql compose-down-mysql dist clean
+.PHONY: help build test race vet fmt smoke rest-e2e run run-db run-sqlite web web-check web-e2e \
+	install uninstall docker-check db-up db-down db-up-mysql db-down-mysql docker-build \
+	compose-up compose-down compose-up-mysql compose-down-mysql dist clean
 
 help: ## list the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2}'
 
-build: ## build both binaries into ./bin
+build: web-check ## build both binaries into ./bin
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -o $(BIN_DIR)/ ./cmd/...
+
+web: ## install a traccar-web build into ./web (WEB_SRC=dir-or-zip) or validate the bundled one
+	@if [ -n "$(WEB_SRC)" ]; then ./scripts/fetch-web.sh --from "$(WEB_SRC)" --dest "$(WEB_DIR)"; \
+	else ./scripts/fetch-web.sh --check --dest "$(WEB_DIR)"; fi
+
+web-check: ## validate that ./web is a complete traccar-web build
+	@./scripts/fetch-web.sh --check --dest "$(WEB_DIR)"
+
+web-e2e: ## check the bundled frontend, same-origin login and a device position
+	$(GO) test -count=1 ./internal/api -run TestBundledWebServesLoginAndPositions -v
 
 test: ## run the whole suite
 	$(GO) test ./...
@@ -39,10 +50,10 @@ run: build ## run with no database: positions are logged as JSON
 	./$(BIN_DIR)/traccar-gateway
 
 run-db: build ## run against a database (TRACCAR_DSN=postgres:// / mysql:// / sqlite://)
-	./$(BIN_DIR)/traccar-gateway -dsn "$${DSN:-$${TRACCAR_DSN}}"
+	./$(BIN_DIR)/traccar-gateway -dsn "$${DSN:-$${TRACCAR_DSN}}" -web-path "$(CURDIR)/$(WEB_DIR)"
 
 run-sqlite: build ## run against the embedded SQLite file ./traccar.db
-	./$(BIN_DIR)/traccar-gateway -dsn "sqlite://$(CURDIR)/traccar.db"
+	./$(BIN_DIR)/traccar-gateway -dsn "sqlite://$(CURDIR)/traccar.db" -web-path "$(CURDIR)/$(WEB_DIR)"
 
 install: build ## install the binaries into $(PREFIX)/bin
 	@mkdir -p "$(DESTDIR)$(PREFIX)/bin"

@@ -59,6 +59,9 @@ docker compose down -v
 
 # 同一進程託管 traccar-web（把前端 build 出來的 build 目錄指給 -web-path）
 ./bin/traccar-gateway -dsn "$TRACCAR_DSN" -api-key dev-key -web-path ./web
+
+# VPS（Ubuntu）：systemd + SQLite，--domain 另加 nginx；見「VPS 部署（Ubuntu）」
+sudo ./deploy/ubuntu/install.sh
 ```
 
 ## 設定
@@ -176,11 +179,78 @@ TRACCAR_TEST_DSN='mysql://root@127.0.0.1:3306/traccar' go test ./internal/storag
 TRACCAR_TEST_DSN='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' go test ./internal/storage
 ```
 
-## VPS 部署（MySQL + traccar-web）
+## VPS 部署（Ubuntu）
 
-不想自己拉 nginx 時，Go 進程可以直接託管前端：把 traccar-web 的 build（`index.html` 與
-assets）放到一個目錄，`-web-path` 指過去即可；`/api/*` 仍由同一進程處理，session cookie
-與 WebSocket 都是同源。
+`deploy/ubuntu/install.sh` 把下面幾節的步驟收成一支腳本：需要的話安裝 Go、建立 `traccar`
+系統帳號、編譯並安裝 binary、複製 traccar-web build、寫 `/etc/traccar/traccar.xml`
+（含隨機 `api.key`）、安裝並啟動 systemd unit，最後等 `/api/health` 回 200 才結束。
+
+```bash
+# 1. 把 repo 放到 VPS（git clone，或本機 rsync/scp 上傳）
+git clone https://github.com/onethings/traccar-server_go.git
+cd traccar-server_go
+
+# 2. 一鍵安裝：SQLite + systemd，Web/API 開在 0.0.0.0:8082
+sudo ./go_server/deploy/ubuntu/install.sh
+
+# 3. 開 http://<VPS-IP>:8082/ ，註冊第一個帳號（會成為 administrator）
+```
+
+常用變化：
+
+| 需求 | 指令 |
+| --- | --- |
+| 網域 + nginx（gateway 只聽 `127.0.0.1:8082`，nginx 反向代理並終結 TLS） | `sudo ./go_server/deploy/ubuntu/install.sh --domain tracker.example.com` |
+| Let's Encrypt TLS | `sudo apt-get install -y certbot python3-certbot-nginx && sudo certbot --nginx -d tracker.example.com` |
+| MySQL / PostgreSQL（先建好 DB 與帳號） | `--dsn 'mysql://traccar:密碼@127.0.0.1:3306/traccar'`、`--dsn 'postgres://traccar:密碼@127.0.0.1:5432/traccar?sslmode=disable'` |
+| 在本機（macOS）編譯後只上傳執行檔 | `GOOS=linux GOARCH=amd64 go build -o tg ./go_server/cmd/traccar-gateway`，`scp tg vps:` 後 `sudo ./go_server/deploy/ubuntu/install.sh --binary ./tg` |
+| 升級 | `git pull && sudo ./go_server/deploy/ubuntu/install.sh`（設定檔保留；`--force` 才重寫並換 `api.key`） |
+
+安裝後的檔案：
+
+| 路徑 | 內容 |
+| --- | --- |
+| `/opt/traccar/bin/traccar-gateway` | 執行檔（升級時覆蓋） |
+| `/opt/traccar/web` | traccar-web build；同時是 `POST /api/server/file/{path}` 的寫入根目錄 |
+| `/opt/traccar/data/traccar.db` | 預設 SQLite 資料庫（`--dsn` 可換 PostgreSQL / MySQL） |
+| `/etc/traccar/traccar.xml` | `web.address`、`database.url`、`web.path`、`media.path`、`api.key` |
+| `/etc/traccar/api-key` | 隨機產生的 admin API key（`0640 root:traccar`） |
+| `/etc/systemd/system/traccar-gateway.service` | systemd unit（`ProtectSystem=strict`，只放行 `data` / `web` 可寫） |
+
+日常操作：
+
+```bash
+sudo systemctl status traccar-gateway
+sudo journalctl -u traccar-gateway -f
+curl -H "X-Api-Key: $(sudo cat /etc/traccar/api-key)" http://127.0.0.1:8082/api/health
+sudo systemctl restart traccar-gateway
+```
+
+設備要連得進來，除了 22/80/443，ufw 與雲端安全組都要開協議埠：
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw allow 80,443/tcp
+sudo ufw allow 5013,5023,5027,8610/tcp        # H02 / GT06 / Teltonika / JT808
+sudo ufw allow 5055,1883/tcp                  # OsmAnd / MQTT
+sudo ufw allow 5001,5002,5006,5011,5020,5046/tcp
+sudo timedatectl set-timezone Asia/Taipei     # H02 / GT06 的對時與編碼用本地時間
+```
+
+移除：
+
+```bash
+sudo systemctl disable --now traccar-gateway
+sudo rm /etc/systemd/system/traccar-gateway.service
+sudo rm -rf /opt/traccar /etc/traccar
+sudo userdel traccar
+```
+
+### 手動部署（MySQL + traccar-web）
+
+不想用腳本、也不想自己架 nginx 時，Go 進程可以直接託管前端：把 traccar-web 的 build
+（`index.html` 與 assets）放到一個目錄，`-web-path` 指過去即可；`/api/*` 仍由同一進程處理，
+session cookie 與 WebSocket 都是同源。
 
 1. 建 MySQL 資料庫與專用帳號（8.0+）：
 
@@ -235,6 +305,70 @@ assets）放到一個目錄，`-web-path` 指過去即可；`/api/*` 仍由同�
    curl -H 'X-Api-Key: ...' http://127.0.0.1:8082/api/health
    DSN='mysql://traccar:改成強密碼@127.0.0.1:3306/traccar' ./scripts/rest-e2e.sh
    ```
+
+## 打包與發佈（release zip）
+
+`make dist` 把 linux/amd64 與 linux/arm64 的執行檔、traccar-web build 與 Ubuntu 安裝腳本
+打包成一個 zip；目標機器不需要 Go，也不需要原始碼。
+
+```bash
+make dist                    # → dist/traccar-server-go_<git describe>.zip (+ .sha256)
+make dist VERSION=v0.1.0     # 指定版本
+```
+
+zip 內容與用法：
+
+```
+traccar-server-go_<version>/
+├── install.sh
+├── bin/linux-amd64/traccar-gateway
+├── bin/linux-arm64/traccar-gateway
+├── web/
+├── traccar-gateway.service.in
+├── nginx.conf.in
+└── INSTALL.txt
+```
+
+```bash
+unzip traccar-server-go_0.1.0.zip && cd traccar-server-go_0.1.0
+sudo ./install.sh            # 架構由 uname -m 自動選 bin/linux-<arch>/
+```
+
+發佈到另一個公開 repo，兩種都行：
+
+**Release asset**（建議；repo 不必放原始碼，下載走 CDN）：
+
+```bash
+gh auth login          # 只需要一次，需在沙箱外執行
+./scripts/publish-release.sh <你的帳號>/<公開專案> v0.1.0
+```
+
+`publish-release.sh` 會在 repo 不存在時先 `gh repo create --public --add-readme`，再把
+`dist/*.zip` 與 `dist/*.zip.sha256` 上傳成 release asset（同 tag 已存在時改用 `gh release upload --clobber`）。
+
+```bash
+BASE=https://github.com/<你的帳號>/<公開專案>/releases/download/v0.1.0
+curl -L -O "$BASE/traccar-server-go_0.1.0.zip"
+curl -L -O "$BASE/traccar-server-go_0.1.0.zip.sha256"
+sha256sum -c traccar-server-go_0.1.0.zip.sha256
+unzip traccar-server-go_0.1.0.zip && cd traccar-server-go_0.1.0 && sudo ./install.sh
+```
+
+**直接提交進 repo**（`git add` 或網頁上傳 zip 與 `.sha256`；檔案不大時最省事）：
+
+```bash
+BASE=https://raw.githubusercontent.com/<你的帳號>/<公開專案>/main
+curl -L -O "$BASE/traccar-server-go_0.1.0.zip"
+curl -L -O "$BASE/traccar-server-go_0.1.0.zip.sha256"
+sha256sum -c traccar-server-go_0.1.0.zip.sha256
+unzip traccar-server-go_0.1.0.zip && cd traccar-server-go_0.1.0 && sudo ./install.sh
+```
+
+macOS 沒有 `sha256sum`，用 `shasum -a 256 -c`。
+
+> raw 路徑只適合小檔案（單檔上限 100 MB）；之後版本變大或要版本紀錄，再改用 release asset。
+
+目前公開下載點：`onethings/tra-server-go-releases-fortesting`。
 
 ## REST API
 

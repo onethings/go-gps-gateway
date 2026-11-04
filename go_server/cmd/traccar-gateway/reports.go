@@ -18,16 +18,6 @@ func reportConfig(cfg *config.Config) report.Config {
 		return settings
 	}
 
-	readInt := func(key string, target *int) {
-		value, err := cfg.Int(key)
-		if err != nil {
-			log.Printf("report: %v", err)
-			return
-		}
-		if value > 0 {
-			*target = value
-		}
-	}
 	// report.maxPositions is the one report key where zero is meaningful: the
 	// Java server documents it as "no limit", which this layer spells as -1.
 	switch value, err := cfg.Int(config.ReportMaxPositions); {

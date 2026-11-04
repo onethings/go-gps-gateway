@@ -7,7 +7,7 @@ BINARIES := traccar-gateway device-sim
 .DEFAULT_GOAL := help
 .PHONY: help build test race vet fmt smoke rest-e2e run run-db run-sqlite install uninstall \
 	docker-check db-up db-down db-up-mysql db-down-mysql docker-build compose-up compose-down \
-	compose-up-mysql compose-down-mysql clean
+	compose-up-mysql compose-down-mysql dist clean
 
 help: ## list the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -88,5 +88,8 @@ compose-up-mysql: docker-check ## start gateway + MySQL with traccar-web in ./we
 compose-down-mysql: ## stop the MySQL stack and drop its volume
 	docker compose -f docker-compose.mysql.yml down -v
 
-clean: ## remove ./bin
-	rm -rf $(BIN_DIR)
+dist: ## build the self-contained Linux release zip into ./dist (amd64 + arm64)
+	GO=$(GO) VERSION=$(VERSION) ./scripts/package-release.sh
+
+clean: ## remove ./bin and ./dist
+	rm -rf $(BIN_DIR) dist

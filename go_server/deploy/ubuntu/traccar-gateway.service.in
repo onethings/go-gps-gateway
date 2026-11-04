@@ -1,0 +1,33 @@
+[Unit]
+Description=Traccar Go gateway
+Documentation=https://github.com/onethings/traccar-server_go
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@PREFIX@
+ExecStart=@PREFIX@/bin/traccar-gateway -config @CONF_DIR@/traccar.xml
+Restart=on-failure
+RestartSec=3s
+
+# Device connections are one goroutine each; the default 1024 is too low for a
+# busy gateway.
+LimitNOFILE=65536
+
+# SIGTERM flushes the position batch sink before the process exits.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# web.path is the upload root as well as the served front end, so the service
+# account needs to write there.
+ReadWritePaths=@PREFIX@/data @PREFIX@/web
+
+[Install]
+WantedBy=multi-user.target

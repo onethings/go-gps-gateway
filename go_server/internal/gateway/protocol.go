@@ -121,7 +121,13 @@ func DefaultRegistry() *Registry {
 			NewDecoder:      func() codec.Decoder { return gt06.NewDecoder(base) },
 			NewEncoder:      func() codec.Encoder { return gt06.NewEncoder(base) },
 			TextCommands: []string{
-				model.CommandEngineStop, model.CommandEngineResume, model.CommandCustom,
+				model.CommandEngineStop, model.CommandEngineResume,
+				model.CommandConfiguration, model.CommandCustom, model.CommandFactoryReset,
+				model.CommandGetDeviceStatus, model.CommandGetVersion,
+				model.CommandPositionPeriodic, model.CommandPositionSingle, model.CommandPositionStop,
+				model.CommandPowerOff, model.CommandRebootDevice,
+				model.CommandSetConnection, model.CommandSetPhonebook, model.CommandSOSNumber,
+				model.CommandVoiceMonitoring,
 			},
 		}
 	})

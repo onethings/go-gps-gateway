@@ -48,7 +48,7 @@ func TestRouterEncodeUnsupported(t *testing.T) {
 	}
 	router := gateway.NewRouter(gateway.DefaultRegistry(), directory)
 
-	_, err := router.EncodeCommand("gt06", model.NewCommand(1, model.CommandPositionSingle))
+	_, err := router.EncodeCommand("gt06", model.NewCommand(1, model.CommandAlarmArm))
 	if !errors.Is(err, gateway.ErrCommandUnsupported) {
 		t.Fatalf("err = %v, want ErrCommandUnsupported", err)
 	}
@@ -244,5 +244,93 @@ func TestRouterEncodesEveryAdvertisedJT808Command(t *testing.T) {
 		if _, err := router.EncodeCommand("jt808", command); err != nil {
 			t.Errorf("%s: %v", commandType, err)
 		}
+	}
+}
+
+// TestRouterEncodesEveryAdvertisedGT06Command is the same pin for GT06: every
+// type the REST layer advertises must be buildable by the encoder.
+func TestRouterEncodesEveryAdvertisedGT06Command(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("864717003283581", "gt06"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory, gateway.WithConfig(func(_, key string) string {
+		switch key {
+		case "alternative":
+			return "true"
+		case "language":
+			return "true"
+		case "devicePassword":
+			return "secret"
+		}
+		return ""
+	}))
+
+	// The parameters each command needs to be buildable at all.
+	attributes := map[string]map[string]any{
+		model.CommandPositionPeriodic: {"frequency": 60},
+		model.CommandSOSNumber:        {"index": 0, "phone": "10086"},
+		model.CommandSetPhonebook:     {"index": 1, "phone": "10086"},
+		model.CommandVoiceMonitoring:  {"phone": "10086"},
+		model.CommandSetConnection:    {"server": "gps.example.com", "port": 5023},
+		model.CommandCustom:           {"data": "WHERE#"},
+	}
+
+	advertised, ok := router.SupportedCommands("gt06", true)
+	if !ok {
+		t.Fatal("gt06 is not registered")
+	}
+	if len(advertised) != 16 {
+		t.Fatalf("advertised %d commands, want 16: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		command := model.NewCommand(1, commandType)
+		for key, value := range attributes[commandType] {
+			command.SetAttribute(key, value)
+		}
+		if _, err := router.EncodeCommand("gt06", command); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}
+
+// TestRouterGT06EngineStopLayouts covers the two engine layouts the
+// configuration and the device model select.
+func TestRouterGT06EngineStopLayouts(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("864717003283581", "gt06"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory, gateway.WithConfig(func(_, key string) string {
+		switch key {
+		case "alternative":
+			return "true"
+		case "devicePassword":
+			return "secret"
+		}
+		return ""
+	}))
+
+	encode := func() string {
+		t.Helper()
+		payload, err := router.EncodeCommand("gt06", model.NewCommand(1, model.CommandEngineStop))
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		if len(payload) < 15 {
+			t.Fatalf("payload = %x", payload)
+		}
+		return string(payload[9 : 5+int(payload[4])])
+	}
+
+	if got := encode(); got != "DYD,secret#" {
+		t.Fatalf("content = %q, want %q", got, "DYD,secret#")
+	}
+
+	if err := directory.SetModel("864717003283581", "G109"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	if got := encode(); got != "DYD#" {
+		t.Fatalf("content = %q, want %q", got, "DYD#")
 	}
 }

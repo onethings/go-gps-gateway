@@ -470,15 +470,22 @@ const (
 	ProtocolTransport = "transport"
 	// ProtocolAlternative selects a protocol's alternative command layout.
 	// JT808 reads it: the engine control becomes the oil control message some
-	// terminals need.
+	// terminals need. GT06 reads it: the engine control becomes the DYD/HFYD
+	// form that carries the device password.
 	ProtocolAlternative = "alternative"
+	// ProtocolLanguage appends the optional english language field to a GT06
+	// command frame.
+	ProtocolLanguage = "language"
+	// ProtocolDevicePassword is the device password a GT06 device falls back to
+	// when it has none of its own. Empty means the factory default.
+	ProtocolDevicePassword = "devicePassword"
 )
 
 // ProtocolKeys is the set of keys Protocol resolves. Only these can be set per
 // protocol, which keeps the resolution order documented and testable.
 var ProtocolKeys = []string{
 	ProtocolAddress, ProtocolPort, ProtocolTimeout, ProtocolRegisterUnknown, ProtocolTransport,
-	ProtocolAlternative,
+	ProtocolAlternative, ProtocolLanguage, ProtocolDevicePassword,
 }
 
 // Protocols are the sections the gateway ships protocol servers for.

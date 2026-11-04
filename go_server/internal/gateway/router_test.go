@@ -453,6 +453,48 @@ func TestRouterEncodesEveryAdvertisedTk103Command(t *testing.T) {
 	}
 }
 
+// TestRouterEncodesEveryAdvertisedMeitrackCommand is the same pin for
+// Meitrack: every advertised type must be buildable by the encoder.
+func TestRouterEncodesEveryAdvertisedMeitrackCommand(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("123456789012345", "meitrack"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory, gateway.WithConfig(func(_, key string) string {
+		if key == "alternative" {
+			return "true"
+		}
+		return ""
+	}))
+
+	// The parameters each command needs to be buildable at all.
+	attributes := map[string]map[string]any{
+		model.CommandCustom:       {model.CmdKeyData: "H,080"},
+		model.CommandRequestPhoto: {model.CmdKeyIndex: 1},
+		model.CommandSendSMS: {
+			model.CmdKeyPhone:   "15360853789",
+			model.CmdKeyMessage: "Meitrack",
+		},
+	}
+
+	advertised, ok := router.SupportedCommands("meitrack", true)
+	if !ok {
+		t.Fatal("meitrack is not registered")
+	}
+	if len(advertised) != 8 {
+		t.Fatalf("advertised %d commands, want 8: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		command := model.NewCommand(1, commandType)
+		for key, value := range attributes[commandType] {
+			command.SetAttribute(key, value)
+		}
+		if _, err := router.EncodeCommand("meitrack", command); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}
+
 // TestRouterGT06EngineStopLayouts covers the two engine layouts the
 // configuration and the device model select.
 func TestRouterGT06EngineStopLayouts(t *testing.T) {

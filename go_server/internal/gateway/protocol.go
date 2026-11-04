@@ -189,6 +189,12 @@ func DefaultRegistry() *Registry {
 			Name:            meitrack.ProtocolName,
 			NewFrameDecoder: func() codec.FrameDecoder { return &meitrack.FrameDecoder{} },
 			NewDecoder:      func() codec.Decoder { return meitrack.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return meitrack.NewEncoder(base) },
+			TextCommands: []string{
+				model.CommandAlarmArm, model.CommandAlarmDisarm, model.CommandCustom,
+				model.CommandEngineResume, model.CommandEngineStop, model.CommandPositionSingle,
+				model.CommandRequestPhoto, model.CommandSendSMS,
+			},
 		}
 	})
 

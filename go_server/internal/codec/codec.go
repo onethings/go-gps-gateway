@@ -162,6 +162,13 @@ type Base struct {
 	// Ack enables the optional acknowledgement frames that some protocols only
 	// send when explicitly enabled by configuration.
 	Ack bool
+	// Config resolves one configuration key for the encoder's protocol, already
+	// through the documented per protocol chain. It exists for the encoders
+	// whose command layout depends on a setting (the JT808 alternative engine
+	// control, the address a terminal is told to stream video to). Nil means no
+	// configuration is available, which is the case in tests and whenever the
+	// command types are listed without a running server.
+	Config func(key string) string
 }
 
 // NextSerial returns the serial for one downlink frame.

@@ -26,6 +26,13 @@ const (
 	// DisableShare refuses POST /api/share/*. The Java server keeps the same
 	// switch as a server attribute named disableShare.
 	DisableShare = "disableShare"
+	// WebURL is the public address of this server. JT808 uses its host when it
+	// tells a terminal where to stream video.
+	WebURL = "web.url"
+	// JT1078Port is the port a terminal streams JT1078 video to. The gateway
+	// runs no JT1078 listener, so this key only feeds the JT808 videoStart
+	// command.
+	JT1078Port = "jt1078.port"
 
 	// Alert rules.
 	AlertOverspeedKnots  = "alert.overspeedKnots"  // Go only
@@ -273,6 +280,8 @@ var KnownKeys = []string{
 	APILoginMaxFailures,
 	APILoginLockout,
 	DisableShare,
+	WebURL,
+	JT1078Port,
 
 	AlertOverspeedKnots,
 	AlertPowerCutVolts,
@@ -459,12 +468,17 @@ const (
 	ProtocolRegisterUnknown = "registerUnknown"
 	// ProtocolTransport is the listen transport: tcp (the default), udp or tls.
 	ProtocolTransport = "transport"
+	// ProtocolAlternative selects a protocol's alternative command layout.
+	// JT808 reads it: the engine control becomes the oil control message some
+	// terminals need.
+	ProtocolAlternative = "alternative"
 )
 
 // ProtocolKeys is the set of keys Protocol resolves. Only these can be set per
 // protocol, which keeps the resolution order documented and testable.
 var ProtocolKeys = []string{
 	ProtocolAddress, ProtocolPort, ProtocolTimeout, ProtocolRegisterUnknown, ProtocolTransport,
+	ProtocolAlternative,
 }
 
 // Protocols are the sections the gateway ships protocol servers for.

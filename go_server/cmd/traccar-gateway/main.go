@@ -477,7 +477,9 @@ func main() {
 		}
 	}
 
-	router := gateway.NewRouter(registry, directory)
+	router := gateway.NewRouter(registry, directory, gateway.WithConfig(
+		func(protocol, key string) string { return settings.Config.Protocol(protocol).String(key) },
+	))
 
 	// The session manager owns devices.status and the online / offline events.
 	// It is created after the router because the timeout has to close the

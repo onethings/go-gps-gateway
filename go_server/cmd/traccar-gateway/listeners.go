@@ -134,6 +134,11 @@ func (l *listenerSet) newServer(protocol config.ProtocolSettings) (*gateway.Serv
 	if l.sessions != nil {
 		options = append(options, gateway.WithSessionTracker(l.sessions))
 	}
+	if l.config != nil {
+		options = append(options, gateway.WithProtocolConfig(
+			func(key string) string { return l.config.Protocol(protocol.Name).String(key) },
+		))
+	}
 	return gateway.NewServer(l.registry, protocol.Name, l.directory, l.sink, options...)
 }
 

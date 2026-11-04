@@ -63,6 +63,9 @@ type Server struct {
 	maxFrameSize int
 	readTimeout  time.Duration
 	autoRegister bool
+	// protocolConfig resolves a configuration key for the encoders this server
+	// builds outside the router, which is the poll transport.
+	protocolConfig func(key string) string
 
 	// Pre-resolved instruments keep the per frame path lock free.
 	connections  *metrics.Gauge
@@ -122,6 +125,15 @@ func WithSessionTracker(tracker SessionTracker) Option {
 	}
 }
 
+// WithProtocolConfig gives this server's encoders the configuration lookup.
+// The poll transport builds its command without going through the router, so
+// it needs the same per-protocol settings there.
+func WithProtocolConfig(lookup func(key string) string) Option {
+	return func(s *Server) {
+		s.protocolConfig = lookup
+	}
+}
+
 // WithMetrics publishes connection, frame and position counters.
 func WithMetrics(set *metrics.Set) Option {
 	return func(s *Server) {
@@ -165,6 +177,7 @@ func NewServer(
 		Resolver:     s.sessionResolver(),
 		LastLocation: s.locations,
 		UniqueIDs:    directory,
+		Config:       s.protocolConfig,
 	}
 	return s, nil
 }

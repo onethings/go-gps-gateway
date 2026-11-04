@@ -133,10 +133,13 @@ func DefaultRegistry() *Registry {
 			NewDecoder:      func() codec.Decoder { return jt808.NewDecoder(base) },
 			NewEncoder:      func() codec.Encoder { return jt808.NewEncoder(base) },
 			DataCommands: []string{
-				model.CommandPositionSingle, model.CommandPositionStop,
-				model.CommandRebootDevice, model.CommandPositionPeriodic,
+				model.CommandCustom, model.CommandConfiguration, model.CommandRebootDevice,
+				model.CommandPositionPeriodic, model.CommandPositionSingle, model.CommandPositionStop,
 				model.CommandAlarmArm, model.CommandAlarmDisarm, model.CommandAlarmDismiss,
-				model.CommandEngineStop, model.CommandEngineResume, model.CommandCustom,
+				model.CommandEngineStop, model.CommandEngineResume, model.CommandSetConnection,
+				model.CommandPowerOff, model.CommandFactoryReset, model.CommandMessage,
+				model.CommandVoiceMessage, model.CommandRequestPhoto, model.CommandSetSpeedLimit,
+				model.CommandOutputControl, model.CommandVideoStart, model.CommandVideoStop,
 			},
 		}
 	})

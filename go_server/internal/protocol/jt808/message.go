@@ -35,6 +35,15 @@ const (
 	msgLocationQuery        = 0x8201
 	msgTemporaryTracking    = 0x8202
 	msgAlarmAck             = 0x8203
+	msgConfigurationParams  = 0x8103
+	msgParameterQueryAll    = 0x8104
+	msgSendTextMessage      = 0x8300
+	msgVehicleControl       = 0x8500
+	msgTakePhoto            = 0x8801
+	msgTransparentDownlink  = 0x8900
+	msgVideoRequest         = 0x9101
+	msgVideoControl         = 0x9102
+	msgOilControl           = 0xa006
 	msgResultSuccess        = 0x00
 )
 
@@ -115,7 +124,20 @@ func decodeID(id []byte) string {
 	return strconv.FormatInt(imei, 10) + strconv.Itoa(helper.Luhn(imei))
 }
 
-// encodeID builds the terminal identifier bytes in the given width.
+// idWidth reports the terminal identifier width a downlink frame must use.
+// A JT808-2019 terminal registers a ten byte identifier, which decodeID
+// renders as twenty hexadecimal digits, so the stored identifier tells the
+// encoder which header layout the device expects.
+func idWidth(uniqueID string) int {
+	if len(uniqueID) == 20 {
+		return 10
+	}
+	return 6
+}
+
+// encodeID builds the terminal identifier bytes in the given width. A six byte
+// identifier is twelve hexadecimal digits or the decimal IMEI that decodeID
+// renders for a binary identifier, with the Luhn digit it appends.
 func encodeID(uniqueID string, length int) ([]byte, error) {
 	if length == 10 {
 		padded := fmt.Sprintf("%20s", uniqueID)
@@ -127,10 +149,14 @@ func encodeID(uniqueID string, length int) ([]byte, error) {
 		}
 		return hex.DecodeString(string(out))
 	}
-	if len(uniqueID)%2 == 0 {
+	if len(uniqueID) == 12 {
 		return hex.DecodeString(uniqueID)
 	}
-	imei, err := strconv.ParseInt(uniqueID[:len(uniqueID)-1], 10, 64)
+	digits := uniqueID
+	if len(digits) > 15 {
+		digits = digits[:15]
+	}
+	imei, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil {
 		return nil, err
 	}

@@ -199,3 +199,50 @@ func TestServerReconnectClosesPrevious(t *testing.T) {
 		t.Fatal("online = false after the previous connection closed")
 	}
 }
+
+// TestRouterEncodesEveryAdvertisedJT808Command pins that the command list the
+// REST layer advertises is exactly the list the encoder can build. A command
+// that /api/commands/types offers but the encoder refuses is a dead entry in
+// the web interface.
+func TestRouterEncodesEveryAdvertisedJT808Command(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("013800138000", "jt808"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory, gateway.WithConfig(func(_, key string) string {
+		switch key {
+		case "web.url":
+			return "http://video.example.com:8082"
+		case "jt1078.port":
+			return "1078"
+		}
+		return ""
+	}))
+
+	// The parameters each command needs to be buildable at all.
+	attributes := map[string]map[string]any{
+		model.CommandPositionPeriodic: {"frequency": 60},
+		model.CommandSetConnection:    {"server": "example.com", "port": 5027},
+		model.CommandMessage:          {"message": "text"},
+		model.CommandVoiceMessage:     {"message": "text"},
+		model.CommandSetSpeedLimit:    {"data": 80},
+		model.CommandCustom:           {"data": "7e0200000000"},
+	}
+
+	advertised, ok := router.SupportedCommands("jt808", false)
+	if !ok {
+		t.Fatal("jt808 is not registered")
+	}
+	if len(advertised) != 21 {
+		t.Fatalf("advertised %d commands, want 21: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		command := model.NewCommand(1, commandType)
+		for key, value := range attributes[commandType] {
+			command.SetAttribute(key, value)
+		}
+		if _, err := router.EncodeCommand("jt808", command); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}

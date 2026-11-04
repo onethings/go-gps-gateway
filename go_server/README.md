@@ -108,6 +108,7 @@ Config / environment only:
 | Position attribute copy | `position.copyAttributes` (comma separated; empty = off) |
 | Device images | `deviceImage.path` (default `<media.path>/devices`) |
 | HLS streaming | `stream.path` (an external generator writes `<path>/<deviceId>/index.m3u8`) |
+| JT808 command layouts | `protocol.jt808.alternative` = true sends engine control as the oil control message some terminals need; `web.url` and `jt1078.port` fill the videoStart command (the gateway runs no JT1078 listener) |
 | Redis push | `redis.url`, `redis.channel` (default `traccar`) |
 | OpenID Connect | `openid.{enable,issuer,clientId,clientSecret,redirectUrl,scopes,createMissing,successUrl}` |
 | LDAP | `ldap.{url,user,password,base,idAttribute,searchFilter,nameAttribute,mailAttribute,timeout}` (`ldap.userFilter` kept as alias) |
@@ -123,7 +124,7 @@ Config / environment only:
 | --- | --- | --- |
 | H02 | text `V1/V3/V4/V5/V6/V8/V19`, `NBR`, `LINK`, `VP1`, `HTBT`, `SMS`, heartbeat; binary 32/45-byte frames, `X` frames, `R12` replies | — |
 | GT06 | login / heartbeat / GPS-LBS, `0x2A` address, `0x8A` time sync, `0x94` voltage, CRC16/X25 ACK, `NT_MODELS` layouts | WiFi scan, ADAS/DMS |
-| JT808 | 2013/2019 headers, `0x7E` escaping, XOR, register / position / batch position (`0x0704`, `0x0210`), heartbeat / ICCID / time sync | driver card, parameters, pass-through, ADAS/DMS/TPMS/OBD |
+| JT808 | 2013/2019 headers, `0x7E` escaping, XOR, register / position / batch position (`0x0704`, `0x0210`), heartbeat / ICCID / time sync; all 21 downlink commands from the reference encoder, including the model specific custom and engine layouts | driver card, parameters, pass-through, ADAS/DMS/TPMS/OBD |
 | Teltonika | IMEI handshake, Codec 8 / 8E / 12 / 13, variable-length elements, LAC/CID | Codec 7/16, BLE |
 | OsmAnd, MQTT | OsmAnd query string; MQTT 3.1.1 reuses the same decoder | — |
 | GPS103, TK103 | `imei:` text sentence, decimal degrees + hemisphere | — |

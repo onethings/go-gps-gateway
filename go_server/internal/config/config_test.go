@@ -468,7 +468,11 @@ func TestReportMaxPositionsIsPortable(t *testing.T) {
 	}
 
 	// Environment wins over the file, like every other key.
-	if value, err := Load(path, []string{"TRACCAR_REPORT_MAX_POSITIONS=7"}).Int(ReportMaxPositions); err != nil || value != 7 {
+	fromEnv, err := Load(path, []string{"TRACCAR_REPORT_MAX_POSITIONS=7"})
+	if err != nil {
+		t.Fatalf("load with environment: %v", err)
+	}
+	if value, err := fromEnv.Int(ReportMaxPositions); err != nil || value != 7 {
 		t.Errorf("report.maxPositions = %d (%v), want 7 from the environment", value, err)
 	}
 

@@ -21,19 +21,37 @@ var (
 type Router struct {
 	registry *Registry
 	base     codec.Base
+	config   func(protocol, key string) string
 
 	mu      sync.RWMutex
 	servers map[string]*Server
 }
 
+// RouterOption configures a router.
+type RouterOption func(*Router)
+
+// WithConfig lets the encoders read the server configuration. The lookup
+// receives the protocol name so it can resolve the documented chain
+// (protocol.<name>.<key>, <name>.<key>, protocol.<key>, <key>); only the
+// protocols whose command layout depends on a setting use it.
+func WithConfig(lookup func(protocol, key string) string) RouterOption {
+	return func(r *Router) {
+		r.config = lookup
+	}
+}
+
 // NewRouter builds a router. The registry supplies the encoders and the
 // directory supplies the unique id every encoder needs to address a device.
-func NewRouter(registry *Registry, directory DeviceDirectory) *Router {
-	return &Router{
+func NewRouter(registry *Registry, directory DeviceDirectory, options ...RouterOption) *Router {
+	router := &Router{
 		registry: registry,
 		base:     codec.Base{Resolver: directory, UniqueIDs: directory},
 		servers:  make(map[string]*Server),
 	}
+	for _, option := range options {
+		option(router)
+	}
+	return router
 }
 
 // register attaches a running protocol server.
@@ -68,7 +86,11 @@ func (r *Router) EncodeCommand(protocol string, command *model.Command) ([]byte,
 		return nil, fmt.Errorf("%w: %s", ErrUnknownProtocol, protocol)
 	}
 
-	encoder := factory(r.base).NewEncoder()
+	base := r.base
+	if r.config != nil {
+		base.Config = func(key string) string { return r.config(protocol, key) }
+	}
+	encoder := factory(base).NewEncoder()
 	if encoder == nil {
 		return nil, fmt.Errorf("%w: %s has no encoder", ErrCommandUnsupported, protocol)
 	}

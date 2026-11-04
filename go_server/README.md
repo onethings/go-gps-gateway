@@ -123,7 +123,7 @@ Config / environment only:
 
 | Protocol | Covered | Missing |
 | --- | --- | --- |
-| H02 | text `V1/V3/V4/V5/V6/V8/V19`, `NBR`, `LINK`, `VP1`, `HTBT`, `SMS`, heartbeat; binary 32/45-byte frames, `X` frames, `R12` replies | — |
+| H02 | text `V1/V3/V4/V5/V6/V8/V19`, `NBR`, `LINK`, `VP1`, `HTBT`, `SMS`, heartbeat; binary 32/45-byte frames, `X` frames, `R12` replies; encoder covers the H02 downlink set (`SCF` arm/disarm, `S20` engine control, `S71` reporting interval, the `D1` interval when `protocol.h02.alternative` is set, raw custom) | — |
 | GT06 | login / heartbeat / GPS-LBS, `0x2A` address, `0x8A` time sync, `0x94` voltage, CRC16/X25 ACK, `NT_MODELS` layouts; encoder covers the Concox downlink set (`WHERE`, `TIMER`, `Relay`/`DYD`/`HFYD`, `RESET`, `FACTORY`, `POWEROFF`, `STATUS`, `VERSION`, `PARAM`, `SOS`/`CENTER`/`LISTEN`, `SERVER`/`DOMAIN`, raw custom), with the G109 `DYD`/`HFYD` engine layout | WiFi scan, ADAS/DMS |
 | JT808 | 2013/2019 headers, `0x7E` escaping, XOR, register / position / batch position (`0x0704`, `0x0210`), heartbeat / ICCID / time sync; all 21 downlink commands from the reference encoder, including the model specific custom and engine layouts | driver card, parameters, pass-through, ADAS/DMS/TPMS/OBD |
 | Teltonika | IMEI handshake, Codec 8 / 8E / 12 / 13, variable-length elements, LAC/CID | Codec 7/16, BLE |

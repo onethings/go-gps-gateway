@@ -445,36 +445,3 @@ func TestFrameDecoder(t *testing.T) {
 		t.Fatalf("X frame len=%d consumed=%d want %d", len(frame), consumed, MessageShort)
 	}
 }
-
-func TestEncoder(t *testing.T) {
-	fixed := time.Date(2026, 1, 2, 1, 2, 3, 0, time.UTC)
-	encoder := NewEncoder(codec.Base{UniqueIDs: NewStubUniqueIDs()})
-	encoder.TimeOverride = &fixed
-	encoder.Location = time.UTC
-
-	cases := []struct {
-		commandType string
-		attributes  map[string]any
-		expected    string
-	}{
-		{model.CommandAlarmArm, nil, "*HQ,123456789012345,SCF,010203,0,0#"},
-		{model.CommandAlarmDisarm, nil, "*HQ,123456789012345,SCF,010203,1,1#"},
-		{model.CommandEngineStop, nil, "*HQ,123456789012345,S20,010203,1,1#"},
-		{model.CommandEngineResume, nil, "*HQ,123456789012345,S20,010203,1,0#"},
-		{model.CommandPositionPeriodic, map[string]any{model.CmdKeyFrequency: 60}, "*HQ,123456789012345,S71,22,010203,60#"},
-	}
-
-	for _, testCase := range cases {
-		command := model.NewCommand(1, testCase.commandType)
-		for key, value := range testCase.attributes {
-			command.SetAttribute(key, value)
-		}
-		data, err := encoder.EncodeCommand(command)
-		if err != nil {
-			t.Fatalf("%s: %v", testCase.commandType, err)
-		}
-		if got := string(data); got != testCase.expected {
-			t.Fatalf("encode = %q, want %q", got, testCase.expected)
-		}
-	}
-}

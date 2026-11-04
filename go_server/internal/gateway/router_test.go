@@ -294,6 +294,44 @@ func TestRouterEncodesEveryAdvertisedGT06Command(t *testing.T) {
 	}
 }
 
+// TestRouterEncodesEveryAdvertisedH02Command is the same pin for H02: every
+// type the REST layer advertises must be buildable by the encoder.
+func TestRouterEncodesEveryAdvertisedH02Command(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("123456789012345", "h02"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory, gateway.WithConfig(func(_, key string) string {
+		if key == "alternative" {
+			return "true"
+		}
+		return ""
+	}))
+
+	// The parameters each command needs to be buildable at all.
+	attributes := map[string]map[string]any{
+		model.CommandPositionPeriodic: {"frequency": 60},
+		model.CommandCustom:           {"data": "*HQ,123456789012345,S18,120000,60#"},
+	}
+
+	advertised, ok := router.SupportedCommands("h02", true)
+	if !ok {
+		t.Fatal("h02 is not registered")
+	}
+	if len(advertised) != 6 {
+		t.Fatalf("advertised %d commands, want 6: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		command := model.NewCommand(1, commandType)
+		for key, value := range attributes[commandType] {
+			command.SetAttribute(key, value)
+		}
+		if _, err := router.EncodeCommand("h02", command); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}
+
 // TestRouterGT06EngineStopLayouts covers the two engine layouts the
 // configuration and the device model select.
 func TestRouterGT06EngineStopLayouts(t *testing.T) {

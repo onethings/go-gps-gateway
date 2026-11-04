@@ -109,7 +109,7 @@ func DefaultRegistry() *Registry {
 			TextCommands: []string{
 				model.CommandAlarmArm, model.CommandAlarmDisarm,
 				model.CommandEngineStop, model.CommandEngineResume,
-				model.CommandPositionPeriodic,
+				model.CommandPositionPeriodic, model.CommandCustom,
 			},
 		}
 	})

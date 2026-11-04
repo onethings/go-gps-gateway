@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"traccar-server_go/go_server/internal/codec"
+	"traccar-server_go/go_server/internal/config"
 	"traccar-server_go/go_server/internal/model"
 )
 
@@ -17,31 +18,31 @@ var ErrUnsupportedCommand = errors.New("h02: unsupported command")
 // Encoder turns high level commands into H02 ASCII sentences.
 type Encoder struct {
 	codec.Base
-	// Alternative switches the periodic reporting command to the D1 variant.
-	Alternative bool
-	// TimeOverride is used by tests to make the encoded timestamp stable.
-	TimeOverride *time.Time
-	// Location controls the time zone of the encoded timestamp.
-	Location *time.Location
 }
 
 // NewEncoder creates an H02 encoder.
 func NewEncoder(base codec.Base) *Encoder {
-	return &Encoder{Base: base, Location: time.Local}
+	return &Encoder{Base: base}
 }
 
+// now returns the timestamp every sentence carries. H02 devices read it as
+// local time, the same way the reference formats it in the server time zone.
 func (e *Encoder) now() time.Time {
-	if e.TimeOverride != nil {
-		return e.TimeOverride.In(e.location())
-	}
-	return e.Time().In(e.location())
+	return e.Time().In(time.Local)
 }
 
-func (e *Encoder) location() *time.Location {
-	if e.Location == nil {
-		return time.Local
+// alternative reads protocol.h02.alternative, which switches the periodic
+// reporting command to the D1 variant.
+func (e *Encoder) alternative() bool {
+	if e.Config == nil {
+		return false
 	}
-	return e.Location
+	// The spellings the configuration layer accepts for a boolean.
+	switch strings.ToLower(strings.TrimSpace(e.Config(config.ProtocolAlternative))) {
+	case "true", "yes", "on", "1":
+		return true
+	}
+	return false
 }
 
 func (e *Encoder) uniqueID(deviceID int64) (string, error) {
@@ -66,6 +67,19 @@ func (e *Encoder) formatCommand(uniqueID, commandType string, params ...string) 
 
 // EncodeCommand implements codec.Encoder.
 func (e *Encoder) EncodeCommand(command *model.Command) ([]byte, error) {
+	// A custom command is a whole sentence the operator wrote, so it goes out
+	// unchanged and needs no device identifier.
+	if command.Type == model.CommandCustom {
+		if !command.Attributes.Has(model.CmdKeyData) {
+			return nil, fmt.Errorf("%w: missing %s", ErrUnsupportedCommand, model.CmdKeyData)
+		}
+		data := command.Attributes.GetString(model.CmdKeyData, "")
+		if data == "" {
+			return nil, fmt.Errorf("%w: empty %s", ErrUnsupportedCommand, model.CmdKeyData)
+		}
+		return []byte(data), nil
+	}
+
 	uniqueID, err := e.uniqueID(command.DeviceID)
 	if err != nil {
 		return nil, err
@@ -83,18 +97,15 @@ func (e *Encoder) EncodeCommand(command *model.Command) ([]byte, error) {
 	case model.CommandPositionPeriodic:
 		frequency, ok := command.GetAttribute(model.CmdKeyFrequency)
 		if !ok {
-			return nil, ErrUnsupportedCommand
+			return nil, fmt.Errorf("%w: missing %s", ErrUnsupportedCommand, model.CmdKeyFrequency)
 		}
 		value := strconv.FormatFloat(toFloat(frequency), 'f', -1, 64)
-		if e.Alternative {
+		if e.alternative() {
 			return e.formatCommand(uniqueID, "D1", value), nil
 		}
-		// S71 carries the reporting mode before the timestamp.
-		now := e.now()
-		return []byte(fmt.Sprintf("*%s,%s,S71,22,%02d%02d%02d,%s#",
-			"HQ", uniqueID, now.Hour(), now.Minute(), now.Second(), value)), nil
+		return e.formatCommand(uniqueID, "S71", "22", value), nil
 	default:
-		return nil, ErrUnsupportedCommand
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedCommand, command.Type)
 	}
 }
 

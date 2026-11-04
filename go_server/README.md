@@ -201,7 +201,7 @@ Java release, with a random `api.key`), installs and starts the systemd unit, an
 `/api/health` returns 200.
 
 ```bash
-git clone https://github.com/onethings/traccar-server_go.git && cd traccar-server_go
+git clone https://github.com/onethings/go-gps-gateway.git && cd go-gps-gateway
 sudo ./go_server/deploy/ubuntu/install.sh        # SQLite + systemd, Web/API on 0.0.0.0:8082
 # then open http://<VPS-IP>:8082/ and register the first account (becomes administrator)
 ```

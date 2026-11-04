@@ -1,53 +1,33 @@
-用go語言 重寫 h02, gt06, jt808, teltonika 這4個呢？讓 deepseek v4 flash 用go重寫這幾個先，再局部分段的重寫整個 traccar server 。
-第一阶段：攻克四大协议的“解码器（Codec）”
-怎么让 AI 写： 不要让 AI 直接写网络服务器，而是让它针对每个协议写纯函数/结构体转换器（输入原始 TCP 字节流 []byte，输出统一的结构体标准模型 Position）。
+# Go-Based GPS Tracking Gateway (Unofficial Traccar Core Port)
 
-示例 Prompt 策略：
+> **Disclaimer:** This project is an independent, community-driven, and AI-assisted (DeepSeek V4 Flash) rewrite of core GPS tracking protocol decoders in Go. **It is NOT an official Traccar project.** It is entirely inspired by and cross-referenced with the official [Traccar](https://github.com/traccar/traccar) repository (v6.17.0) to provide lightweight, high-performance protocol decoding and gateway capabilities in the Go ecosystem.
 
-"请用 Go 语言写一个函数，输入 Teltonika Codec 8 的字节流，解析出经纬度、速度、时间和所有 AVL 传感器数据，并返回标准的 JSON 结构体。请注意处理大端序和转义字符。"
+---
 
-验证： 这一阶段完全可以通过跑单元测试（Unit Test）让 AI 帮你写大量的 Mock 测试用例，确保二进制解析万无一失。
+## 📌 Why rewrite  with Go Language 
 
-第二阶段：搭建高性能网络网关层（Gateway）
-怎么让 AI 写： 利用 Go 的高性能网络库（如原生的 net 或者是目前 Go 社区非常流行的 gnet / epoll 框架）。
+I want cost down server cost as possible, after asking ai Go language is good for now.
 
-让 AI 帮你实现一个 TCP/UDP 监听服务：负责维持海量长连接、处理心跳包（Keep-Alive）、粘包/半包处理（TCP 字节流切片），并在解析成功后将标准数据推入消息队列（如 NATS、Redis Stream 或 MQTT）。
+### Supported Protocols
 
-第三阶段：渐进式替换 Traccar 后端
-分阶段架构演进：
+1. **Teltonika** (Codec 8 / 8 Extended)
+2. **GT06** (Concox protocol family)
+3. **JT808** (Ministry of Transport standard of China)
+4. **H02** (Kingneed / GPS103 family)
 
-过渡期（旁路/双写）： 保留原版 Java Traccar 处理其他冷门协议；用 Go 写的四协议网关专门处理主力设备，解析后将数据通过标准 API 写入 Traccar 的后端数据库（或直接发给 Traccar 的标准上报接口）。
+---
 
-完全体： 如果未来需要彻底抛弃 Java，再让 AI 逐步帮你用 Go 重写业务层（如地理围栏判定、报警规则引擎、RESTful API 接口）。
+## Install for Testing with Ubuntu
+https://github.com/onethings/tra-server-go-releases-fortesting
 
-总结
-只挑选 H02、GT06、JT808、Teltonika 这四个主流协议用 Go 重写，抓住了整个物联网追踪市场 80% 的痛点，是非常聪明且务实的工程选择。
 
-让 DeepSeek V4 Flash 辅助完成这个过程，最有效的方法是“模块化拆分”：先让 AI 逐个攻克四个协议的二进制/文本解析函数，再编写网络长连接收发框架。这样不仅能把 AI 的代码出错率降到最低，还能在几天内搭建出一个性能远超原版 Netty 的轻量级核心网关。
+## 📁 Repository Structure
 
-## 核對：這份建議哪些成立（2026-11-01）
-
-實際的 Go 版在 `go_server/`，安裝、測試與改法見 `go_server/README.md`「快速開始」。
-逐條對過程式與母本之後：
-
-- ✅ **先寫純函式 codec（`[]byte` → 標準 Position）**：成立，Go 版四個協議就是這個形狀，
-  測試向量直接從母本 `*ProtocolDecoderTest` 搬過來。
-- ❌ **「讓 AI 寫大量 mock 測試，二進位解析就萬無一失」**：mock 是 AI 自己編的，同一個誤解會被
-  寫進程式也被寫進測試。向量要來自真機封包或母本測試；現在的測試正是這樣來的。
-- ⚠️ **gnet / epoll**：四個協議、幾千條連線，goroutine-per-connection 就夠；自己維護 epoll
-  狀態機換不到相應好處，先不要。
-- ⚠️ **解析完丟 NATS / Redis Stream / MQTT**：單節點多一層失敗面與運維成本，目前是批次寫
-  SQL 資料庫（PostgreSQL / MySQL / SQLite）。要拆的時候再拆（真正理由是「多節點共用」，見 `go_server/README.md`「核對結果」）。
-- ❌ **過渡期「直接寫 Traccar 的後端資料庫」**：等於耦合母本 schema（每個版本都在改），也繞過
-  母本的事件、通知與 device 快取。要跟 Java 版共存，走母本支援的 OsmAnd HTTP 端點（5055），
-  或把 Go 版當獨立服務。
-- ❌ **「性能遠超原版 Netty」**：沒有依據。Netty 很快，Go 的優勢在記憶體占用、部署與運維；
-  要主張就得先量測。
-- ⚠️ **「抓住 80% 市場」「幾天內完成」**：行銷語言，不是工程判斷。母本有 272 個協議解碼器、
-  完整業務層與 Web 前端，四個協議的網關不是「重寫 Traccar」，是它的資料入口。
-
-## 資料夾說明
-
-go_server 才是主要用go語言重寫的(deepseek v4 flash+用pateto 的pstack)
-traccar-master 是母版 6.17.0 3/Nov/2026 https://github.com/traccar/traccar
-traccar-web-master 是母版 6.17.0 3/Nov/2026 https://github.com/traccar/traccar-web/
+```text
+├── go_server/             # Primary Go implementation (Decoders, Gateway, Storage)
+│   ├── protocols/         # Pure decoders for H02, GT06, JT808, Teltonika
+│   ├── network/           # TCP/UDP connection and session handlers
+│   └── README.md          # Detailed installation, usage, and test instructions
+├── traccar-master/        # Reference Java source code (Traccar v6.17.0, Nov 2026)
+└── traccar-web-master/    # Reference Web frontend source code (Traccar v6.17.0, Nov 2026)
+```

@@ -4,9 +4,9 @@
 
 ---
 
-## 📌 Why rewrite  with Go Language 
+## 📌 Why Go?
 
-I want cost down server cost as possible, after asking ai Go language is good for now.
+To significantly **minimize server resource consumption and operational costs** while handling thousands of concurrent TCP/UDP device connections with Go's lightweight concurrency model (Goroutines).
 
 ### Supported Protocols
 
@@ -17,9 +17,12 @@ I want cost down server cost as possible, after asking ai Go language is good fo
 
 ---
 
-## Install for Testing with Ubuntu
-https://github.com/onethings/tra-server-go-releases-fortesting
+## 🚀 Installation & Testing (Ubuntu)
 
+For quick testing and deployment on Ubuntu, check out the release repository:
+👉 [tra-server-go-releases-fortesting](https://github.com/onethings/tra-server-go-releases-fortesting)
+
+---
 
 ## 📁 Repository Structure
 
@@ -27,12 +30,8 @@ https://github.com/onethings/tra-server-go-releases-fortesting
 ├── LICENSE                # Apache License 2.0
 └── go_server/             # Primary Go implementation (decoders, gateway, storage)
     ├── cmd/               # traccar-gateway, device-sim
-    ├── internal/          # protocol decoders, gateway, storage, api, alert, notify, ...
+    ├── internal/          # Protocol decoders, gateway, storage, api, alert, notify, etc.
     ├── deploy/            # Ubuntu installer, systemd unit, nginx template
     ├── web/               # traccar-web build served by the gateway
     └── README.md          # Installation, usage, and test instructions
 ```
-
-## License
-
-Licensed under the [Apache License, Version 2.0](./LICENSE).

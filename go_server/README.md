@@ -138,6 +138,7 @@ Config / environment only:
 | Suntech | `STT/ALT/EMG/EVT/UEX/BLE`, universal, zip / binary; encoder covers the legacy `SA200CMD;...` downlink set (`Reboot`, `StatusReq`, `Enable`/`Disable` outputs, engine and arm/disarm) | universal command layout (needs the live decoder state) |
 | Ruptela | IMEI handshake, Records / Extended, DTC, IO configuration; encoders complete | — |
 | GT02 | `0x68 0x68` length frame, position, heartbeat ACK and command response; decoder only, the reference ships no encoder | — |
+| GPS056 | `$$` length frame, `LOGN` / `GPSL` / `SYNC`, status fields and ACK; decoder only, the reference ships no encoder | — |
 
 ## Database
 
@@ -361,7 +362,7 @@ their own name / attributes / password but cannot grant themselves administrator
 
 | Area | Go version | Gap |
 | --- | --- | --- |
-| Protocol decoders | 13 | 255 |
+| Protocol decoders | 14 | 254 |
 | Command encoders | 10 | 49 |
 | Pipeline / events | 15 stages / 12 rules | 0 |
 | OpenAPI paths | 76 | 0 |

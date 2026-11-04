@@ -1,6 +1,7 @@
 package gt06
 
 import (
+	"bytes"
 	"encoding/hex"
 	"testing"
 	"time"
@@ -419,5 +420,120 @@ func TestDecodeNTDriver(t *testing.T) {
 	if tower.MobileCountryCode != 724 || tower.MobileNetworkCode != 16 ||
 		tower.LocationAreaCode != 0xc80b || tower.CellID != 0x0c352c17 {
 		t.Errorf("cell tower = %+v, want 724/16/c80b/0c352c17", tower)
+	}
+}
+
+// TestDecodeWifiScan uses the WiFi frame from Gt06ProtocolDecoderTest. The
+// reference takes the access point count from the frame's third byte, which
+// holds eight here.
+func TestDecodeWifiScan(t *testing.T) {
+	frame := mustHex(t, "787808171709281135331491827b75594dc8d719a9708452cad719a9708550cad719a97086521491827b75574cac9e17b308085dc8d71939633947cad71939633a480700cc0400d37a3d5a00d37a3d5a00d37a3d5a00d37a3d5a00d37a3d5a00d37a3d5a00d37a3d5a0d0a")
+
+	result, err := NewDecoder(Base()).DecodeWithSession(frame, testSession())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+
+	position := result.Positions[0]
+	want := time.Date(2017, 9, 28, 11, 35, 33, 0, time.UTC)
+	if !position.Time.Equal(want) {
+		t.Errorf("time = %s, want %s", position.Time.UTC(), want)
+	}
+	if position.Network == nil {
+		t.Fatal("network is nil")
+	}
+	if len(position.Network.WifiAccessPoints) != 8 {
+		t.Fatalf("access points = %d, want 8", len(position.Network.WifiAccessPoints))
+	}
+	if ap := position.Network.WifiAccessPoints[0]; ap.MacAddress != "14:91:82:7b:75:59" || ap.SignalStrength != 77 {
+		t.Errorf("first access point = %+v", ap)
+	}
+	if len(position.Network.CellTowers) != 7 {
+		t.Fatalf("cell towers = %d, want 7", len(position.Network.CellTowers))
+	}
+	if cell := position.Network.CellTowers[0]; cell.MobileCountryCode != 204 ||
+		cell.MobileNetworkCode != 4 || cell.LocationAreaCode != 211 ||
+		cell.CellID != 0x7a3d5a {
+		t.Errorf("first cell tower = %+v", cell)
+	}
+
+	if len(result.Responses) != 1 {
+		t.Fatalf("responses = %d, want 1", len(result.Responses))
+	}
+	wantResponse := append([]byte{0x78, 0x78, 0x00, msgWifi, 0x17, 0x09, 0x28, 0x11, 0x35, 0x33}, '\r', '\n')
+	if got := result.Responses[0]; !bytes.Equal(got, wantResponse) {
+		t.Errorf("response = %x, want %x", got, wantResponse)
+	}
+}
+
+// TestDecodeWifiScanWithoutAccessPoints uses a frame whose length byte is zero,
+// which the reference reads as an empty access point list.
+func TestDecodeWifiScanWithoutAccessPoints(t *testing.T) {
+	frame := mustHex(t, "7878001719011910543607028f0100bc2e695a00bcb3635a00bc27c56400bc447b6400bc46c96400bc33ce6400bc64ca640d0a")
+
+	result, err := NewDecoder(Base()).DecodeWithSession(frame, testSession())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+
+	network := result.Positions[0].Network
+	if network == nil {
+		t.Fatal("network is nil")
+	}
+	if len(network.WifiAccessPoints) != 0 {
+		t.Errorf("access points = %d, want 0", len(network.WifiAccessPoints))
+	}
+	if len(network.CellTowers) != 7 {
+		t.Fatalf("cell towers = %d, want 7", len(network.CellTowers))
+	}
+	if cell := network.CellTowers[0]; cell.LocationAreaCode != 0x00bc ||
+		cell.CellID != 0x2e695a {
+		t.Errorf("first cell tower = %+v", cell)
+	}
+}
+
+// TestDecodeLBSWifi uses the combined cell and WiFi frame from
+// Gt06ProtocolDecoderTest.
+func TestDecodeLBSWifi(t *testing.T) {
+	frame := mustHex(t, "7878412c11030b011c1f013604cb8a00b17754cb8a00bef357cb8a00b73f5fcb8900b0e25fcb8900b6655fcb8a00b74960cb8a00b178620701001801eb40393800bbbde10d0a")
+
+	result, err := NewDecoder(Base()).DecodeWithSession(frame, testSession())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+
+	position := result.Positions[0]
+	want := time.Date(2011, 3, 17, 1, 28, 31, 0, time.UTC)
+	if !position.Time.Equal(want) {
+		t.Errorf("time = %s, want %s", position.Time.UTC(), want)
+	}
+	if position.Network == nil {
+		t.Fatal("network is nil")
+	}
+	if len(position.Network.CellTowers) != 7 {
+		t.Fatalf("cell towers = %d, want 7", len(position.Network.CellTowers))
+	}
+	if cell := position.Network.CellTowers[0]; cell.MobileCountryCode != 310 ||
+		cell.MobileNetworkCode != 4 || cell.LocationAreaCode != 52106 ||
+		cell.CellID != 0xb177 || cell.SignalStrength != -84 {
+		t.Errorf("first cell tower = %+v", cell)
+	}
+	if len(position.Network.WifiAccessPoints) != 1 {
+		t.Fatalf("access points = %d, want 1", len(position.Network.WifiAccessPoints))
+	}
+	if ap := position.Network.WifiAccessPoints[0]; ap.MacAddress != "00:18:01:eb:40:39" || ap.SignalStrength != 56 {
+		t.Errorf("first access point = %+v", ap)
+	}
+	if len(result.Responses) != 0 {
+		t.Errorf("responses = %d, want 0", len(result.Responses))
 	}
 }

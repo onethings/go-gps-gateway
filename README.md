@@ -24,10 +24,11 @@ https://github.com/onethings/tra-server-go-releases-fortesting
 ## 📁 Repository Structure
 
 ```text
-├── go_server/             # Primary Go implementation (Decoders, Gateway, Storage)
-│   ├── protocols/         # Pure decoders for H02, GT06, JT808, Teltonika
-│   ├── network/           # TCP/UDP connection and session handlers
-│   └── README.md          # Detailed installation, usage, and test instructions
-├── traccar-master/        # Reference Java source code (Traccar v6.17.0, Nov 2026)
-└── traccar-web-master/    # Reference Web frontend source code (Traccar v6.17.0, Nov 2026)
+└── go_server/             # Primary Go implementation (decoders, gateway, storage)
+    ├── cmd/               # traccar-gateway, device-sim
+    ├── internal/          # protocol decoders, gateway, storage, api, alert, notify, ...
+    ├── deploy/            # Ubuntu installer, systemd unit, nginx template
+    ├── web/               # traccar-web build served by the gateway
+    ├── LICENSE            # Apache License 2.0 (this directory only)
+    └── README.md          # Installation, usage, and test instructions
 ```

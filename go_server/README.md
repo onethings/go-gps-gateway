@@ -4,7 +4,7 @@ Go re-implementation of Traccar's device protocols and server: device frame → 
 SQL database (PostgreSQL / MySQL / SQLite), plus the matching REST API, alerts / geofences,
 notifications, command dispatch and processing chain.
 
-- Reference: `../traccar-master` (Java); each Go file names the Java class it mirrors.
+- Each Go file names the Java class it mirrors (Traccar v6.17.0).
 - The protocol layer is pure functions (`[]byte` → `*model.Position`); all I/O sits in `internal/gateway`.
 - Go 1.22+. A database is needed only for REST / alerts / command history: PostgreSQL, MySQL 8.0+ or
   SQLite, chosen by the scheme of `database.url`.

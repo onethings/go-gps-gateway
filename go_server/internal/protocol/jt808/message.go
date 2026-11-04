@@ -113,9 +113,11 @@ func parseHeader(frame []byte) (*header, *helper.Buffer, bool) {
 	return h, buf, true
 }
 
-// decodeID renders the terminal identifier. Numeric BCD identifiers are used
-// as-is; binary identifiers become the decimal IMEI plus its Luhn digit.
-func decodeID(id []byte) string {
+// DecodeID renders the terminal identifier. JT1078 reuses it because the
+// media protocol carries the same identifier bytes in its header. Numeric BCD
+// identifiers are used as-is; binary identifiers become the decimal IMEI plus
+// its Luhn digit.
+func DecodeID(id []byte) string {
 	serial := hex.EncodeToString(id)
 	if isDigits(serial) {
 		return serial
@@ -125,7 +127,7 @@ func decodeID(id []byte) string {
 }
 
 // idWidth reports the terminal identifier width a downlink frame must use.
-// A JT808-2019 terminal registers a ten byte identifier, which decodeID
+// A JT808-2019 terminal registers a ten byte identifier, which DecodeID
 // renders as twenty hexadecimal digits, so the stored identifier tells the
 // encoder which header layout the device expects.
 func idWidth(uniqueID string) int {

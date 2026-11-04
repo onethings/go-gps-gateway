@@ -64,7 +64,7 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		return result, nil
 	}
 
-	uniqueID := decodeID(h.id)
+	uniqueID := DecodeID(h.id)
 	result.UniqueID = uniqueID
 
 	if session == nil {

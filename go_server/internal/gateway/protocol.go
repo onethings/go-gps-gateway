@@ -172,6 +172,15 @@ func DefaultRegistry() *Registry {
 			Name:            tk103.ProtocolName,
 			NewFrameDecoder: func() codec.FrameDecoder { return &tk103.FrameDecoder{} },
 			NewDecoder:      func() codec.Decoder { return tk103.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return tk103.NewEncoder(base) },
+			TextCommands: []string{
+				model.CommandCustom, model.CommandGetVersion, model.CommandPowerOff,
+				model.CommandRebootDevice, model.CommandPositionSingle, model.CommandPositionPeriodic,
+				model.CommandPositionStop, model.CommandGetDeviceStatus, model.CommandIdentification,
+				model.CommandModeDeepSleep, model.CommandModePowerSaving, model.CommandAlarmSOS,
+				model.CommandSetConnection, model.CommandSOSNumber, model.CommandSetOdometer,
+				model.CommandEngineStop, model.CommandEngineResume, model.CommandOutputControl,
+			},
 		}
 	})
 

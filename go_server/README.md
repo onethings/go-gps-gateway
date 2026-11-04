@@ -110,6 +110,7 @@ Config / environment only:
 | HLS streaming | `stream.path` (an external generator writes `<path>/<deviceId>/index.m3u8`) |
 | JT808 command layouts | `protocol.jt808.alternative` = true sends engine control as the oil control message some terminals need; `web.url` and `jt1078.port` fill the videoStart command (the gateway runs no JT1078 listener) |
 | GT06 command layouts | `protocol.gt06.alternative` = true sends the engine commands as `DYD,<password>` / `HFYD,<password>`; `protocol.gt06.language` adds the optional english field to every command frame; `protocol.gt06.devicePassword` is the password the alternative layout carries (default `123456`) |
+| TK103 command layouts | `protocol.tk103.alternative` = true sends the SMS2 layout (`[begin]sms2,...[end]`) instead of the legacy parenthesised sentences; `protocol.tk103.devicePassword` fills the `*master*` SOS command (default `123456`) |
 | Redis push | `redis.url`, `redis.channel` (default `traccar`) |
 | OpenID Connect | `openid.{enable,issuer,clientId,clientSecret,redirectUrl,scopes,createMissing,successUrl}` |
 | LDAP | `ldap.{url,user,password,base,idAttribute,searchFilter,nameAttribute,mailAttribute,timeout}` (`ldap.userFilter` kept as alias) |
@@ -129,7 +130,7 @@ Config / environment only:
 | Teltonika | IMEI handshake, Codec 8 / 8E / 12 / 13, variable-length elements, LAC/CID; encoder covers the reference downlink set (`setdigout` engine stop/resume, raw custom as ASCII or hex) | Codec 7/16, BLE |
 | OsmAnd, MQTT | OsmAnd query string; MQTT 3.1.1 reuses the same decoder | — |
 | GPS103 | `imei:` text sentence, decimal degrees + hemisphere; encoder covers the reference downlink set (`B` single, `C` periodic, `D` stop, `J`/`K` engine, `L`/`M` arm/disarm, `160` photo, raw custom) | — |
-| TK103 | `imei:` text sentence, decimal degrees + hemisphere | — |
+| TK103 | `imei:` text sentence, decimal degrees + hemisphere; encoder covers the reference legacy and SMS2 downlink sets (`AP`, `AR`, `AT`, `AV`, `AX` legacy; `*getposl*`, `*routetrack*`, `*sleep*`, `*sos*`, `*setip*`, `*master*` alternative) | — |
 | Meitrack | `$$` + length + fields + XOR | — |
 | Wondex | `#DD#` + `;`-separated fields | — |
 | Suntech | `STT/ALT/EMG/EVT/UEX/BLE`, universal, zip / binary | command encoder |

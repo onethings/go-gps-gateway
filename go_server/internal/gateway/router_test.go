@@ -396,6 +396,63 @@ func TestRouterEncodesEveryAdvertisedGps103Command(t *testing.T) {
 	}
 }
 
+// TestRouterEncodesEveryAdvertisedTk103Command is the same pin for TK103.
+// The encoder has two layouts selected by protocol.tk103.alternative, so each
+// advertised command is built by the layout that can express it.
+func TestRouterEncodesEveryAdvertisedTk103Command(t *testing.T) {
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("123456789012345", "tk103"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	legacy := gateway.NewRouter(gateway.DefaultRegistry(), directory)
+	alternative := gateway.NewRouter(gateway.DefaultRegistry(), directory, gateway.WithConfig(func(_, key string) string {
+		if key == "alternative" {
+			return "true"
+		}
+		return ""
+	}))
+
+	// The parameters each command needs to be buildable at all.
+	attributes := map[string]map[string]any{
+		model.CommandCustom:           {model.CmdKeyData: "AA00"},
+		model.CommandPositionPeriodic: {model.CmdKeyFrequency: 60},
+		model.CommandSetConnection:    {model.CmdKeyServer: "1.2.3.4", model.CmdKeyPort: "5555"},
+		model.CommandSOSNumber:        {model.CmdKeyPhone: "+55555555555"},
+		model.CommandOutputControl:    {model.CmdKeyData: "1"},
+		model.CommandModeDeepSleep:    {model.CmdKeyEnable: true},
+		model.CommandModePowerSaving:  {model.CmdKeyEnable: true},
+		model.CommandAlarmSOS:         {model.CmdKeyEnable: true},
+	}
+	// These four exist only in the legacy parenthesised layout.
+	legacyOnly := map[string]bool{
+		model.CommandSetOdometer:   true,
+		model.CommandEngineStop:    true,
+		model.CommandEngineResume:  true,
+		model.CommandOutputControl: true,
+	}
+
+	advertised, ok := alternative.SupportedCommands("tk103", true)
+	if !ok {
+		t.Fatal("tk103 is not registered")
+	}
+	if len(advertised) != 18 {
+		t.Fatalf("advertised %d commands, want 18: %v", len(advertised), advertised)
+	}
+	for _, commandType := range advertised {
+		command := model.NewCommand(1, commandType)
+		for key, value := range attributes[commandType] {
+			command.SetAttribute(key, value)
+		}
+		router := alternative
+		if legacyOnly[commandType] {
+			router = legacy
+		}
+		if _, err := router.EncodeCommand("tk103", command); err != nil {
+			t.Errorf("%s: %v", commandType, err)
+		}
+	}
+}
+
 // TestRouterGT06EngineStopLayouts covers the two engine layouts the
 // configuration and the device model select.
 func TestRouterGT06EngineStopLayouts(t *testing.T) {

@@ -301,13 +301,16 @@ func TestNotifierFailureSurfacesStatus(t *testing.T) {
 }
 
 func TestParseNotificatorsAcceptsEveryChannel(t *testing.T) {
-	channels, err := ParseNotificators([]string{"email, web, telegram", "pushover", "sms,firebase,traccar,whatsapp"})
+	channels, err := ParseNotificators([]string{
+		"email, web, telegram", "pushover", "sms,firebase,traccar,whatsapp,command",
+	})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	want := []string{
-		NotificatorMail, NotificatorWebhook, NotificatorTelegram, NotificatorPushover,
+		NotificatorMail, NotificatorWeb, NotificatorTelegram, NotificatorPushover,
 		NotificatorSms, NotificatorFirebase, NotificatorTraccar, NotificatorWhatsapp,
+		NotificatorCommand,
 	}
 	if len(channels) != len(want) {
 		t.Fatalf("channels = %v", channels)

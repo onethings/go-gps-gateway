@@ -547,3 +547,57 @@ func TestPathFromArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestTripMotionDefaultsMatchTheReference(t *testing.T) {
+	cfg, err := Load("", nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := settings(t, cfg)
+
+	if !got.TripNewLogic {
+		t.Error("report.trip.newLogic should default to true, like the reference")
+	}
+	if got.TripMinDistance != DefaultTripMinDistance {
+		t.Errorf("minDistance = %v, want %v", got.TripMinDistance, DefaultTripMinDistance)
+	}
+	if got.TripMinDuration != DefaultTripMinDuration {
+		t.Errorf("minDuration = %v, want %v", got.TripMinDuration, DefaultTripMinDuration)
+	}
+	if got.TripStopGap != DefaultTripStopGap {
+		t.Errorf("stopGap = %v, want %v", got.TripStopGap, DefaultTripStopGap)
+	}
+	if got.TripUseIgnition {
+		t.Error("useIgnition should default to false, like the reference")
+	}
+}
+
+func TestTripMotionKeysAreRead(t *testing.T) {
+	cfg, err := Load("", []string{
+		"TRACCAR_REPORT_TRIP_NEW_LOGIC=no",
+		"TRACCAR_REPORT_TRIP_MIN_DISTANCE=300",
+		"TRACCAR_REPORT_TRIP_MIN_DURATION=240",
+		"TRACCAR_REPORT_TRIP_STOP_GAP=2h",
+		"TRACCAR_REPORT_TRIP_USE_IGNITION=yes",
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := settings(t, cfg)
+
+	if got.TripNewLogic {
+		t.Error("newLogic should be off")
+	}
+	if got.TripMinDistance != 300 {
+		t.Errorf("minDistance = %v, want 300", got.TripMinDistance)
+	}
+	if got.TripMinDuration != 240*time.Second {
+		t.Errorf("minDuration = %v, want 240s", got.TripMinDuration)
+	}
+	if got.TripStopGap != 2*time.Hour {
+		t.Errorf("stopGap = %v, want 2h", got.TripStopGap)
+	}
+	if !got.TripUseIgnition {
+		t.Error("useIgnition should be on")
+	}
+}

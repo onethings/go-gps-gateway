@@ -97,23 +97,40 @@ const (
 	// Additional notification providers. These have no flags: they are set in
 	// the configuration file or the environment and read directly, so adding a
 	// provider does not grow the command line.
-	NotifyTelegramToken     = "notificator.telegram.key"
-	NotifyTelegramChatID    = "notificator.telegram.chatId"
-	NotifyTelegramBaseURL   = "notificator.telegram.baseUrl"
-	NotifyPushoverToken     = "notificator.pushover.token"
-	NotifyPushoverUser      = "notificator.pushover.user"
-	NotifyPushoverURL       = "notificator.pushover.url"
-	NotifyFirebaseAccount   = "notificator.firebase.serviceAccount"
-	NotifyFirebaseMode      = "notificator.firebase.mode"
-	NotifyFirebaseTokenURL  = "notificator.firebase.tokenUrl"
-	NotifyFirebaseURL       = "notificator.firebase.url"
-	NotifyTraccarKey        = "notificator.traccar.key"
-	NotifyTraccarURL        = "notificator.traccar.url"
-	NotifyWhatsappToken     = "notificator.whatsapp.token"
-	NotifyWhatsappPhoneID   = "notificator.whatsapp.phoneNumberId"
-	NotifyWhatsappTemplate  = "notificator.whatsapp.template"
-	NotifyWhatsappLanguage  = "notificator.whatsapp.language"
-	NotifyWhatsappURL       = "notificator.whatsapp.url"
+	NotifyTelegramToken    = "notificator.telegram.key"
+	NotifyTelegramChatID   = "notificator.telegram.chatId"
+	NotifyTelegramBaseURL  = "notificator.telegram.baseUrl"
+	NotifyPushoverToken    = "notificator.pushover.token"
+	NotifyPushoverUser     = "notificator.pushover.user"
+	NotifyPushoverURL      = "notificator.pushover.url"
+	NotifyFirebaseAccount  = "notificator.firebase.serviceAccount"
+	NotifyFirebaseMode     = "notificator.firebase.mode"
+	NotifyFirebaseTokenURL = "notificator.firebase.tokenUrl"
+	NotifyFirebaseURL      = "notificator.firebase.url"
+	NotifyTraccarKey       = "notificator.traccar.key"
+	NotifyTraccarURL       = "notificator.traccar.url"
+	NotifyWhatsappToken    = "notificator.whatsapp.token"
+	NotifyWhatsappPhoneID  = "notificator.whatsapp.phoneNumberId"
+	NotifyWhatsappTemplate = "notificator.whatsapp.template"
+	NotifyWhatsappLanguage = "notificator.whatsapp.language"
+	NotifyWhatsappURL      = "notificator.whatsapp.url"
+
+	// Expiration notices go out by mail when the operator turns them on. The
+	// reference spells the reminder in milliseconds; this server takes a Go
+	// duration, the same as every other interval.
+	NotifyExpirationUser           = "notification.expiration.user"
+	NotifyExpirationUserReminder   = "notification.expiration.user.reminder"
+	NotifyExpirationDevice         = "notification.expiration.device"
+	NotifyExpirationDeviceReminder = "notification.expiration.device.reminder"
+
+	// Trip and motion thresholds. The names match the reference, where they may
+	// also be set as device attributes; this server reads them from the server
+	// configuration only.
+	TripNewLogic            = "report.trip.newLogic"
+	TripMinDistance         = "report.trip.minDistance"
+	TripMinDuration         = "report.trip.minDuration"
+	TripStopGap             = "report.trip.stopGap"
+	TripUseIgnition         = "report.trip.useIgnition"
 	SMSHTTPURL              = "sms.http.url"
 	SMSHTTPTemplate         = "sms.http.template"
 	SMSHTTPAuthorizationHdr = "sms.http.authorizationHeader"
@@ -318,6 +335,16 @@ var KnownKeys = []string{
 	DispatchRedisKeyPrefix,
 	RedisURL,
 	RedisChannel,
+
+	NotifyExpirationUser,
+	NotifyExpirationUserReminder,
+	NotifyExpirationDevice,
+	NotifyExpirationDeviceReminder,
+	TripNewLogic,
+	TripMinDistance,
+	TripMinDuration,
+	TripStopGap,
+	TripUseIgnition,
 
 	NotifyWebhook,
 	NotifyWebhookAuth,

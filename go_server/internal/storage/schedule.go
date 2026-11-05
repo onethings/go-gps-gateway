@@ -3,9 +3,11 @@ package storage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/permissions"
 )
 
 // ExpiredUsers returns the enabled users whose expirationTime attribute is in
@@ -137,4 +139,117 @@ func expirationTimeOf(attributes model.Attributes) (time.Time, bool) {
 	default:
 		return time.Time{}, false
 	}
+}
+
+// UsersExpiringBetween returns the accounts whose expirationTime attribute
+// falls in (from, to]. The window is how the expiration notices avoid sending
+// the same message twice, so a run that is late loses a notice instead of
+// repeating one.
+//
+// Disabled accounts are not filtered out: the task that disables an expired
+// account also runs hourly, and whichever of the two runs first must not decide
+// whether the notice goes out.
+func (s *Store) UsersExpiringBetween(ctx context.Context, from, to time.Time) ([]model.User, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+userSelectColumns+`
+		 FROM users u
+		 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("storage: users expiring: %w", err)
+	}
+	defer rows.Close()
+
+	var users []model.User
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		if expires, ok := expirationTimeOf(user.Attributes); ok &&
+			expires.After(from) && !expires.After(to) {
+			users = append(users, *user)
+		}
+	}
+	return users, rows.Err()
+}
+
+// DevicesExpiringBetween returns the devices whose expiration_time falls in
+// (from, to].
+func (s *Store) DevicesExpiringBetween(ctx context.Context, from, to time.Time) ([]model.Device, error) {
+	// The window is applied in Go because each dialect stores the column
+	// differently; only devices that expire at all are read, which keeps the
+	// scan small.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+deviceColumns+` FROM devices
+		 WHERE expiration_time IS NOT NULL
+		 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("storage: devices expiring: %w", err)
+	}
+	defer rows.Close()
+
+	var devices []model.Device
+	for rows.Next() {
+		device, err := scanDevice(rows)
+		if err != nil {
+			return nil, err
+		}
+		if !device.ExpirationTime.IsZero() &&
+			device.ExpirationTime.After(from) && !device.ExpirationTime.After(to) {
+			devices = append(devices, *device)
+		}
+	}
+	return devices, rows.Err()
+}
+
+// DeviceUsers returns the accounts that hold a grant on the device, either
+// directly or through the group tree, which is what an expiration notice needs:
+// every account that would lose the device.
+func (s *Store) DeviceUsers(ctx context.Context, deviceID int64) ([]model.User, error) {
+	groupID, err := s.DeviceGroup(ctx, deviceID)
+	if err != nil {
+		return nil, err
+	}
+
+	groupIDs := []int64(nil)
+	if groupID != 0 {
+		parents, err := s.GroupParents(ctx)
+		if err != nil {
+			return nil, err
+		}
+		groupIDs = permissions.Ancestors(groupID, parents)
+	}
+
+	args := []any{deviceID}
+	clauses := []string{"(p.property_type = 'device' AND p.property_id = $1)"}
+	if len(groupIDs) > 0 {
+		clauses = append(clauses,
+			"(p.property_type = 'group' AND "+deviceIDsClause(&args, "p.property_id", groupIDs)+")")
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+userSelectColumns+`
+		 FROM users u
+		 JOIN permissions p ON p.owner_type = 'user' AND p.owner_id = u.id
+		 WHERE `+strings.Join(clauses, " OR ")+`
+		 ORDER BY id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: users of device %d: %w", deviceID, err)
+	}
+	defer rows.Close()
+
+	var users []model.User
+	seen := make(map[int64]struct{})
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[user.ID]; duplicate {
+			continue
+		}
+		seen[user.ID] = struct{}{}
+		users = append(users, *user)
+	}
+	return users, rows.Err()
 }

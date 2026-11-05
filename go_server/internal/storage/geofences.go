@@ -38,18 +38,19 @@ func (s *Store) Geofences(ctx context.Context) ([]*geofence.Geofence, error) {
 			return nil, fmt.Errorf("storage: scan geofence: %w", err)
 		}
 
-		parsed, err := geofence.Parse(area)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("storage: geofence %d: %w", id, err))
-			continue
-		}
-
-		fence := &geofence.Geofence{ID: id, Name: name, Area: parsed}
+		fence := &geofence.Geofence{ID: id, Name: name}
 		if len(attributes) > 0 {
 			if err := json.Unmarshal(attributes, &fence.Attributes); err != nil {
 				failures = append(failures, fmt.Errorf("storage: geofence %d attributes: %w", id, err))
 			}
 		}
+
+		parsed, err := geofence.ParseWithDistance(area, fence.PolylineDistance())
+		if err != nil {
+			failures = append(failures, fmt.Errorf("storage: geofence %d: %w", id, err))
+			continue
+		}
+		fence.Area = parsed
 		geofences = append(geofences, fence)
 	}
 	if err := rows.Err(); err != nil {
@@ -88,16 +89,16 @@ var geofenceSpec = resourceSpec[geofence.Geofence]{
 			return nil, notFoundAs(fmt.Errorf("storage: scan geofence: %w", err))
 		}
 		fence.CalendarID = calendarID.Int64
-		parsed, err := geofence.Parse(area)
-		if err != nil {
-			return nil, fmt.Errorf("storage: geofence %d: %w", fence.ID, err)
-		}
-		fence.Area = parsed
 		decoded, err := decodeAttributes(attributes)
 		if err != nil {
 			return nil, fmt.Errorf("storage: geofence %d: %w", fence.ID, err)
 		}
 		fence.Attributes = decoded
+		parsed, err := geofence.ParseWithDistance(area, fence.PolylineDistance())
+		if err != nil {
+			return nil, fmt.Errorf("storage: geofence %d: %w", fence.ID, err)
+		}
+		fence.Area = parsed
 		return &fence, nil
 	},
 	id:    func(fence *geofence.Geofence) int64 { return fence.ID },

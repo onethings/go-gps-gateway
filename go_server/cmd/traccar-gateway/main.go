@@ -102,6 +102,17 @@ func main() {
 	// The socket hub exists before the sinks so the pipeline can publish while
 	// the API server is still being assembled.
 	socketHub := api.NewSocketHub()
+	// The web channel has no server-wide target: it delivers to the open
+	// sessions of the account that subscribed, so it exists whenever the API
+	// server does. A device can still switch it off with notifyWeb.
+	channels = append(channels, notify.Channel{
+		Notifier:  notify.NewWeb(socketHub),
+		Attribute: "notifyWeb",
+		UserTarget: func(subscription model.NotificationSubscription) []string {
+			return []string{strconv.FormatInt(subscription.UserID, 10)}
+		},
+		SubscriptionOnly: true,
+	})
 	// With Redis the live feed is shared between nodes: a browser connected to
 	// one node sees what the other ingested. Authentication needs no such
 	// bridge, because the tokens live in the database.
@@ -136,7 +147,7 @@ func main() {
 		store         *storage.Store
 		pipeline      *alert.Pipeline
 		dispatcher    *notify.Dispatcher
-		motion        *session.Motion
+		motionStage   handler.PositionHandler
 		sessions      *session.Manager
 		state         *eventState
 		forwarder     *forward.Service
@@ -253,11 +264,23 @@ func main() {
 			alert.WithPositionHook(positionHook))
 
 		// The motion state machine records deviceMoving / deviceStopped, so it
-		// needs somewhere to write them.
-		motion = session.NewMotion(session.MotionConfig{
-			Events: store,
-			Logger: log.Printf,
-		})
+		// needs somewhere to write them. report.trip.newLogic selects which one
+		// runs; the reference defaults it to the newer logic.
+		if settings.TripNewLogic {
+			motionStage = session.NewMovement(session.MovementConfig{
+				MinDistance: settings.TripMinDistance,
+				MinDuration: settings.TripMinDuration,
+				StopGap:     settings.TripStopGap,
+				UseIgnition: settings.TripUseIgnition,
+				Events:      store,
+				Logger:      log.Printf,
+			})
+		} else {
+			motionStage = session.NewMotion(session.MotionConfig{
+				Events: store,
+				Logger: log.Printf,
+			})
+		}
 
 		eventConfig := handler.EventConfig{
 			IgnoreDuplicateAlarms:  settings.IgnoreDuplicateAlerts,
@@ -412,7 +435,7 @@ func main() {
 				return nil
 			},
 			Stages: mergeStages(stages, map[string]handler.PositionHandler{
-				handler.StageMotion: motion,
+				handler.StageMotion: motionStage,
 				handler.StageAlertEvent: handler.RuleStage{
 					Stage: handler.StageAlertEvent,
 					Rules: []handler.EventRule{
@@ -573,10 +596,13 @@ func main() {
 		schedulerSettings := readSchedulerSettings(settings.Config)
 		generator := schedule.Generator(reportGenerator{service: report.New(store, reportConfig(settings.Config))})
 		var reporter schedule.Mailer
+		var notices schedule.NoticeMailer
 		if mailer != nil {
 			reporter = scheduledReportMailer{mail: mailer}
+			notices = expirationMailer{mail: mailer}
 		}
-		scheduler = buildScheduler(schedulerSettings, store, generator, reporter, socketHub.PublishEvent, log.Printf)
+		scheduler = buildScheduler(
+			schedulerSettings, store, generator, reporter, notices, socketHub.PublishEvent, log.Printf)
 		if names := scheduler.Tasks(); len(names) > 0 {
 			log.Printf("schedule: %v", names)
 			go scheduler.Run(ctx)

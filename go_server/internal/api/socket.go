@@ -200,6 +200,36 @@ func (h *SocketHub) PublishDevice(device *model.Device) {
 	h.publishRemote(socketDevices, device.ID, payload)
 }
 
+// PushEventToUser sends an event to every session of one account. It is how
+// the web notification channel puts a popup in front of the user who
+// subscribed, with the rendered message attached.
+//
+// The delivery stays on this node. The plain event already travels through
+// PublishEvent and the Redis bridge, and sending this copy across nodes would
+// hand one account's message to every other account's popup.
+func (h *SocketHub) PushEventToUser(userID int64, event *model.Event) {
+	if h == nil || event == nil || userID == 0 || h.empty() {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{"events": []eventResponse{newEventResponse(*event)}})
+	if err != nil {
+		return
+	}
+
+	h.mu.Lock()
+	clients := make([]*socketClient, 0, len(h.clients))
+	for client := range h.clients {
+		if client.userID == userID {
+			clients = append(clients, client)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, client := range clients {
+		client.deliver(socketEvents, event.DeviceID, payload)
+	}
+}
+
 // empty reports whether no connection is open.
 func (h *SocketHub) empty() bool {
 	h.mu.Lock()
@@ -238,10 +268,13 @@ func (h *SocketHub) broadcast(channel socketChannel, deviceID int64, payload []b
 	}
 }
 
-func (h *SocketHub) subscribe(conn *websocket.Conn, devices []int64, channels socketChannels) *socketClient {
+func (h *SocketHub) subscribe(
+	conn *websocket.Conn, userID int64, devices []int64, channels socketChannels,
+) *socketClient {
 	client := &socketClient{
 		hub:        h,
 		conn:       conn,
+		userID:     userID,
 		all:        devices == nil,
 		channels:   channels,
 		send:       make(chan []byte, socketSendQueue),
@@ -279,8 +312,11 @@ func (h *SocketHub) Count() int {
 
 // socketClient is one open connection.
 type socketClient struct {
-	hub      *SocketHub
-	conn     *websocket.Conn
+	hub  *SocketHub
+	conn *websocket.Conn
+	// userID is the account the connection authenticated as, zero for the
+	// shared API key. The web notification channel targets it.
+	userID   int64
 	all      bool
 	devices  map[int64]struct{}
 	channels socketChannels
@@ -422,7 +458,7 @@ func (s *Server) handleSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := s.socketHub.subscribe(conn, principal.DeviceIDs(), channels)
+	client := s.socketHub.subscribe(conn, principal.UserID, principal.DeviceIDs(), channels)
 
 	if channels.positions {
 		ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)

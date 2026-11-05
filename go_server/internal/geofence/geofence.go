@@ -1,7 +1,7 @@
 // Package geofence decides whether a position lies inside a Traccar geofence
-// area. It ports org.traccar.geofence.GeofenceGeometry, GeofencePolygon and
-// GeofenceCircle, including the "latitude longitude" ordering and the
-// antimeridian handling of the Java implementation.
+// area. It ports org.traccar.geofence.GeofenceGeometry, GeofencePolygon,
+// GeofenceCircle and GeofencePolyline, including the "latitude longitude"
+// ordering and the antimeridian handling of the Java implementation.
 package geofence
 
 import (
@@ -62,18 +62,41 @@ func (g *Geofence) Contains(position *model.Position) bool {
 	return g.Area.Contains(position.Latitude, position.Longitude)
 }
 
+// PolylineDistance is the corridor width a LINESTRING uses. It reads the
+// polylineDistance attribute the way Geofence.getGeometry does, so an absent
+// attribute means DefaultPolylineDistance.
+func (g *Geofence) PolylineDistance() float64 {
+	if g == nil || g.Attributes == nil {
+		return DefaultPolylineDistance
+	}
+	return g.Attributes.GetDouble("polylineDistance", DefaultPolylineDistance)
+}
+
 // Parse builds an area from the WKT the Java server stores in geofence areas.
 // Supported forms are
 //
 //	POLYGON ((lat lon, lat lon, ...))
 //	CIRCLE (lat lon, radius-in-metres)
+//	LINESTRING (lat lon, lat lon, ...)
+//
+// A line uses DefaultPolylineDistance as its corridor width. Use
+// ParseWithDistance when the geofence carries a polylineDistance attribute.
 func Parse(wkt string) (Area, error) {
+	return ParseWithDistance(wkt, DefaultPolylineDistance)
+}
+
+// ParseWithDistance is Parse for callers that know the polyline corridor width,
+// which the Java server reads from the geofence attributes. The distance is
+// ignored by the other geometry types.
+func ParseWithDistance(wkt string, polylineDistance float64) (Area, error) {
 	trimmed := strings.TrimSpace(wkt)
 	switch {
 	case strings.HasPrefix(trimmed, "POLYGON"):
 		return parsePolygon(trimmed)
 	case strings.HasPrefix(trimmed, "CIRCLE"):
 		return parseCircle(trimmed)
+	case strings.HasPrefix(trimmed, "LINESTRING"):
+		return parsePolyline(trimmed, polylineDistance)
 	default:
 		return nil, fmt.Errorf("geofence: unknown geometry type in %q", wkt)
 	}

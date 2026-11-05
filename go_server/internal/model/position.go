@@ -135,6 +135,7 @@ const (
 	AlarmHardAcceleration = "hardAcceleration"
 	AlarmHardBraking      = "hardBraking"
 	AlarmHardCornering    = "hardCornering"
+	AlarmCornering        = "cornering"
 	AlarmLaneChange       = "laneChange"
 	AlarmFatigueDriving   = "fatigueDriving"
 	AlarmPowerCut         = "powerCut"

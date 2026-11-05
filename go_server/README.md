@@ -41,7 +41,7 @@ client ──HTTP/WebSocket──▶ api.Server (RequireAuth: api-key / api_toke
 cd go_server
 make build        # bin/traccar-gateway, bin/device-sim
 make test         # go test ./...
-make smoke        # replay four protocol scenes, no database
+make smoke        # replay the bundled protocol scenes, no database
 make run          # in-memory mode (REST disabled)
 
 make db-up        # postgres:16 → 127.0.0.1:55432
@@ -137,6 +137,10 @@ Config / environment only:
 | Wondex | `#DD#` + `;`-separated fields; encoder covers the reference downlink set (`REBOOT`, `TEST`, `GSMINFO`, `IMEI`, `GETLOCATION`, `VER`) | — |
 | Suntech | `STT/ALT/EMG/EVT/UEX/BLE`, universal, zip / binary; encoder covers the legacy `SA200CMD;...` downlink set (`Reboot`, `StatusReq`, `Enable`/`Disable` outputs, engine and arm/disarm) | universal command layout (needs the live decoder state) |
 | Ruptela | IMEI handshake, Records / Extended, DTC, IO configuration; encoders complete | — |
+| GT02 | `0x68 0x68` length frame, position, heartbeat ACK and command response; decoder only, the reference ships no encoder | — |
+| GPS056 | `$$` length frame, `LOGN` / `GPSL` / `SYNC`, status fields and ACK; decoder only, the reference ships no encoder | — |
+| Gator | `24 24` type + length frame, BCD time and coordinates, M588 Luhn IMEI, alarm bits, ACK; encoder covers `positionSingle`, engine stop/resume, speed limit and odometer with the reference's message-type mapping | — |
+| Startek | `&&` index + length sentence, event / driver id / cell tower / ADC / fuel / temperature / OBD extended, `710` serial T1/T2; encoder covers custom, output control and engine stop/resume | — |
 
 ## Database
 
@@ -360,8 +364,8 @@ their own name / attributes / password but cannot grant themselves administrator
 
 | Area | Go version | Gap |
 | --- | --- | --- |
-| Protocol decoders | 12 | 256 |
-| Command encoders | 5 | 60 |
+| Protocol decoders | 16 | 252 |
+| Command encoders | 12 | 47 |
 | Pipeline / events | 15 stages / 12 rules | 0 |
 | OpenAPI paths | 76 | 0 |
 | Geo providers | geocoder 26, geolocation 6 | — |

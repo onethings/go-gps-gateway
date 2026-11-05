@@ -29,7 +29,7 @@ vet: ## go vet
 fmt: ## go fmt
 	$(GO) fmt ./...
 
-smoke: build ## replay the four protocol scenes against a throwaway gateway
+smoke: build ## replay the bundled protocol scenes against a throwaway gateway
 	BIN_DIR=$(BIN_DIR) SMOKE_NO_BUILD=1 ./scripts/smoke.sh
 
 rest-e2e: build ## replay the scenes against PostgreSQL or MySQL (DSN) and check positions, alerts and commands

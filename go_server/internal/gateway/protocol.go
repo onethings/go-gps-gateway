@@ -10,7 +10,10 @@ import (
 
 	"traccar-server_go/go_server/internal/codec"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/protocol/gator"
+	"traccar-server_go/go_server/internal/protocol/gps056"
 	"traccar-server_go/go_server/internal/protocol/gps103"
+	"traccar-server_go/go_server/internal/protocol/gt02"
 	"traccar-server_go/go_server/internal/protocol/gt06"
 	"traccar-server_go/go_server/internal/protocol/h02"
 	"traccar-server_go/go_server/internal/protocol/jt808"
@@ -18,6 +21,7 @@ import (
 	"traccar-server_go/go_server/internal/protocol/mqtt"
 	"traccar-server_go/go_server/internal/protocol/osmand"
 	"traccar-server_go/go_server/internal/protocol/ruptela"
+	"traccar-server_go/go_server/internal/protocol/startek"
 	"traccar-server_go/go_server/internal/protocol/suntech"
 	"traccar-server_go/go_server/internal/protocol/teltonika"
 	"traccar-server_go/go_server/internal/protocol/tk103"
@@ -275,6 +279,49 @@ func DefaultRegistry() *Registry {
 				model.CommandOutputControl, model.CommandSetConnection,
 				model.CommandSetOdometer,
 			},
+		}
+	})
+
+	registry.Add(gator.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            gator.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return gator.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return gator.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return gator.NewEncoder(base) },
+			DataCommands: []string{
+				model.CommandEngineResume, model.CommandEngineStop,
+				model.CommandPositionSingle, model.CommandSetOdometer,
+				model.CommandSetSpeedLimit,
+			},
+		}
+	})
+
+	registry.Add(startek.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            startek.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return &startek.FrameDecoder{} },
+			NewDecoder:      func() codec.Decoder { return startek.NewDecoder(base) },
+			NewEncoder:      func() codec.Encoder { return startek.NewEncoder(base) },
+			DataCommands: []string{
+				model.CommandCustom, model.CommandEngineResume,
+				model.CommandEngineStop, model.CommandOutputControl,
+			},
+		}
+	})
+
+	registry.Add(gps056.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            gps056.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return gps056.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return gps056.NewDecoder(base) },
+		}
+	})
+
+	registry.Add(gt02.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            gt02.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return gt02.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return gt02.NewDecoder(base) },
 		}
 	})
 

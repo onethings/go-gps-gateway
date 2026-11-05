@@ -1,0 +1,13 @@
+{
+  "name": "gt02",
+  "protocol": "gt02",
+  "uniqueId": "123456789012345",
+  "handshake": false,
+  "positions": 1,
+  "steps": [
+    {
+      "name": "position",
+      "hex": "68682500000123456789012345000110010101010101026b3f3e026b3f3e000000000000000000010d0a"
+    }
+  ]
+}

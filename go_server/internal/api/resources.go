@@ -791,17 +791,18 @@ func (s *Server) geofenceResource() *resource[geofence.Geofence] {
 			if err != nil {
 				return nil, err
 			}
-			area, err := geofence.Parse(body.Area)
-			if err != nil {
-				return nil, fmt.Errorf("invalid area: %w", err)
-			}
-			return &geofence.Geofence{
+			fence := &geofence.Geofence{
 				CalendarID:  body.CalendarID,
 				Name:        body.Name,
 				Description: body.Description,
-				Area:        area,
 				Attributes:  body.Attributes,
-			}, nil
+			}
+			area, err := geofence.ParseWithDistance(body.Area, fence.PolylineDistance())
+			if err != nil {
+				return nil, fmt.Errorf("invalid area: %w", err)
+			}
+			fence.Area = area
+			return fence, nil
 		},
 		setID: func(fence *geofence.Geofence, id int64) { fence.ID = id },
 		id:    func(fence *geofence.Geofence) int64 { return fence.ID },

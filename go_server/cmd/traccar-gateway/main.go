@@ -102,6 +102,17 @@ func main() {
 	// The socket hub exists before the sinks so the pipeline can publish while
 	// the API server is still being assembled.
 	socketHub := api.NewSocketHub()
+	// The web channel has no server-wide target: it delivers to the open
+	// sessions of the account that subscribed, so it exists whenever the API
+	// server does. A device can still switch it off with notifyWeb.
+	channels = append(channels, notify.Channel{
+		Notifier:  notify.NewWeb(socketHub),
+		Attribute: "notifyWeb",
+		UserTarget: func(subscription model.NotificationSubscription) []string {
+			return []string{strconv.FormatInt(subscription.UserID, 10)}
+		},
+		SubscriptionOnly: true,
+	})
 	// With Redis the live feed is shared between nodes: a browser connected to
 	// one node sees what the other ingested. Authentication needs no such
 	// bridge, because the tokens live in the database.

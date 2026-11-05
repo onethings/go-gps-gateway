@@ -112,6 +112,12 @@ Frequent flags: `-dsn`, `-api-key`, `-web-path`, `-allow-anonymous`, `-auto-regi
 `-command-attempts` (3) / `-command-queue` (32) / `-command-queue-ttl` (5m) / `-command-retention`
 (168h), `-disable-share`, `-notify-*`.
 
+A notification preset may name `mail`, `webhook`, `web`, `sms`, `telegram`, `whatsapp`, `pushover`,
+`firebase`, `traccar` or `command`. `web` needs no configuration: it delivers the alert to the open
+sessions of the account that subscribed, with the rendered text in the event's `message` attribute, which
+is the popup the front end shows. A device switches it off with the `notifyWeb` attribute, the same way
+the other channels use `notifyEmail` and `notifyWebhook`.
+
 Config / environment only:
 
 | Feature | Keys |

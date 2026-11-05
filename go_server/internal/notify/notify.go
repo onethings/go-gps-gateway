@@ -43,23 +43,26 @@ const (
 	NotificatorWhatsapp = "whatsapp"
 	// NotificatorCommand forwards the alert as a device command.
 	NotificatorCommand = "command"
+	// NotificatorWeb delivers the alert to the open web sessions of the
+	// subscribed account, which is what the front end shows as a popup.
+	NotificatorWeb = "web"
 )
 
 // KnownNotificators is every channel name a subscription may store.
 var KnownNotificators = []string{
 	NotificatorMail, NotificatorWebhook, NotificatorTelegram, NotificatorPushover,
 	NotificatorSms, NotificatorFirebase, NotificatorTraccar, NotificatorWhatsapp,
-	NotificatorCommand,
+	NotificatorCommand, NotificatorWeb,
 }
 
 // canonicalNotificator maps the historical spellings onto the channel names the
-// code uses: "email" was accepted for "mail" and "web" for "webhook".
+// code uses: "email" was accepted for "mail". The "web" alias for "webhook"
+// that older builds wrote is gone, because "web" is the account's own web
+// session and "webhook" is an external URL.
 func canonicalNotificator(value string) string {
 	switch name := strings.ToLower(strings.TrimSpace(value)); name {
 	case "email":
 		return NotificatorMail
-	case "web":
-		return NotificatorWebhook
 	default:
 		return name
 	}
@@ -78,6 +81,10 @@ const (
 	// AttrNotifyEmail overrides the email recipients for the device. false (or
 	// an empty value) disables the channel for that device.
 	AttrNotifyEmail = "notifyEmail"
+	// AttributeMessage is the event attribute the web channel fills with the
+	// rendered text. The front end reads it for the popup, the same key
+	// NotificatorWeb writes in the Java server.
+	AttributeMessage = "message"
 )
 
 // DeviceLookup resolves the device an alert belongs to. *storage.Store
@@ -167,4 +174,9 @@ type Channel struct {
 	// telegramChatId or phone. Nil means the channel has no per-user target, so
 	// a subscription only enables Defaults.
 	UserTarget func(subscription model.NotificationSubscription) []string
+	// SubscriptionOnly marks a channel that has no server-wide recipient and
+	// therefore runs only when an account subscribed to it or a device set
+	// Attribute. The web channel is one, because its target is the account's
+	// own open session.
+	SubscriptionOnly bool
 }

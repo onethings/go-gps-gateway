@@ -397,3 +397,32 @@ func interpretPosition(t *testing.T, payload []byte) (int64, error) {
 	}
 	return message.Positions[0].ID, nil
 }
+
+// TestSocketPublishesEventToUserOnly pins the targeting the web notification
+// channel relies on: the copy that carries the rendered message reaches the
+// subscribed account's sessions and nobody else's.
+func TestSocketPublishesEventToUserOnly(t *testing.T) {
+	hub := NewSocketHub()
+	latest := &fakeLatestPositions{}
+
+	// Alerts only, so the connection has no position seed to read first.
+	alice := socketServer(hub, latest, auth.NewPrincipal(1, false, []auth.Scope{auth.ScopeReadAlerts}, []int64{3}))
+	bob := socketServer(hub, latest, auth.NewPrincipal(2, false, []auth.Scope{auth.ScopeReadAlerts}, []int64{3}))
+
+	alicePeer := openSocket(t, alice, "/api/socket?token="+testToken)
+	bobPeer := openSocket(t, bob, "/api/socket?token="+testToken)
+	waitForConnections(t, hub, 2)
+
+	hub.PushEventToUser(1, &model.Event{
+		ID:         9,
+		DeviceID:   3,
+		Type:       model.EventAlarm,
+		Attributes: model.Attributes{"message": "truck alarm"},
+	})
+
+	payload := alicePeer.receive(t)
+	if !strings.Contains(string(payload), `"message":"truck alarm"`) {
+		t.Errorf("payload = %s, want the rendered message", payload)
+	}
+	bobPeer.expectSilence(t)
+}

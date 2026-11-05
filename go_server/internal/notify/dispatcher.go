@@ -212,7 +212,7 @@ func (d *Dispatcher) deliver(alert *model.Event) {
 			continue
 		}
 		targets, enabled, overridden := resolveTargets(attributes, channel)
-		if !enabled {
+		if !enabled && !channel.SubscriptionOnly {
 			continue
 		}
 		// An explicit device attribute wins over every subscription. Otherwise

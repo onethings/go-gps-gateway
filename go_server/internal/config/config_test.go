@@ -145,6 +145,31 @@ func TestFileLayerOverridesTheDefaults(t *testing.T) {
 	}
 }
 
+func TestJT1078PortDefaultsToTheReferencePort(t *testing.T) {
+	if got := Default().String(JT1078Port); got != "5263" {
+		t.Errorf("%s = %q, want 5263", JT1078Port, got)
+	}
+	if got := Default().Protocol("jt808").String(JT1078Port); got != "5263" {
+		t.Errorf("protocol.jt808 %s = %q, want 5263", JT1078Port, got)
+	}
+
+	path := writeConfig(t, `<?xml version='1.0' encoding='UTF-8'?>
+<properties>
+	<entry key='jt1078.port'>1078</entry>
+</properties>`)
+
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.String(JT1078Port); got != "1078" {
+		t.Errorf("%s = %q, want the file value", JT1078Port, got)
+	}
+	if got := cfg.Protocol("jt808").String(JT1078Port); got != "1078" {
+		t.Errorf("protocol.jt808 %s = %q, want the file value", JT1078Port, got)
+	}
+}
+
 func TestEnvironmentOverridesTheFileAndTheFlagOverridesBoth(t *testing.T) {
 	path := writeConfig(t, `<properties>
 	<entry key='web.address'>127.0.0.1:9000</entry>

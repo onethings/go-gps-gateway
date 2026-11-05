@@ -31,9 +31,10 @@ const (
 	// tells a terminal where to stream video.
 	WebURL = "web.url"
 	// JT1078Port is the port a terminal streams JT1078 video to. It is the
-	// address the JT808 videoStart command advertises; the listener is a
-	// separate switch so a deployment that already sets this key keeps running
-	// without one.
+	// address the JT808 videoStart command advertises. The value defaults to
+	// 5263, the port the reference serves the jt1078 protocol on.
+	// protocol.jt1078.address is still the switch that starts the listener, so
+	// setting this key alone receives nothing.
 	JT1078Port = "jt1078.port"
 	// JT1078Address is where the gateway listens for the JT1078 stream, for
 	// example 0.0.0.0:1078. Empty disables the listener, which is the default.
@@ -520,6 +521,9 @@ var defaults = map[string]string{
 	APILoginMaxFailures: "5",
 	APILoginLockout:     "15m",
 	DisableShare:        "false",
+	// The port the reference serves the jt1078 protocol on, so the JT808
+	// videoStart command works without extra configuration.
+	JT1078Port: "5263",
 
 	AlertGeofenceRefresh: "5m",
 	StatisticsInterval:   "1m",

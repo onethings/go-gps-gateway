@@ -4,10 +4,13 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"traccar-server_go/go_server/internal/codec"
+	"traccar-server_go/go_server/internal/config"
 	"traccar-server_go/go_server/internal/helper"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/protocol/protocaltest"
@@ -453,5 +456,34 @@ func TestEncodeVideoStartNeedsEndpoint(t *testing.T) {
 				t.Fatalf("err = %v, want ErrUnsupportedCommand", err)
 			}
 		})
+	}
+}
+
+// TestEncodeVideoStartUsesTheReferencePortByDefault pins that videoStart names
+// the port the reference serves jt1078 on without extra configuration.
+func TestEncodeVideoStartUsesTheReferencePortByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traccar.xml")
+	content := `<?xml version='1.0' encoding='UTF-8'?>
+<properties>
+	<entry key='web.url'>http://video.example.com</entry>
+</properties>`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	cfg, err := config.Load(path, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	base := testBase()
+	base.Config = cfg.Protocol("jt808").String
+	messageType, payload := encode(t, base,
+		makeCommand(model.CommandVideoStart, map[string]any{model.CmdKeyIndex: 2}))
+	if messageType != msgVideoRequest {
+		t.Errorf("message type = %04x, want %04x", messageType, msgVideoRequest)
+	}
+	want := "11" + "766964656f2e6578616d706c652e636f6d" + "148f" + "0000" + "02" + "01" + "00"
+	if payload != want {
+		t.Errorf("payload = %s, want %s", payload, want)
 	}
 }

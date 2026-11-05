@@ -16,6 +16,7 @@ import (
 	"traccar-server_go/go_server/internal/protocol/gt02"
 	"traccar-server_go/go_server/internal/protocol/gt06"
 	"traccar-server_go/go_server/internal/protocol/h02"
+	"traccar-server_go/go_server/internal/protocol/jt1078"
 	"traccar-server_go/go_server/internal/protocol/jt808"
 	"traccar-server_go/go_server/internal/protocol/meitrack"
 	"traccar-server_go/go_server/internal/protocol/mqtt"
@@ -151,6 +152,16 @@ func DefaultRegistry() *Registry {
 				model.CommandVoiceMessage, model.CommandRequestPhoto, model.CommandSetSpeedLimit,
 				model.CommandOutputControl, model.CommandVideoStart, model.CommandVideoStop,
 			},
+		}
+	})
+
+	// JT1078 carries video, not positions, so it has no encoder and no text
+	// channel. The decoder hands every complete access unit to the media sink.
+	registry.Add(jt1078.ProtocolName, func(base codec.Base) *Protocol {
+		return &Protocol{
+			Name:            jt1078.ProtocolName,
+			NewFrameDecoder: func() codec.FrameDecoder { return jt1078.NewFrameDecoder() },
+			NewDecoder:      func() codec.Decoder { return jt1078.NewDecoder(base) },
 		}
 	})
 

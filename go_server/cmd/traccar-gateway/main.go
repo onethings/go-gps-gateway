@@ -22,16 +22,19 @@ import (
 	"traccar-server_go/go_server/internal/alert"
 	"traccar-server_go/go_server/internal/api"
 	"traccar-server_go/go_server/internal/auth"
+	"traccar-server_go/go_server/internal/codec"
 	"traccar-server_go/go_server/internal/config"
 	"traccar-server_go/go_server/internal/eventctx"
 	"traccar-server_go/go_server/internal/forward"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/geo"
 	"traccar-server_go/go_server/internal/handler"
+	"traccar-server_go/go_server/internal/hls"
 	"traccar-server_go/go_server/internal/media"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
 	"traccar-server_go/go_server/internal/notify"
+	"traccar-server_go/go_server/internal/protocol/jt1078"
 	"traccar-server_go/go_server/internal/redisbus"
 	"traccar-server_go/go_server/internal/report"
 	"traccar-server_go/go_server/internal/schedule"
@@ -614,8 +617,21 @@ func main() {
 		}
 	}
 
+	// The JT1078 listener writes segments into the same tree the REST layer
+	// serves. A gateway without stream.path has nowhere to put them, so an
+	// enabled listener is a configuration error instead of a silent drop.
+	var mediaSink codec.MediaSink
+	if streamPath := settings.Config.String(config.StreamPath); streamPath != "" {
+		mediaSink = hls.NewManager(streamPath, hls.WithLogger(log.Printf))
+	}
+	for _, protocol := range settings.Protocols {
+		if protocol.Name == jt1078.ProtocolName && protocol.Address != "" && mediaSink == nil {
+			log.Fatalf("protocol.jt1078 needs %s", config.StreamPath)
+		}
+	}
+
 	listeners := newListenerSet(ctx, registry, directory, sink, router, meters, commands, sessions,
-		settings.Config, log.Printf)
+		mediaSink, settings.Config, log.Printf)
 	for _, protocol := range settings.Protocols {
 		if err := listeners.start(protocol); err != nil {
 			log.Fatal(err)

@@ -54,9 +54,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	repeat := flags.Int("repeat", 1, "times to replay the scene on one connection")
 	connections := flags.Int("connections", 1, "parallel connections")
 	readWait := flags.Duration("read-wait", 300*time.Millisecond, "idle wait for replies after the last write")
+	jt1078File := flags.String("jt1078-file", "", "Annex-B H.264/H.265 file to push to a JT1078 listener; replaces -scene")
+	jt1078ID := flags.String("jt1078-id", "013512345006", "terminal identifier used with -jt1078-file")
+	jt1078Channel := flags.Int("jt1078-channel", 1, "video channel used with -jt1078-file")
+	jt1078Codec := flags.String("jt1078-codec", "h264", "h264 or h265, used with -jt1078-file")
+	jt1078FPS := flags.Int("jt1078-fps", 25, "frame rate that paces -jt1078-file; 0 sends as fast as possible")
 
 	if err := flags.Parse(args); err != nil {
 		return 2
+	}
+	if *jt1078File != "" {
+		return runJT1078(*address, *jt1078File, *jt1078ID, *jt1078Channel, *jt1078Codec, *jt1078FPS,
+			stdout, stderr)
 	}
 	if *scenePath == "" {
 		fmt.Fprintln(stderr, "device-sim: -scene is required")

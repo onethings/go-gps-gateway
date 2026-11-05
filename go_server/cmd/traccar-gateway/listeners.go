@@ -9,10 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"traccar-server_go/go_server/internal/codec"
 	"traccar-server_go/go_server/internal/config"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/metrics"
 	"traccar-server_go/go_server/internal/model"
+	"traccar-server_go/go_server/internal/protocol/jt1078"
 	"traccar-server_go/go_server/internal/session"
 )
 
@@ -41,6 +43,7 @@ type listenerSet struct {
 	meters    *metrics.Set
 	commands  *gateway.Dispatcher
 	sessions  *session.Manager
+	media     codec.MediaSink
 	logf      func(format string, args ...any)
 	// config is only read for the per-protocol poll keys.
 	config *config.Config
@@ -64,7 +67,8 @@ type protocolListener struct {
 func newListenerSet(
 	parent context.Context, registry *gateway.Registry, directory gateway.DeviceDirectory, sink gateway.Sink,
 	router *gateway.Router, meters *metrics.Set, commands *gateway.Dispatcher,
-	sessions *session.Manager, cfg *config.Config, logf func(format string, args ...any),
+	sessions *session.Manager, media codec.MediaSink, cfg *config.Config,
+	logf func(format string, args ...any),
 ) *listenerSet {
 	return &listenerSet{
 		config:    cfg,
@@ -76,6 +80,7 @@ func newListenerSet(
 		meters:    meters,
 		commands:  commands,
 		sessions:  sessions,
+		media:     media,
 		logf:      logf,
 		running:   make(map[string]*protocolListener),
 		configs:   make(map[string]config.ProtocolSettings),
@@ -138,6 +143,9 @@ func (l *listenerSet) newServer(protocol config.ProtocolSettings) (*gateway.Serv
 		options = append(options, gateway.WithProtocolConfig(
 			func(key string) string { return l.config.Protocol(protocol.Name).String(key) },
 		))
+	}
+	if l.media != nil {
+		options = append(options, gateway.WithMediaSink(l.media))
 	}
 	return gateway.NewServer(l.registry, protocol.Name, l.directory, l.sink, options...)
 }
@@ -389,6 +397,9 @@ func (l *listenerSet) ApplyProtocolSettings(ctx context.Context, settings model.
 
 	if !known {
 		return fmt.Errorf("unknown protocol %q", settings.Protocol)
+	}
+	if settings.Protocol == jt1078.ProtocolName && l.media == nil {
+		return fmt.Errorf("%s needs %s", settings.Protocol, config.StreamPath)
 	}
 	if !model.ValidTransport(transport) {
 		return fmt.Errorf("%s: unknown transport %q", settings.Protocol, transport)

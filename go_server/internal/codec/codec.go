@@ -148,6 +148,37 @@ type Encoder interface {
 	EncodeCommand(command *model.Command) ([]byte, error)
 }
 
+// MediaCodec is the video codec a media payload carries.
+type MediaCodec uint8
+
+const (
+	// MediaCodecUnknown marks a payload the decoder could not identify.
+	MediaCodecUnknown MediaCodec = iota
+	// MediaCodecH264 is H.264/AVC in Annex-B framing.
+	MediaCodecH264
+	// MediaCodecH265 is H.265/HEVC in Annex-B framing.
+	MediaCodecH265
+)
+
+// MediaFrame is one complete video access unit a protocol received from a
+// device. Payload keeps the Annex-B start codes the terminal sent, so the
+// segmenter prepends nothing and reorders nothing.
+type MediaFrame struct {
+	DeviceID  int64
+	Channel   int
+	Codec     MediaCodec
+	Timestamp time.Time
+	KeyFrame  bool
+	Payload   []byte
+}
+
+// MediaSink consumes the video frames of the protocols that stream media
+// instead of reporting positions. Implementations must treat Payload as read
+// only and must not retain it after WriteFrame returns.
+type MediaSink interface {
+	WriteFrame(frame MediaFrame)
+}
+
 // Base carries the shared decoder dependencies.
 type Base struct {
 	Resolver     DeviceResolver
@@ -169,6 +200,10 @@ type Base struct {
 	// configuration is available, which is the case in tests and whenever the
 	// command types are listed without a running server.
 	Config func(key string) string
+	// Media receives the video frames of a media protocol such as JT1078. Nil
+	// drops them, which is what a gateway without a configured stream path
+	// wants.
+	Media MediaSink
 }
 
 // NextSerial returns the serial for one downlink frame.

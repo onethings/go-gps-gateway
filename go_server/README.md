@@ -11,8 +11,8 @@ notifications, command dispatch and processing chain.
 
 ## Status
 
-- **Protocols**: 12 (H02, GT06, JT808, Teltonika, OsmAnd, MQTT, GPS103, TK103, Meitrack, Wondex,
-  Suntech, Ruptela) over TCP / UDP / TLS / HTTP / poll.
+- **Protocols**: 13 (H02, GT06, JT808, JT1078 video, Teltonika, OsmAnd, MQTT, GPS103, TK103,
+  Meitrack, Wondex, Suntech, Ruptela) over TCP / UDP / TLS / HTTP / poll.
 - **Pipeline**: all 15 stages — Time / Hemisphere, Geolocation / Geocoder / CopyAttributes /
   EngineHours, ComputedAttributes (`internal/expr`), ProximityRule.
 - **REST**: devices / positions / events, accounts and tokens, TOTP, permissions and sharing, resource
@@ -93,6 +93,10 @@ Default listeners (same-named flags override; empty string disables):
 | MQTT | `-mqtt` | `:1883` | Ruptela | `-ruptela` | `:5046` |
 | REST | `-http` | `:8082` (needs `-dsn`) | | | |
 
+JT1078 video is off by default. Set `stream.path` and pass `-jt1078 <address>` (or
+`protocol.jt1078.address`) to receive it; the terminal is told the address in `jt1078.port`, which on its
+own starts nothing.
+
 Frequent flags: `-dsn`, `-api-key`, `-web-path`, `-allow-anonymous`, `-auto-register` (true),
 `-batch-size` (500) / `-batch-interval` (1s), `-overspeed-knots` / `-power-cut-volts` (0 = off),
 `-alert-repeat` (0), `-geofence-refresh` / `-device-refresh` (5m), `-login-max-failures` (5) /
@@ -107,8 +111,9 @@ Config / environment only:
 | Frontend hosting | `web.path` (traccar-web build dir; also the write root of `POST /api/server/file/{path}`; empty = no hosting, no uploads) |
 | Position attribute copy | `position.copyAttributes` (comma separated; empty = off) |
 | Device images | `deviceImage.path` (default `<media.path>/devices`) |
-| HLS streaming | `stream.path` (an external generator writes `<path>/<deviceId>/index.m3u8`) |
-| JT808 command layouts | `protocol.jt808.alternative` = true sends engine control as the oil control message some terminals need; `web.url` and `jt1078.port` fill the videoStart command (the gateway runs no JT1078 listener) |
+| HLS streaming | `stream.path` (required by the JT1078 listener; segments go to `<path>/<deviceId>/<channel>/`, and `<path>/<deviceId>/index.m3u8` follows the main channel) |
+| JT1078 listener | `protocol.jt1078.address` (or `-jt1078`); empty = off. It never reads `jt1078.port`, so a deployment that only advertises the port keeps running without a listener |
+| JT808 command layouts | `protocol.jt808.alternative` = true sends engine control as the oil control message some terminals need; `web.url` and `jt1078.port` fill the videoStart command |
 | GT06 command layouts | `protocol.gt06.alternative` = true sends the engine commands as `DYD,<password>` / `HFYD,<password>`; `protocol.gt06.language` adds the optional english field to every command frame; `protocol.gt06.devicePassword` is the password the alternative layout carries (default `123456`) |
 | TK103 command layouts | `protocol.tk103.alternative` = true sends the SMS2 layout (`[begin]sms2,...[end]`) instead of the legacy parenthesised sentences; `protocol.tk103.devicePassword` fills the `*master*` SOS command (default `123456`) |
 | Meitrack command layouts | `protocol.meitrack.alternative` = true sends arm/disarm as `B21,1` / `B21,0`; the default is the `C01` form |
@@ -129,6 +134,7 @@ Config / environment only:
 | H02 | text `V1/V3/V4/V5/V6/V8/V19`, `NBR`, `LINK`, `VP1`, `HTBT`, `SMS`, heartbeat; binary 32/45-byte frames, `X` frames, `R12` replies; encoder covers the H02 downlink set (`SCF` arm/disarm, `S20` engine control, `S71` reporting interval, the `D1` interval when `protocol.h02.alternative` is set, raw custom) | — |
 | GT06 | login / heartbeat / GPS-LBS, `0x2A` address, `0x8A` time sync, `0x94` voltage, WiFi scan (`0x17`, `0x69`, `0xF3`, `0x2C`), CRC16/X25 ACK, `NT_MODELS` layouts; encoder covers the Concox downlink set (`WHERE`, `TIMER`, `Relay`/`DYD`/`HFYD`, `RESET`, `FACTORY`, `POWEROFF`, `STATUS`, `VERSION`, `PARAM`, `SOS`/`CENTER`/`LISTEN`, `SERVER`/`DOMAIN`, raw custom), with the G109 `DYD`/`HFYD` engine layout | — |
 | JT808 | 2013/2019 headers, `0x7E` escaping, XOR, register / position / batch position (`0x0704`, `0x0210`), heartbeat / ICCID / time sync, driver card (`0x0702`), parameter query response (`0x0104`), pass-through (`0x0900`), ADAS/DMS/TPMS/OBD extensions (`0x64`, `0x65`, `0x77`, `0x91`, `0xE6`); all 21 downlink commands from the reference encoder, including the model specific custom and engine layouts | — |
+| JT1078 | packet header (6 and 10 byte identifiers), I-frames / P-frames / B-frames, sub-packaged access units, H.264 and H.265; the access units become MPEG-TS segments and an m3u8 playlist under `stream.path` | audio, talk, transparent data |
 | Teltonika | IMEI handshake, Codec 8 / 8E / 12 / 13, variable-length elements, LAC/CID, BLE beacons (`385`) and BLE tags (`548`, `10828`, `10829`, `10831`, `11317`); encoder covers the reference downlink set (`setdigout` engine stop/resume, raw custom as ASCII or hex) | Codec 7 (GH3000) |
 | OsmAnd, MQTT | OsmAnd query string; MQTT 3.1.1 reuses the same decoder | — |
 | GPS103 | `imei:` text sentence, decimal degrees + hemisphere; encoder covers the reference downlink set (`B` single, `C` periodic, `D` stop, `J`/`K` engine, `L`/`M` arm/disarm, `160` photo, raw custom) | — |
@@ -240,6 +246,7 @@ curl -H "X-Api-Key: $(sudo cat /opt/traccar/conf/api-key)" http://127.0.0.1:8082
 # open the protocol ports in ufw and in the cloud security group
 sudo ufw allow 22/tcp; sudo ufw allow 80,443/tcp
 sudo ufw allow 5013,5023,5027,8610/tcp        # H02 / GT06 / Teltonika / JT808
+sudo ufw allow 1078/tcp                       # JT1078 video, only when the listener is enabled
 sudo ufw allow 5001,5002,5006,5011,5020,5046/tcp; sudo ufw allow 5055,1883/tcp
 sudo timedatectl set-timezone Asia/Taipei     # H02 / GT06 time sync and encoding use local time
 
@@ -344,6 +351,21 @@ their own name / attributes / password but cannot grant themselves administrator
 - `make smoke`: replay without a database; `make rest-e2e`: full chain against `DSN` (PostgreSQL or MySQL).
 - `cmd/device-sim`: device simulator.
 
+### JT1078 video
+
+The listener is opt-in. Give it a place to write and an address:
+
+    TRACCAR_STREAM_PATH=/var/lib/traccar/streams ./bin/traccar-gateway -dsn "sqlite://traccar.db" -jt1078 0.0.0.0:1078
+
+Replay a recorded Annex-B elementary stream with the simulator. It splits the access units, assigns
+timestamps, and sub-packages anything larger than one JT1078 body:
+
+    ./bin/device-sim -addr 127.0.0.1:1078 -jt1078-file sample.h264 -jt1078-id 013512345006
+
+`GET /api/stream/{deviceId}` answers with the playlist URL once the first segment closes. The segment
+length follows the key frame interval of the terminal: a stream with one key frame per second gives one
+second segments, and a stream with a single key frame at the start gives one long segment.
+
 ## Known limitations
 
 - With `-dsn` REST requires credentials; `-api-key` or the first registered account grants admin.
@@ -374,11 +396,11 @@ their own name / attributes / password but cannot grant themselves administrator
 | Auth | password, token, TOTP, OpenID, LDAP | 0 |
 | Frontend | hosts a traccar-web build directly (same-origin) | no bundled build; bring your own `web/` |
 | Horizontal scale | Redis push | multicast; cross-node device sessions |
-| Video | upload / download, HLS endpoint | JT1078 decoding and segmentation |
+| Video | upload / download, JT1078 to HLS, stream endpoint | audio and talk channels |
 | Scheduling | 10 | — |
 
 Next: add protocols and encoders for customer devices → map the reference `tc_*` schema so an existing
-Java database can be attached → add JT1078 for live video.
+Java database can be attached.
 
 ## License
 

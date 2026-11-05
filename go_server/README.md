@@ -11,12 +11,17 @@ notifications, command dispatch and processing chain.
 
 ## Status
 
-- **Protocols**: 13 (H02, GT06, JT808, JT1078 video, Teltonika, OsmAnd, MQTT, GPS103, TK103,
-  Meitrack, Wondex, Suntech, Ruptela) over TCP / UDP / TLS / HTTP / poll.
+- **Protocols**: 17 (H02, GT06, JT808, JT1078 video, Teltonika, OsmAnd, MQTT, GPS103, TK103,
+  Meitrack, Wondex, Suntech, Ruptela, GT02, GPS056, Gator, Startek) over TCP / UDP / TLS / HTTP / poll;
+  JT1078 access units become MPEG-TS segments and an m3u8 playlist.
 - **Pipeline**: all 15 stages — Time / Hemisphere, Geolocation / Geocoder / CopyAttributes /
   EngineHours, ComputedAttributes (`internal/expr`), ProximityRule.
-- **REST**: devices / positions / events, accounts and tokens, TOTP, permissions and sharing, resource
-  CRUD, commands, WebSocket, statistics, media, HLS, OpenID, LDAP, password self-service.
+- **REST**: devices / positions / events, accounts and tokens (device / user limits), TOTP, permissions
+  and sharing, resource CRUD, commands, WebSocket, statistics, media, HLS, OpenID, LDAP, password
+  self-service.
+- **Frontend**: the bundled traccar-web build is served same-origin (cookie and WebSocket need no CORS).
+- **Storage**: PostgreSQL, MySQL 8.0+, SQLite; `database.schema=reference` attaches an existing Traccar
+  `tc_devices` / `tc_positions` database.
 - **Output**: JSON, URL, MQTT, Redis, Wialon, Network (TCP/UDP), AMQP 0-9-1, Kafka.
 - **Scheduling**: expiration, temporary, cleanup, health, reports, deviceInactive, deviceExpiration,
   plus events / positions / commands retention.
@@ -92,7 +97,9 @@ Default listeners (same-named flags override; empty string disables):
 | Teltonika | `-teltonika` | `:5027` | Wondex | `-wondex` | `:5006` |
 | OsmAnd | `-osmand` | `:5055` (http) | Suntech | `-suntech` | `:5011` |
 | MQTT | `-mqtt` | `:1883` | Ruptela | `-ruptela` | `:5046` |
-| REST | `-http` | `:8082` (needs `-dsn`) | | | |
+| GT02 | `-gt02` | `:5022` | GPS056 | `-gps056` | `:5141` |
+| Gator | `-gator` | `:5052` | Startek | `-startek` | `:5222` |
+| REST | `-http` | `:8082` (needs `-dsn`) | JT1078 | `-jt1078` | empty = off (needs `stream.path`) |
 
 JT1078 video is off by default. Set `stream.path` and pass `-jt1078 <address>` (or
 `protocol.jt1078.address`) to receive it; the terminal is told the address in `jt1078.port`, which on its
@@ -453,9 +460,10 @@ The interface and the API share an origin, so the session cookie and the socket 
 
 - With `-dsn` REST requires credentials; `-api-key` or the first registered account grants admin.
 - Accounts: pagination only, email immutable after creation, failed logins locked out (bcrypt cost 12).
-- `users` has no `device_limit` / `user_limit`, so the API always returns 0 (until the `tc_*` work).
-- `PUT /api/devices/{id}` replaces all fields; `protocol` / `uniqueId` are immutable; `disabled` does not
-  block ingestion yet.
+- `deviceLimit` is administrator only and gates device creation (`-1` = no cap); `userLimit` is stored
+  for the Java client but gates nothing, because only administrators create accounts here.
+- `PUT /api/devices/{id}` replaces all fields; `protocol` / `uniqueId` are immutable; a disabled device
+  keeps its session, but its positions are dropped.
 - Group permissions only affect device visibility; notifications still resolve `user → device`.
 - Share accounts are deleted by an admin or when `schedule.temporary.interval` expires; `/api/socket`
   accepts a query token or a session cookie.
@@ -469,8 +477,8 @@ The interface and the API share an origin, so the session cookie and the socket 
 
 | Area | Go version | Gap |
 | --- | --- | --- |
-| Protocol decoders | 16 | 252 |
-| Command encoders | 12 | 47 |
+| Protocol decoders | 17 | 251 |
+| Command encoders | 12 | 53 |
 | Pipeline / events | 15 stages / 12 rules | 0 |
 | OpenAPI paths | 76 | 0 |
 | Geo providers | geocoder 26, geolocation 6 | — |
@@ -483,7 +491,7 @@ The interface and the API share an origin, so the session cookie and the socket 
 | Scheduling | 10 | — |
 
 Next: add protocols and encoders for customer devices → attach the remaining `tc_*` tables (accounts,
-groups, geofences, events) the same way devices and positions are attached.
+groups, geofences, events) the same way devices and positions are attached → JT1078 audio and talk.
 
 ## License
 

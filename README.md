@@ -10,10 +10,21 @@ To significantly **minimize server resource consumption and operational costs** 
 
 ### Supported Protocols
 
-1. **Teltonika** (Codec 8 / 8 Extended)
-2. **GT06** (Concox protocol family)
-3. **JT808** (Ministry of Transport standard of China)
-4. **H02** (Kingneed / GPS103 family)
+| Family | Protocols |
+| --- | --- |
+| Binary | **Teltonika** (Codec 8 / 8E / 12 / 13), **GT06** (Concox), **JT808**, **JT1078** video (→ HLS), **H02**, **GT02**, **GPS056**, **Gator**, **Startek**, **Ruptela**, **Suntech**, **Meitrack** |
+| Text | **GPS103**, **TK103**, **Wondex** |
+| IP / HTTP | **OsmAnd**, **MQTT** |
+
+### Features
+
+- **Gateway**: TCP / UDP / TLS / HTTP listeners, command dispatch, batch position storage.
+- **REST API**: devices, positions, events, users, permissions, geofences, commands, WebSocket, media.
+- **Frontend**: a traccar-web build is served same-origin by the gateway.
+- **Storage**: PostgreSQL, MySQL 8.0+, SQLite; `database.schema=reference` attaches an existing
+  Traccar `tc_devices` / `tc_positions` database.
+
+See [go_server/README.md](go_server/README.md) for configuration, deployment (Ubuntu / Docker) and tests.
 
 ---
 

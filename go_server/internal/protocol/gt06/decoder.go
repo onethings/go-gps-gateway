@@ -3,6 +3,7 @@ package gt06
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,8 @@ const (
 	msgString          = 0x15
 	msgGPSLBSStatus1   = 0x16
 	msgWifi            = 0x17
+	msgWifi2           = 0x69
+	msgWifi4           = 0xF3
 	msgLBSExtend       = 0x18
 	msgLBSStatus       = 0x19
 	msgGPSPhone        = 0x1A
@@ -131,6 +134,7 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 	position := model.NewPosition(ProtocolName)
 	position.DeviceID = session.DeviceID
 	flags := modelFlagsOf(session.Model)
+	acknowledge := true
 
 	switch {
 	case messageType == msgHeartbeat:
@@ -168,6 +172,21 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		d.copyLastLocation(position)
 		position.Set(model.KeyPower, float64(buf.ReadShort())/100)
 		result.AddPosition(position)
+
+	case messageType == msgWifi || messageType == msgWifi2 || messageType == msgWifi4:
+		clock := d.decodeWifi(position, buf, messageType, frame, d.location(session.UniqueID))
+		result.AddPosition(position)
+		// These devices answer a WiFi scan with the echoed clock instead of the
+		// usual acknowledgement, and the 0xF3 layout is not answered at all.
+		if messageType != msgWifi4 {
+			result.AddResponse(echoClockResponse(messageType, clock))
+			acknowledge = false
+		}
+
+	case messageType == msgLBSWifi:
+		d.decodeLBSWifi(position, buf, d.location(session.UniqueID))
+		result.AddPosition(position)
+		acknowledge = false
 
 	case d.isSupported(messageType, flags):
 		position.Set(model.KeyType, messageType)
@@ -215,7 +234,9 @@ func (d *Decoder) decode(frame []byte, session *codec.DeviceSession) (*codec.Res
 		}
 	}
 
-	d.acknowledge(result, messageType, frame)
+	if acknowledge {
+		d.acknowledge(result, messageType, frame)
+	}
 	return result, nil
 }
 
@@ -340,6 +361,124 @@ func (d *Decoder) decodeLBS(
 		buf.SkipBytes(length - 9)
 	}
 	return true
+}
+
+// decodeWifi reads a WiFi scan frame and returns the six clock bytes the device
+// echoes back in its answer. The access point count comes from the third byte
+// of the frame, exactly as the reference reads it, so a frame whose length field
+// is zero carries no access points and the cell block follows the clock. The
+// cell entries of these frames have no signal strength byte, unlike the combined
+// frame that decodeLBSWifi handles.
+func (d *Decoder) decodeWifi(
+	position *model.Position, buf *helper.Buffer, messageType int, frame []byte, location *time.Location,
+) []byte {
+	clock, when := readWifiTime(buf, location)
+	position.Time = when
+
+	network := model.NewNetwork()
+
+	count := 0
+	if messageType == msgWifi4 {
+		count = buf.ReadUnsignedByte()
+	} else if len(frame) > 2 {
+		count = int(frame[2])
+	}
+	for i := 0; i < count; i++ {
+		if messageType == msgWifi4 {
+			buf.SkipBytes(2)
+		}
+		mac := readMac(buf)
+		strength := 0
+		if messageType != msgWifi4 {
+			strength = buf.ReadUnsignedByte()
+		}
+		network.AddWifiAccessPoint(model.NewWifiAccessPoint(mac, strength))
+	}
+
+	if messageType != msgWifi4 {
+		cellCount := buf.ReadUnsignedByte()
+		mcc := buf.ReadUnsignedShort()
+		mnc := buf.ReadUnsignedByte()
+		for i := 0; i < cellCount; i++ {
+			lac := buf.ReadUnsignedShort()
+			cid := buf.ReadUnsignedMedium()
+			network.AddCellTower(model.NewCellTower(mcc, mnc, lac, int64(cid)))
+		}
+	}
+
+	position.SetNetwork(network)
+	return clock
+}
+
+// decodeLBSWifi reads the combined cell and WiFi frame (0x2C). Unlike the plain
+// WiFi frames it sends a clock in day, month, year order, a fixed block of seven
+// cell towers and then the access point list.
+func (d *Decoder) decodeLBSWifi(position *model.Position, buf *helper.Buffer, location *time.Location) {
+	day := buf.ReadUnsignedByte()
+	month := buf.ReadUnsignedByte()
+	year := buf.ReadUnsignedByte()
+	hour := buf.ReadUnsignedByte()
+	minute := buf.ReadUnsignedByte()
+	second := buf.ReadUnsignedByte()
+	if year < 100 {
+		year += 2000
+	}
+	position.Time = time.Date(year, time.Month(month), day, hour, minute, second, 0, location)
+
+	mcc := buf.ReadUnsignedShort()
+	mnc := buf.ReadUnsignedByte()
+	if helper.CheckBit(int64(mcc), 15) {
+		mnc = buf.ReadUnsignedShort()
+	}
+
+	network := model.NewNetwork()
+	for i := 0; i < 7; i++ {
+		lac := buf.ReadUnsignedShort()
+		cid := buf.ReadUnsignedMedium()
+		rssi := buf.ReadUnsignedByte()
+		if lac > 0 {
+			network.AddCellTower(model.NewCellTowerWithRSSI(
+				int(helper.BitsTo(int32(mcc), 15)), mnc, lac, int64(cid), -rssi))
+		}
+	}
+
+	buf.ReadUnsignedByte() // timing advance
+	count := buf.ReadUnsignedByte()
+	for i := 0; i < count; i++ {
+		network.AddWifiAccessPoint(model.NewWifiAccessPoint(readMac(buf), buf.ReadUnsignedByte()))
+	}
+
+	position.SetNetwork(network)
+}
+
+// readWifiTime reads the packed BCD clock of the WiFi frames.
+func readWifiTime(buf *helper.Buffer, location *time.Location) ([]byte, time.Time) {
+	start := buf.ReaderIndex()
+	year := helper.BcdReadInteger(buf, 2)
+	month := helper.BcdReadInteger(buf, 2)
+	day := helper.BcdReadInteger(buf, 2)
+	hour := helper.BcdReadInteger(buf, 2)
+	minute := helper.BcdReadInteger(buf, 2)
+	second := helper.BcdReadInteger(buf, 2)
+	if year < 100 {
+		year += 2000
+	}
+	clock := buf.Bytes()[start:buf.ReaderIndex()]
+	return clock, time.Date(year, time.Month(month), day, hour, minute, second, 0, location)
+}
+
+func readMac(buf *helper.Buffer) string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
+		buf.ReadUnsignedByte(), buf.ReadUnsignedByte(), buf.ReadUnsignedByte(),
+		buf.ReadUnsignedByte(), buf.ReadUnsignedByte(), buf.ReadUnsignedByte())
+}
+
+// echoClockResponse builds the WiFi scan answer: the short header with a zero
+// length, the message type, the clock the device sent and the line ending.
+func echoClockResponse(messageType int, clock []byte) []byte {
+	frame := []byte{0x78, 0x78, 0x00, byte(messageType)}
+	frame = append(frame, clock...)
+	return append(frame, '\r', '\n')
 }
 
 // decodeNTPrefix reads what an NT model puts in front of the location block of

@@ -3,6 +3,7 @@ package teltonika
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"strconv"
 	"strings"
 	"time"
 
@@ -179,9 +180,7 @@ func (d *Decoder) decodeIOBlock(position *model.Position, buf *helper.Buffer, co
 	}
 }
 
-// decodeExtended reads the Codec 8 Extended variable length elements. VIN,
-// DTCs and unknown elements are covered; BLE beacon parsing is left for the
-// next slice.
+// decodeExtended reads the Codec 8 Extended variable length elements.
 func (d *Decoder) decodeExtended(position *model.Position, buf *helper.Buffer) {
 	count := buf.ReadUnsignedShort()
 	for i := 0; i < count; i++ {
@@ -192,10 +191,110 @@ func (d *Decoder) decodeExtended(position *model.Position, buf *helper.Buffer) {
 			position.Set(model.KeyVIN, strings.TrimSpace(string(buf.ReadSlice(length))))
 		case 281: // DTCs
 			position.Set(model.KeyDTCs, strings.ReplaceAll(string(buf.ReadSlice(length)), ",", " "))
+		case 385: // BLE beacons
+			d.decodeBeacons(position, buf.ReadSlice(length))
+		case 548, 10828, 10829, 10831, 11317: // BLE tags
+			d.decodeTags(position, buf.ReadSlice(length))
 		default:
 			position.SetIndexed(model.PrefixIO, id, hex.EncodeToString(buf.ReadSlice(length)))
 		}
 	}
+}
+
+// decodeBeacons reads element 385. Each entry starts with a flags byte: a
+// non-zero high nibble selects the iBeacon layout (UUID, major, minor), zero
+// selects the Eddystone layout (namespace, instance). The two low bits gate the
+// battery and temperature fields that follow the RSSI.
+func (d *Decoder) decodeBeacons(position *model.Position, data []byte) {
+	buf := helper.NewBuffer(data)
+	buf.ReadUnsignedByte() // data part
+
+	for index := 1; buf.IsReadable(); index++ {
+		flags := buf.ReadUnsignedByte()
+		if flags>>4 > 0 {
+			setBeacon(position, "beacon", index, "Uuid", hex.EncodeToString(buf.ReadSlice(16)))
+			setBeacon(position, "beacon", index, "Major", buf.ReadUnsignedShort())
+			setBeacon(position, "beacon", index, "Minor", buf.ReadUnsignedShort())
+		} else {
+			setBeacon(position, "beacon", index, "Namespace", hex.EncodeToString(buf.ReadSlice(10)))
+			setBeacon(position, "beacon", index, "Instance", hex.EncodeToString(buf.ReadSlice(6)))
+		}
+		setBeacon(position, "beacon", index, "Rssi", int(buf.ReadSignedByte()))
+		if flags&0x02 != 0 {
+			setBeacon(position, "beacon", index, "Battery", float64(buf.ReadUnsignedShort())/100)
+		}
+		if flags&0x04 != 0 {
+			setBeacon(position, "beacon", index, "Temp", buf.ReadUnsignedShort())
+		}
+	}
+}
+
+// decodeTags reads the length prefixed BLE tag list used by elements 548,
+// 10828, 10829, 10831 and 11317. Every tag is its own TLV of parameter ids.
+func (d *Decoder) decodeTags(position *model.Position, data []byte) {
+	buf := helper.NewBuffer(data)
+	buf.ReadUnsignedByte() // header
+
+	for index := 1; buf.IsReadable(); index++ {
+		length := buf.ReadUnsignedByte()
+		d.decodeTag(position, buf.ReadSlice(length), index)
+	}
+}
+
+func (d *Decoder) decodeTag(position *model.Position, data []byte, index int) {
+	buf := helper.NewBuffer(data)
+	for buf.IsReadable() {
+		id := buf.ReadUnsignedByte()
+		if !buf.IsReadable() {
+			return
+		}
+		length := buf.ReadUnsignedByte()
+
+		switch id {
+		case 0:
+			setBeacon(position, "tag", index, "Rssi", int(buf.ReadSignedByte()))
+		case 1:
+			setBeacon(position, "tag", index, "Id", hex.EncodeToString(buf.ReadSlice(length)))
+		case 2:
+			flags := buf.ReadUnsignedByte()
+			if flags&0x40 != 0 {
+				setBeacon(position, "tag", index, "LowBattery", true)
+			}
+			if flags&0x80 != 0 {
+				setBeacon(position, "tag", index, "Voltage", buf.ReadUnsignedByte()*10+2000)
+			}
+		case 5:
+			setBeacon(position, "tag", index, "Name", string(buf.ReadSlice(length)))
+		case 6:
+			setBeacon(position, "tag", index, "Temp", int(buf.ReadShort()))
+		case 7:
+			setBeacon(position, "tag", index, "Humidity", buf.ReadUnsignedByte())
+		case 8:
+			setBeacon(position, "tag", index, "Magnet", buf.ReadUnsignedByte() > 0)
+		case 9:
+			setBeacon(position, "tag", index, "Motion", buf.ReadUnsignedByte() > 0)
+		case 10:
+			setBeacon(position, "tag", index, "MotionCount", buf.ReadUnsignedShort())
+		case 11:
+			setBeacon(position, "tag", index, "Pitch", int(buf.ReadSignedByte()))
+		case 12:
+			setBeacon(position, "tag", index, "AngleRoll", int(buf.ReadShort()))
+		case 13:
+			setBeacon(position, "tag", index, "LowBattery", buf.ReadUnsignedByte())
+		case 14:
+			setBeacon(position, "tag", index, "Battery", buf.ReadUnsignedShort())
+		case 15:
+			setBeacon(position, "tag", index, "Mac", hex.EncodeToString(buf.ReadSlice(6)))
+		default:
+			buf.SkipBytes(length)
+		}
+	}
+}
+
+// setBeacon names an attribute the way the reference does, with the index
+// between the prefix and the field: beacon1Uuid, tag2Battery.
+func setBeacon(position *model.Position, prefix string, index int, field string, value any) {
+	position.Set(prefix+strconv.Itoa(index)+field, value)
 }
 
 // decodeParameter maps one IO element to an attribute. The reader is always

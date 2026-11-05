@@ -293,3 +293,103 @@ func TestFrameDecoder(t *testing.T) {
 		t.Fatalf("data frame = %x, consumed = %d", got, consumed)
 	}
 }
+
+// TestDecodeBLETagVoltage uses the Codec 8E frame from
+// TeltonikaProtocolDecoderTest that carries a BLE tag with a voltage field.
+func TestDecodeBLETagVoltage(t *testing.T) {
+	frame := mustHex(t, "00000000000000768e010000018fdc4b27cb015b3e33ceefa529030009013f0e0000022400010000000000000000000102240049010f0001c60106babbf36300550202806d0f0001ca01063456555565690202806b0f0001d10106467975425450020280690b0001c90106fa54ba8d00550b0001cf0106cabbf36300550100005455")
+
+	result, err := NewDecoder(Base()).DecodeWithSession(frame, testSession())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+	if value, ok := result.Positions[0].Get("tag1Voltage"); !ok || value != 3090 {
+		t.Errorf("tag1Voltage = %v, want 3090", value)
+	}
+	if value, ok := result.Positions[0].Get("tag1Id"); !ok || value != "babbf3630055" {
+		t.Errorf("tag1Id = %v, want babbf3630055", value)
+	}
+}
+
+// TestDecodeBLETagBattery uses the Codec 8E frame from
+// TeltonikaProtocolDecoderTest that carries a BLE tag with a battery field.
+func TestDecodeBLETagBattery(t *testing.T) {
+	frame := mustHex(t, "000000000000004b8e010000018368952793000f0e54fc209ab05800b300b40e00002a4f0001000000000000000000012a4f001e011c0001a40110eb47706aa38255aa96f21a154e2d00550d01000e020bd6")
+
+	result, err := NewDecoder(Base()).DecodeWithSession(frame, testSession())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+	if value, ok := result.Positions[0].Get("tag1Battery"); !ok || value != 3030 {
+		t.Errorf("tag1Battery = %v, want 3030", value)
+	}
+	if value, ok := result.Positions[0].Get("tag1Id"); !ok || value != "eb47706aa38255aa96f21a154e2d0055" {
+		t.Errorf("tag1Id = %v, want eb47706aa38255aa96f21a154e2d0055", value)
+	}
+}
+
+// TestDecodeBLEBeacon covers element 385. The upstream tests carry no such
+// frame, so the payload is built to the layout of the reference decoder.
+func TestDecodeBLEBeacon(t *testing.T) {
+	data := []byte{0x00}      // data part
+	data = append(data, 0x16) // iBeacon, battery and temperature present
+	data = append(data, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+		0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f)
+	data = binary.BigEndian.AppendUint16(data, 1)    // major
+	data = binary.BigEndian.AppendUint16(data, 2)    // minor
+	data = append(data, 0xc0)                        // rssi -64
+	data = binary.BigEndian.AppendUint16(data, 3000) // battery 30.00
+	data = binary.BigEndian.AppendUint16(data, 20)   // temperature
+
+	result, err := NewDecoder(Base()).DecodeWithSession(
+		buildCodec8ExtFrame(385, data), testSession())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(result.Positions))
+	}
+
+	position := result.Positions[0]
+	for key, want := range map[string]any{
+		"beacon1Uuid":    "000102030405060708090a0b0c0d0e0f",
+		"beacon1Major":   1,
+		"beacon1Minor":   2,
+		"beacon1Rssi":    -64,
+		"beacon1Battery": 30.0,
+		"beacon1Temp":    20,
+	} {
+		if got, ok := position.Get(key); !ok || got != want {
+			t.Errorf("%s = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+// buildCodec8ExtFrame wraps one Codec 8 Extended record with no IO elements
+// and a single variable length element.
+func buildCodec8ExtFrame(id int, data []byte) []byte {
+	record := make([]byte, 0, 64)
+	record = binary.BigEndian.AppendUint64(record, 1704067200000)
+	record = append(record, 1)
+	record = binary.BigEndian.AppendUint32(record, 240176200)
+	record = binary.BigEndian.AppendUint32(record, 549453500)
+	record = binary.BigEndian.AppendUint16(record, 100)
+	record = binary.BigEndian.AppendUint16(record, 180)
+	record = append(record, 9)
+	record = binary.BigEndian.AppendUint16(record, 50)
+	record = binary.BigEndian.AppendUint16(record, 1) // event id
+	record = binary.BigEndian.AppendUint16(record, 0) // total IO records
+	record = append(record, 0, 0, 0, 0, 0, 0, 0, 0)   // four empty IO groups
+	record = binary.BigEndian.AppendUint16(record, 1) // one variable length element
+	record = binary.BigEndian.AppendUint16(record, uint16(id))
+	record = binary.BigEndian.AppendUint16(record, uint16(len(data)))
+	record = append(record, data...)
+
+	return buildCodec8Frame(codec8Ext, 1, record)
+}

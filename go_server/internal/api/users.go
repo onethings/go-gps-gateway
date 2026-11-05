@@ -75,8 +75,9 @@ type userResponse struct {
 	DisableReports bool `json:"disableReports"`
 	FixedEmail     bool `json:"fixedEmail"`
 	Temporary      bool `json:"temporary"`
-	// DeviceLimit and UserLimit are always zero: the Go schema does not store
-	// them. They are emitted because the web interface reads the fields.
+	// DeviceLimit caps the devices the account may hold; -1 is no cap, 0
+	// forbids holding any. UserLimit is stored for the Java client but gates
+	// nothing, because only administrators create accounts here.
 	DeviceLimit    int            `json:"deviceLimit"`
 	UserLimit      int            `json:"userLimit"`
 	ExpirationTime *time.Time     `json:"expirationTime,omitempty"`
@@ -115,6 +116,9 @@ type userCreateRequest struct {
 	// Password is optional: a share link creates an account without one, while
 	// registration and the admin dialog set it.
 	Password string `json:"password"`
+	// DeviceLimit and UserLimit are administrator only; nil means no cap.
+	DeviceLimit *int `json:"deviceLimit"`
+	UserLimit   *int `json:"userLimit"`
 }
 
 // userUpdateRequest is a partial update: absent fields stay unchanged.
@@ -131,6 +135,9 @@ type userUpdateRequest struct {
 	// Password is written straight to users.password_hash; it is never echoed
 	// back and an empty string is rejected rather than stored.
 	Password *string `json:"password"`
+	// DeviceLimit and UserLimit are administrator only.
+	DeviceLimit *int `json:"deviceLimit"`
+	UserLimit   *int `json:"userLimit"`
 }
 
 type tokenIssueRequest struct {
@@ -155,6 +162,8 @@ func newUserResponse(user model.User) userResponse {
 		Attributes:    attributes,
 		DeviceCount:   user.DeviceCount,
 		TokenCount:    user.TokenCount,
+		DeviceLimit:   user.DeviceLimit,
+		UserLimit:     user.UserLimit,
 		CreatedAt:     user.CreatedAt.UTC(),
 	}
 	// Share accounts keep their deadline in attributes, which is what the
@@ -365,11 +374,17 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		passwordHash = hash
 	}
 
-	user, err := s.users.CreateUser(ctx, model.UserCreate{
+	create := model.UserCreate{
 		Email: email,
 		Name:  strings.TrimSpace(request.Name),
 		Admin: admin,
-	})
+	}
+	if s.isAdmin(r) {
+		create.DeviceLimit = request.DeviceLimit
+		create.UserLimit = request.UserLimit
+	}
+
+	user, err := s.users.CreateUser(ctx, create)
 	if errors.Is(err, model.ErrDuplicateUser) {
 		writeError(w, http.StatusConflict, fmt.Errorf("user %q already exists", email))
 		return
@@ -441,6 +456,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	update := model.UserUpdate{Admin: admin, Disabled: disabled}
+	if s.isAdmin(r) {
+		update.DeviceLimit = request.DeviceLimit
+		update.UserLimit = request.UserLimit
+	}
 	if request.Name != nil {
 		name := strings.TrimSpace(*request.Name)
 		update.Name = &name
@@ -592,8 +611,19 @@ func (s *Server) handleAssignDevice(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
 	defer cancel()
 
-	if _, err := s.users.User(ctx, userID); err != nil {
+	user, err := s.users.User(ctx, userID)
+	if err != nil {
 		s.writeUserLookupError(w, userID, err)
+		return
+	}
+	exceeded, err := s.deviceLimitReached(ctx, user, deviceID)
+	if err != nil {
+		s.logf("api: check device limit of user %d: %v", userID, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+		return
+	}
+	if exceeded != nil {
+		writeError(w, http.StatusForbidden, exceeded)
 		return
 	}
 	// AssignDevice would otherwise surface a foreign key violation as a 500.
@@ -615,6 +645,35 @@ func (s *Server) handleAssignDevice(w http.ResponseWriter, r *http.Request) {
 		model.Attributes{"ownerType": "user", "ownerId": userID})
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deviceLimitReached applies users.device_limit, the same rule the Java server
+// uses: 0 forbids holding any device, a positive value caps the count, and a
+// negative value is no cap. A device the account already holds is not counted
+// again, so re-sending an assignment that is already in place still succeeds.
+func (s *Server) deviceLimitReached(
+	ctx context.Context, user *model.User, deviceID int64,
+) (denied, failure error) {
+	if user.DeviceLimit < 0 {
+		return nil, nil
+	}
+	if user.DeviceLimit == 0 {
+		return errors.New("this account may not hold devices"), nil
+	}
+	if user.DeviceCount < user.DeviceLimit {
+		return nil, nil
+	}
+
+	assigned, err := s.users.UserDevices(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range assigned {
+		if id == deviceID {
+			return nil, nil
+		}
+	}
+	return fmt.Errorf("the account already holds the limit of %d devices", user.DeviceLimit), nil
 }
 
 func (s *Server) handleUnassignDevice(w http.ResponseWriter, r *http.Request) {

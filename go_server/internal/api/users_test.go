@@ -490,10 +490,12 @@ var testPasswordHash = sync.OnceValue(func() string {
 
 func sampleUser(id int64, email string) *model.User {
 	return &model.User{
-		ID:        id,
-		Email:     email,
-		Name:      "User " + email,
-		CreatedAt: time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC),
+		ID:          id,
+		Email:       email,
+		Name:        "User " + email,
+		CreatedAt:   time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC),
+		DeviceLimit: model.NoLimit,
+		UserLimit:   model.NoLimit,
 	}
 }
 
@@ -1060,5 +1062,50 @@ func TestTokenRoutesAllowOwnTokens(t *testing.T) {
 	if body := recorder.Body.String(); strings.Contains(strings.ToLower(body), "hash") ||
 		!strings.Contains(body, `"tokens"`) {
 		t.Errorf("token list body = %s", body)
+	}
+}
+
+// TestDeviceLimitGatesAssignment pins the rule the Java server applies: -1 is
+// no cap, 0 forbids holding devices, a positive value caps the count, and a
+// device the account already holds is not counted again.
+func TestDeviceLimitGatesAssignment(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, "alice@example.test"))
+	store.users[1].DeviceLimit = 1
+	store.users[1].DeviceCount = 1
+	store.grants[1] = []int64{7}
+	devices := &fakeDeviceList{results: []model.Device{
+		{ID: 7, UniqueID: "864717003283581", Name: "van", Protocol: "gt06"},
+		{ID: 8, UniqueID: "864717003283582", Name: "car", Protocol: "gt06"},
+	}}
+	handler := adminUsersHandler(store, devices)
+
+	if recorder := apiRequest(t, handler, http.MethodPut, "/api/users/1/devices/7", "", testAdminKey); recorder.Code != http.StatusNoContent {
+		t.Fatalf("assign an already held device = %d (body %s)", recorder.Code, recorder.Body)
+	}
+	if recorder := apiRequest(t, handler, http.MethodPut, "/api/users/1/devices/8", "", testAdminKey); recorder.Code != http.StatusForbidden {
+		t.Fatalf("assign past the limit = %d, want 403 (body %s)", recorder.Code, recorder.Body)
+	}
+
+	store.users[1].DeviceLimit = 0
+	if recorder := apiRequest(t, handler, http.MethodPut, "/api/users/1/devices/7", "", testAdminKey); recorder.Code != http.StatusForbidden {
+		t.Fatalf("assign with a zero limit = %d, want 403", recorder.Code)
+	}
+}
+
+// TestUserResponseCarriesLimits pins that the fields traccar-web reads are the
+// stored values, not the constant zero they used to be.
+func TestUserResponseCarriesLimits(t *testing.T) {
+	store := newFakeUsers(sampleUser(1, "alice@example.test"))
+	store.users[1].DeviceLimit = 4
+	store.users[1].UserLimit = 2
+	handler := adminUsersHandler(store, &fakeDeviceList{})
+
+	recorder := apiRequest(t, handler, http.MethodGet, "/api/users/1", "", testAdminKey)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", recorder.Code, recorder.Body)
+	}
+	user := decodeBody[userResponse](t, recorder)
+	if user.DeviceLimit != 4 || user.UserLimit != 2 {
+		t.Errorf("limits = %d/%d, want 4/2", user.DeviceLimit, user.UserLimit)
 	}
 }

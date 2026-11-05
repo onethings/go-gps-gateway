@@ -37,9 +37,14 @@ type Settings struct {
 
 	Protocols []ProtocolSettings
 
-	DatabaseURL   string
-	BatchSize     int
-	BatchInterval time.Duration
+	DatabaseURL string
+	// DatabaseSchema is "native" for the Go schema this server creates, or
+	// "reference" to adopt the tc_devices and tc_positions tables of a Traccar
+	// Java database. Empty means native, so an existing installation is
+	// unaffected.
+	DatabaseSchema string
+	BatchSize      int
+	BatchInterval  time.Duration
 
 	WebAddress string
 	// WebPath is the traccar-web build (index.html and assets). GET serves it
@@ -130,6 +135,7 @@ type rawFlags struct {
 	startek                                           string
 
 	dsn           string
+	dbSchema      string
 	batchSize     string
 	batchInterval string
 
@@ -244,6 +250,8 @@ func Bind(fs *flag.FlagSet, cfg *Config, path string) *Binder {
 
 	binder.text(&binder.raw.dsn, "dsn", cfg.String(DatabaseURL),
 		"PostgreSQL DSN (defaults to TRACCAR_DSN); empty uses an in-memory directory and a log sink")
+	binder.text(&binder.raw.dbSchema, "db-schema", cfg.String(DatabaseSchema),
+		"database schema to serve: native (default) or reference (attach a Traccar Java database)")
 	binder.text(&binder.raw.batchSize, "batch-size", cfg.String(DatabaseBatchSize),
 		"positions per database insert")
 	binder.text(&binder.raw.batchInterval, "batch-interval", cfg.String(DatabaseBatchInterval),
@@ -411,6 +419,7 @@ func (b *Binder) Settings() (Settings, error) {
 	raw := b.raw
 
 	settings.DatabaseURL = raw.dsn
+	settings.DatabaseSchema = raw.dbSchema
 	settings.BatchSize = toInt("batch-size", raw.batchSize)
 	settings.BatchInterval = toDuration("batch-interval", raw.batchInterval)
 

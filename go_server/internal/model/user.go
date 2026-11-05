@@ -43,7 +43,17 @@ type User struct {
 	// does not need one request per user.
 	DeviceCount int
 	TokenCount  int
+	// DeviceLimit caps how many devices the account may hold. -1 is no cap and
+	// 0 forbids holding any, the same values the Java server uses.
+	DeviceLimit int
+	// UserLimit is the Java server's cap on the accounts a user may create.
+	// The Go API only lets administrators create accounts, so the value is
+	// stored and returned but gates nothing.
+	UserLimit int
 }
+
+// NoLimit is the device or user limit that means "unbounded".
+const NoLimit = -1
 
 // UserFilter selects users for a query. Limit and Offset are clamped by the
 // storage layer.
@@ -67,6 +77,10 @@ type UserCreate struct {
 	// Attributes seeds users.attributes. A share account records its
 	// expirationTime here, which is what the scheduled cleanup reads.
 	Attributes Attributes
+	// DeviceLimit and UserLimit default to NoLimit when nil, which is what an
+	// account created before the columns existed behaves like.
+	DeviceLimit *int
+	UserLimit   *int
 }
 
 // UserUpdate holds the mutable fields of a user. Nil fields are left as they
@@ -79,6 +93,9 @@ type UserUpdate struct {
 	// stores per-user preferences here (terms acceptance, notification
 	// overrides).
 	Attributes *Attributes
+	// DeviceLimit and UserLimit are left alone when nil.
+	DeviceLimit *int
+	UserLimit   *int
 }
 
 // APIToken is one row of api_tokens without the hash: the plaintext token is

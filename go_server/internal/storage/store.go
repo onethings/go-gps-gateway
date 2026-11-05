@@ -42,6 +42,21 @@ type Store struct {
 	// frequency token-authorisation path does not hit the database on every
 	// request.
 	tokens *tokenCache
+	// referenceSchema adopts the Traccar Java tables instead of creating the
+	// Go ones. See WithReferenceSchema.
+	referenceSchema bool
+}
+
+// Option customises a Store.
+type Option func(*Store)
+
+// WithReferenceSchema attaches to a database written by the Java server. On the
+// first start the reference tc_devices and tc_positions tables are adopted in
+// place, so the devices and their history are visible without an export. A
+// database that already has the Go tables is left untouched, and the migration
+// that follows records the schema, so the option is harmless once adopted.
+func WithReferenceSchema() Option {
+	return func(s *Store) { s.referenceSchema = true }
 }
 
 // tokenCacheCapacity bounds the token cache. At this many live entries the next
@@ -51,7 +66,7 @@ const tokenCacheCapacity = 4096
 
 // New opens the database, verifies connectivity and applies pending
 // migrations.
-func New(ctx context.Context, dsn string) (*Store, error) {
+func New(ctx context.Context, dsn string, options ...Option) (*Store, error) {
 	selected, driverDSN, err := parseDSN(dsn)
 	if err != nil {
 		return nil, err
@@ -74,7 +89,14 @@ func New(ctx context.Context, dsn string) (*Store, error) {
 	}
 
 	store := &Store{db: &DB{DB: db, dialect: selected}}
+	for _, option := range options {
+		option(store)
+	}
 	store.tokens = newTokenCache(tokenCacheCapacity)
+	if err := store.adoptReferenceSchema(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := store.Migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -286,10 +308,11 @@ func (s *Store) Resolve(uniqueID string) (*codec.DeviceSession, error) {
 	var (
 		deviceID int64
 		model    *string
+		disabled bool
 	)
 	err := s.db.QueryRowContext(context.Background(),
-		`SELECT id, model FROM devices WHERE unique_id = $1`, uniqueID,
-	).Scan(&deviceID, &model)
+		`SELECT id, model, disabled FROM devices WHERE unique_id = $1`, uniqueID,
+	).Scan(&deviceID, &model, &disabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -297,7 +320,11 @@ func (s *Store) Resolve(uniqueID string) (*codec.DeviceSession, error) {
 		return nil, fmt.Errorf("storage: resolve %q: %w", uniqueID, err)
 	}
 
-	session := &codec.DeviceSession{DeviceID: deviceID, UniqueID: uniqueID}
+	session := &codec.DeviceSession{
+		DeviceID: deviceID,
+		UniqueID: uniqueID,
+		Disabled: disabled,
+	}
 	if model != nil {
 		session.Model = *model
 	}
@@ -394,12 +421,20 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 		return nil
 	}
 
+	disabled, err := disabledDevices(ctx, s.db, positions)
+	if err != nil {
+		return err
+	}
+
 	values := make([]string, 0, len(positions))
 	args := make([]any, 0, len(positions)*positionColumns)
 	// Newest device time per device, used to advance devices.last_update.
 	touched := make(map[int64]time.Time, 4)
 
 	for _, position := range positions {
+		if disabled[position.DeviceID] {
+			continue
+		}
 		row, err := positionArgs(position)
 		if err != nil {
 			if errors.Is(err, ErrMissingDevice) {
@@ -435,6 +470,48 @@ func (s *Store) InsertPositions(ctx context.Context, positions []*model.Position
 		return fmt.Errorf("storage: insert positions: %w", err)
 	}
 	return s.updateLastUpdate(ctx, touched)
+}
+
+// disabledDevices reports which of the batch's devices an operator has switched
+// off. The gateway drops those positions itself, but a protocol that identifies
+// the device inside the frame binds a session without knowing the flag, so the
+// write boundary checks too.
+func disabledDevices(
+	ctx context.Context, db execer, positions []*model.Position,
+) (map[int64]bool, error) {
+	ids := make([]int64, 0, len(positions))
+	seen := make(map[int64]bool, len(positions))
+	for _, position := range positions {
+		if position.DeviceID == 0 || seen[position.DeviceID] {
+			continue
+		}
+		seen[position.DeviceID] = true
+		ids = append(ids, position.DeviceID)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	args := make([]any, 0, len(ids))
+	rows, err := db.QueryContext(ctx,
+		`SELECT id FROM devices WHERE disabled AND `+deviceIDsClause(&args, "id", ids), args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: query disabled devices: %w", err)
+	}
+	defer rows.Close()
+
+	disabled := make(map[int64]bool, len(ids))
+	for rows.Next() {
+		var deviceID int64
+		if err := rows.Scan(&deviceID); err != nil {
+			return nil, fmt.Errorf("storage: scan disabled device: %w", err)
+		}
+		disabled[deviceID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: query disabled devices: %w", err)
+	}
+	return disabled, nil
 }
 
 // updateLastUpdate advances devices.last_update for the devices in the batch in

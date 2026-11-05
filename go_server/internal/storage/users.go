@@ -28,7 +28,7 @@ const (
 		(SELECT count(*) FROM permissions p
 		  WHERE p.owner_type = 'user' AND p.owner_id = u.id AND p.property_type = 'device'),
 		(SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id),
-		u.attributes`
+		u.attributes, u.device_limit, u.user_limit`
 
 	// tokenColumns is the SELECT list shared by every token query. scopes is a
 	// JSON column, so every dialect returns the same text.
@@ -194,6 +194,7 @@ func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 	if err := row.Scan(
 		&user.ID, &user.Email, &user.Name, &user.Admin, &user.Disabled, &user.Temporary,
 		&user.CreatedAt, &user.DeviceCount, &user.TokenCount, &attributes,
+		&user.DeviceLimit, &user.UserLimit,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// QueryRow hands sql.ErrNoRows straight to Scan; callers map it to
@@ -384,9 +385,10 @@ func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model
 	}
 
 	userID, err := insertReturningID(ctx, s.db,
-		`INSERT INTO users (email, name, admin, temporary, attributes)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		create.Email, create.Name, create.Admin, create.Temporary, attributes)
+		`INSERT INTO users (email, name, admin, temporary, attributes, device_limit, user_limit)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		create.Email, create.Name, create.Admin, create.Temporary, attributes,
+		limitOrUnbounded(create.DeviceLimit), limitOrUnbounded(create.UserLimit))
 	if err != nil {
 		if s.db.dialect.isDuplicate(err) {
 			return nil, model.ErrDuplicateUser
@@ -395,6 +397,15 @@ func (s *Store) CreateUser(ctx context.Context, create model.UserCreate) (*model
 	}
 	s.invalidateTokenCache()
 	return s.User(ctx, userID)
+}
+
+// limitOrUnbounded resolves an unset limit, so an account created without one
+// can hold as many devices as before the columns existed.
+func limitOrUnbounded(limit *int) int {
+	if limit == nil {
+		return model.NoLimit
+	}
+	return *limit
 }
 
 // UpdateUser replaces the non-nil fields of an account.
@@ -411,10 +422,13 @@ func (s *Store) UpdateUser(ctx context.Context, userID int64, update model.UserU
 	query := `UPDATE users
 		 SET name = COALESCE($2, name),
 		     admin = COALESCE($3, admin),
-		     disabled = COALESCE($4, disabled)`
-	args := []any{userID, update.Name, update.Admin, update.Disabled}
+		     disabled = COALESCE($4, disabled),
+		     device_limit = COALESCE($5, device_limit),
+		     user_limit = COALESCE($6, user_limit)`
+	args := []any{userID, update.Name, update.Admin, update.Disabled,
+		update.DeviceLimit, update.UserLimit}
 	if attributes != nil {
-		query += ", attributes = $5"
+		query += ", attributes = $7"
 		args = append(args, attributes)
 	}
 	query += " WHERE id = $1"

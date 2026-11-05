@@ -77,6 +77,7 @@ all. Key names follow the reference `config/Keys.java`; Go-only keys are marked 
 ```
 
 - Environment: `database.url` → `TRACCAR_DATABASE_URL` (upper case, `.`→`_`, camelCase split).
+- `database.schema` (`Go only`) picks `native` (the default) or `reference`; see the Database section.
 - Per protocol: `protocol.<name>.<key>` → `<name>.<key>` → `protocol.<key>` → `<key>`.
 - Durations take `30s` or a bare number (seconds); `server.timeout` (120s) decides offline.
 - Legacy variables: `TRACCAR_DSN`, `TRACCAR_API_KEY`, `TRACCAR_SMTP_PASSWORD`.
@@ -154,12 +155,13 @@ The scheme of `database.url` picks the dialect; `Store.Migrate` applies the matc
 
 | Dialect | DSN example | Migrations |
 | --- | --- | --- |
-| PostgreSQL | `postgres://user:pass@host:5432/traccar?sslmode=disable` | `internal/storage/migrations/postgres/` (20) |
+| PostgreSQL | `postgres://user:pass@host:5432/traccar?sslmode=disable` | `internal/storage/migrations/postgres/` (21) |
 | MySQL 8.0+ | `mysql://user:pass@host:3306/traccar` (`?socket=/tmp/mysql.sock` also works) | `internal/storage/migrations/mysql/` |
 | SQLite | `sqlite:///var/lib/traccar/traccar.db` (`sqlite::memory:` for tests) | `internal/storage/migrations/sqlite/` |
 
-This is the Go project's own schema, not the reference `tc_*` schema: attaching an existing Java
-database still needs a mapping layer (see "Differences from the reference"). SQLite is pure Go
+By default this is the Go project's own schema, not the reference `tc_*` schema. Set
+`database.schema=reference` to attach a database written by the Java server instead; see
+[Attaching an existing Traccar database](#attaching-an-existing-traccar-database). SQLite is pure Go
 (`modernc.org/sqlite`, no cgo) and replaces Java's H2, which is Java-only and unsupported.
 
 Main tables: `devices`, `positions`, `events`, `geofences`, `device_groups`, `calendars`, `drivers`,
@@ -174,6 +176,70 @@ TRACCAR_TEST_DSN='sqlite:///tmp/traccar-test.db' go test ./internal/storage
 make db-up-mysql
 DSN='mysql://root@127.0.0.1:53306/traccar' ./scripts/rest-e2e.sh
 make db-down-mysql
+```
+
+### Attaching an existing Traccar database
+
+The Java server owns `tc_devices` and `tc_positions`. With the switch below, the first start renames
+those two tables to the names this server uses, aligns their columns, and records the result, so the
+device list and its history are readable immediately and new positions land in the same rows.
+
+```xml
+<entry key='database.schema'>reference</entry>
+```
+
+`-db-schema reference` or `TRACCAR_DATABASE_SCHEMA=reference` do the same. Leave it unset for the Go
+schema; an installation that never sets it is untouched.
+
+Two things to know before pointing it at a production database:
+
+- **It is a cut-over, not a parallel run.** The tables are renamed, and the `devicetime`, `servertime`,
+  `uniqueid`, `lastupdate`, `groupid`, `positionid`, `expirationtime` and `calendarid` columns are
+  renamed too, so the Java server cannot read that database afterwards. Take a dump first. Renaming
+  the tables back is the reverse operation, but nothing automates it.
+- **Only devices and positions are attached.** Accounts, groups, geofences, events, commands and
+  settings stay in the Go tables, which are created next to the reference ones on that first start.
+  The first account you register becomes the administrator, as on a fresh install.
+
+The switch is idempotent: after the first start there is no `tc_devices` table left, so later starts
+do nothing whether the switch is on or off. It refuses to run if both `tc_devices` and `devices`
+exist, because guessing which one holds the truth is worse than stopping. MySQL is refused with an
+error; the attach path is implemented for PostgreSQL and SQLite.
+
+| Go column | Reference column | What the attach does |
+| --- | --- | --- |
+| `devices.id` | `id` | kept, `INT` stays `INT` |
+| `devices.unique_id` | `uniqueid` | renamed |
+| `devices.name` | `name` | gains `DEFAULT ''` so a device can be registered by identifier alone |
+| `devices.model` | `model` | kept |
+| `devices.protocol` | — | added, empty for adopted rows and filled on the next connect |
+| `devices.attributes` | `attributes` | `VARCHAR(4000)` becomes `JSONB`, empty values become `{}` |
+| `devices.last_update` | `lastupdate` | renamed |
+| `devices.created_at` | — | added, `DEFAULT now()` |
+| `devices.status` | `status` | `CHAR(8)` becomes `TEXT`, nulls become `unknown` |
+| `devices.group_id` | `groupid` | renamed, foreign key to `tc_groups` dropped |
+| `devices.phone`, `contact`, `category`, `disabled` | same names | `disabled` becomes `NOT NULL DEFAULT false` |
+| `devices.expiration_time` | `expirationtime` | renamed |
+| `devices.calendar_id` | `calendarid` | renamed, foreign key to `tc_calendars` dropped, nulls become `0` |
+| `devices.position_id` | `positionid` | renamed, nulls become `0` |
+| — | `motionstate`, `motiontime`, `motiondistance`, `overspeedstate`, `overspeedtime`, `overspeedgeofenceid`, `motionstreak`, `motionpositionid`, `motionlatitude`, `motionlongitude` | kept and ignored |
+| `positions.id` | `id` | kept |
+| `positions.device_id` | `deviceid` | renamed, foreign key to the device table kept |
+| `positions.protocol` | `protocol` | nulls become `''` |
+| `positions.device_time` | `devicetime` | renamed |
+| `positions.server_time` | `servertime` | renamed |
+| `positions.attributes` | `attributes` | `VARCHAR(4000)` becomes `JSONB` |
+| `positions.geofenceids` | `geofenceids` | comma separated list becomes a JSON array, so both writers convert |
+| `positions.accuracy` | `accuracy` | kept, `NOT NULL DEFAULT 0` |
+| — | `fixtime`, `address`, `network` | kept; a trigger fills `fixtime` from `device_time`, because this server has one time per position |
+
+`scripts/reference-schema.sql` is a PostgreSQL dump of those two tables as the reference changelogs
+leave them, and `scripts/compat-e2e.sh` loads it, starts the gateway with the switch on, and checks
+the reads and the write:
+
+```bash
+make compat-e2e                                  # throwaway PostgreSQL on 55442
+DSN='postgres://user:pass@host:5432/traccar?sslmode=disable' ./scripts/compat-e2e.sh
 ```
 
 ## Resource requirements
@@ -392,15 +458,15 @@ second segments, and a stream with a single key frame at the start gives one lon
 | OpenAPI paths | 76 | 0 |
 | Geo providers | geocoder 26, geolocation 6 | — |
 | Output | JSON, URL, MQTT, Redis, Wialon, Network, AMQP, Kafka | — |
-| Database | PostgreSQL, MySQL 8.0+, SQLite (replaces H2) | H2 (Java only); `tc_*` schema not yet compatible |
+| Database | PostgreSQL, MySQL 8.0+, SQLite (replaces H2); attaches `tc_devices` / `tc_positions` with `database.schema=reference` | H2 (Java only); on attach, accounts, groups, geofences, events and commands stay in the Go tables |
 | Auth | password, token, TOTP, OpenID, LDAP | 0 |
 | Frontend | hosts a traccar-web build directly (same-origin) | no bundled build; bring your own `web/` |
 | Horizontal scale | Redis push | multicast; cross-node device sessions |
 | Video | upload / download, JT1078 to HLS, stream endpoint | audio and talk channels |
 | Scheduling | 10 | — |
 
-Next: add protocols and encoders for customer devices → map the reference `tc_*` schema so an existing
-Java database can be attached.
+Next: add protocols and encoders for customer devices → attach the remaining `tc_*` tables (accounts,
+groups, geofences, events) the same way devices and positions are attached.
 
 ## License
 

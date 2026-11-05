@@ -97,33 +97,41 @@ const (
 	// Additional notification providers. These have no flags: they are set in
 	// the configuration file or the environment and read directly, so adding a
 	// provider does not grow the command line.
-	NotifyTelegramToken     = "notificator.telegram.key"
-	NotifyTelegramChatID    = "notificator.telegram.chatId"
-	NotifyTelegramBaseURL   = "notificator.telegram.baseUrl"
-	NotifyPushoverToken     = "notificator.pushover.token"
-	NotifyPushoverUser      = "notificator.pushover.user"
-	NotifyPushoverURL       = "notificator.pushover.url"
-	NotifyFirebaseAccount   = "notificator.firebase.serviceAccount"
-	NotifyFirebaseMode      = "notificator.firebase.mode"
-	NotifyFirebaseTokenURL  = "notificator.firebase.tokenUrl"
-	NotifyFirebaseURL       = "notificator.firebase.url"
-	NotifyTraccarKey        = "notificator.traccar.key"
-	NotifyTraccarURL        = "notificator.traccar.url"
-	NotifyWhatsappToken     = "notificator.whatsapp.token"
-	NotifyWhatsappPhoneID   = "notificator.whatsapp.phoneNumberId"
-	NotifyWhatsappTemplate  = "notificator.whatsapp.template"
-	NotifyWhatsappLanguage  = "notificator.whatsapp.language"
-	NotifyWhatsappURL       = "notificator.whatsapp.url"
-	SMSHTTPURL              = "sms.http.url"
-	SMSHTTPTemplate         = "sms.http.template"
-	SMSHTTPAuthorizationHdr = "sms.http.authorizationHeader"
-	SMSHTTPAuthorization    = "sms.http.authorization"
-	SMSHTTPUser             = "sms.http.user"
-	SMSHTTPPassword         = "sms.http.password"
-	SMSAWSAccess            = "sms.aws.access"
-	SMSAWSSecret            = "sms.aws.secret"
-	SMSAWSRegion            = "sms.aws.region"
-	SMSAWSEndpoint          = "sms.aws.endpoint" // Go only: an SNS compatible endpoint
+	NotifyTelegramToken    = "notificator.telegram.key"
+	NotifyTelegramChatID   = "notificator.telegram.chatId"
+	NotifyTelegramBaseURL  = "notificator.telegram.baseUrl"
+	NotifyPushoverToken    = "notificator.pushover.token"
+	NotifyPushoverUser     = "notificator.pushover.user"
+	NotifyPushoverURL      = "notificator.pushover.url"
+	NotifyFirebaseAccount  = "notificator.firebase.serviceAccount"
+	NotifyFirebaseMode     = "notificator.firebase.mode"
+	NotifyFirebaseTokenURL = "notificator.firebase.tokenUrl"
+	NotifyFirebaseURL      = "notificator.firebase.url"
+	NotifyTraccarKey       = "notificator.traccar.key"
+	NotifyTraccarURL       = "notificator.traccar.url"
+	NotifyWhatsappToken    = "notificator.whatsapp.token"
+	NotifyWhatsappPhoneID  = "notificator.whatsapp.phoneNumberId"
+	NotifyWhatsappTemplate = "notificator.whatsapp.template"
+	NotifyWhatsappLanguage = "notificator.whatsapp.language"
+	NotifyWhatsappURL      = "notificator.whatsapp.url"
+
+	// Expiration notices go out by mail when the operator turns them on. The
+	// reference spells the reminder in milliseconds; this server takes a Go
+	// duration, the same as every other interval.
+	NotifyExpirationUser           = "notification.expiration.user"
+	NotifyExpirationUserReminder   = "notification.expiration.user.reminder"
+	NotifyExpirationDevice         = "notification.expiration.device"
+	NotifyExpirationDeviceReminder = "notification.expiration.device.reminder"
+	SMSHTTPURL                     = "sms.http.url"
+	SMSHTTPTemplate                = "sms.http.template"
+	SMSHTTPAuthorizationHdr        = "sms.http.authorizationHeader"
+	SMSHTTPAuthorization           = "sms.http.authorization"
+	SMSHTTPUser                    = "sms.http.user"
+	SMSHTTPPassword                = "sms.http.password"
+	SMSAWSAccess                   = "sms.aws.access"
+	SMSAWSSecret                   = "sms.aws.secret"
+	SMSAWSRegion                   = "sms.aws.region"
+	SMSAWSEndpoint                 = "sms.aws.endpoint" // Go only: an SNS compatible endpoint
 
 	// Report limits and trip detection. They match the Java Keys names and are
 	// read from the configuration file without a flag.

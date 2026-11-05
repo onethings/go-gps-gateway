@@ -138,3 +138,27 @@ func TestCheckHierarchyWithoutParent(t *testing.T) {
 		t.Errorf("moving a group to the root: %v", err)
 	}
 }
+
+func TestAncestors(t *testing.T) {
+	parents := map[int64]int64{1: 0, 2: 1, 3: 2}
+	got := Ancestors(3, parents)
+	if len(got) != 3 || got[0] != 3 || got[1] != 2 || got[2] != 1 {
+		t.Errorf("Ancestors(3) = %v, want [3 2 1]", got)
+	}
+	if got := Ancestors(1, parents); len(got) != 1 || got[0] != 1 {
+		t.Errorf("Ancestors(root) = %v, want [1]", got)
+	}
+	if got := Ancestors(0, parents); got != nil {
+		t.Errorf("Ancestors(0) = %v, want nil", got)
+	}
+	if got := Ancestors(9, parents); len(got) != 1 || got[0] != 9 {
+		t.Errorf("Ancestors(unknown) = %v, want the group itself", got)
+	}
+}
+
+func TestAncestorsSurvivesCycle(t *testing.T) {
+	parents := map[int64]int64{1: 2, 2: 1}
+	if got := Ancestors(1, parents); len(got) != 2 {
+		t.Errorf("Ancestors in a cycle = %v, want two distinct groups", got)
+	}
+}

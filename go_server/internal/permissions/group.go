@@ -85,6 +85,31 @@ func childrenOf(parents map[int64]int64) map[int64][]int64 {
 	return children
 }
 
+// Ancestors returns the group and every group above it, nearest first, capped
+// at MaxGroupDepth. It is the upward counterpart of Reach: a grant on any
+// ancestor of a group carries down to that group, which is what decides who may
+// see the devices inside it.
+func Ancestors(groupID int64, parents map[int64]int64) []int64 {
+	if groupID <= 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, MaxGroupDepth+1)
+	groups := make([]int64, 0, MaxGroupDepth)
+	for level := 0; level < MaxGroupDepth && groupID > 0; level++ {
+		if _, ok := seen[groupID]; ok {
+			break
+		}
+		seen[groupID] = struct{}{}
+		groups = append(groups, groupID)
+		parentID := parents[groupID]
+		if parentID == groupID {
+			break
+		}
+		groupID = parentID
+	}
+	return groups
+}
+
 // Depth reports how many levels a group sits below its root: a root is zero, its
 // child one, its grandchild two. A group caught in a cycle reports -1.
 func Depth(parents map[int64]int64, groupID int64) int {

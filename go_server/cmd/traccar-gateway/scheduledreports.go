@@ -80,7 +80,8 @@ func (g reportGenerator) Generate(
 // buildScheduler registers the maintenance tasks the configuration enables.
 func buildScheduler(
 	settings schedulerSettings, store schedulerStore, generator schedule.Generator,
-	mailer schedule.Mailer, onEvent func(*model.Event), logf func(string, ...any),
+	mailer schedule.Mailer, notices schedule.NoticeMailer, onEvent func(*model.Event),
+	logf func(string, ...any),
 ) *schedule.Scheduler {
 	scheduler := schedule.New(schedule.WithLogger(logf))
 	if store == nil {
@@ -127,6 +128,16 @@ func buildScheduler(
 	}
 	if settings.DeviceExpiration > 0 {
 		scheduler.Add(&schedule.DeviceExpiration{Store: store}, settings.DeviceExpiration, false)
+	}
+	if (settings.ExpirationUser || settings.ExpirationDevice) && notices != nil {
+		scheduler.Add(&schedule.ExpirationNotice{
+			Store:          store,
+			Mailer:         notices,
+			Users:          settings.ExpirationUser,
+			Devices:        settings.ExpirationDevice,
+			UserReminder:   settings.ExpirationUserReminder,
+			DeviceReminder: settings.ExpirationDeviceReminder,
+		}, time.Hour, false)
 	}
 	if settings.Events > 0 {
 		scheduler.Add(&schedule.Retention{
@@ -180,6 +191,17 @@ func (m scheduledReportMailer) SendReport(
 		notify.Attachment{Filename: filename, ContentType: contentType, Data: data})
 }
 
+// expirationMailer delivers the expiration notices through the SMTP account
+// the notification channels already use.
+type expirationMailer struct {
+	mail *notify.Mail
+}
+
+// SendNotice implements schedule.NoticeMailer.
+func (m expirationMailer) SendNotice(ctx context.Context, recipient, subject, body string) error {
+	return m.mail.Send(ctx, notify.Message{Subject: subject, Body: body}, []string{recipient})
+}
+
 // readSchedulerSettings turns the configuration into the task intervals. Every
 // task is off unless the operator sets an interval, so a gateway that has never
 // been configured does not start deleting rows.
@@ -213,6 +235,19 @@ func readSchedulerSettings(cfg *config.Config) schedulerSettings {
 	read(config.ScheduleCommandRetention, &settings.CommandRetention)
 	read(config.ScheduleCommands, &settings.Commands)
 	read(config.ServerTimeout, &settings.InactiveTimeout)
+
+	readBool := func(key string) bool {
+		value, err := cfg.Bool(key)
+		if err != nil {
+			log.Printf("schedule: %v", err)
+			return false
+		}
+		return value
+	}
+	settings.ExpirationUser = readBool(config.NotifyExpirationUser)
+	settings.ExpirationDevice = readBool(config.NotifyExpirationDevice)
+	read(config.NotifyExpirationUserReminder, &settings.ExpirationUserReminder)
+	read(config.NotifyExpirationDeviceReminder, &settings.ExpirationDeviceReminder)
 	return settings
 }
 
@@ -233,6 +268,11 @@ type schedulerSettings struct {
 	Positions         time.Duration
 	CommandRetention  time.Duration
 	Commands          time.Duration
+
+	ExpirationUser           bool
+	ExpirationUserReminder   time.Duration
+	ExpirationDevice         bool
+	ExpirationDeviceReminder time.Duration
 }
 
 // schedulerStore is what every task needs together. The storage store satisfies
@@ -246,4 +286,5 @@ type schedulerStore interface {
 	schedule.InactiveStore
 	schedule.DeviceExpirationStore
 	schedule.RetentionStore
+	schedule.NoticeStore
 }

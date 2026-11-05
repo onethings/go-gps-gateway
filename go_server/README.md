@@ -139,6 +139,7 @@ Config / environment only:
 | AMQP / Kafka forward | `forward.type` (`json` / `url` / `amqp` / `kafka`), `forward.url`, `forward.exchange` (default `traccar`), `forward.topic` (default `positions`); events use `event.forward.*` (topic default `events`) |
 | Geo services | `geocoder.type` (26 providers, e.g. nominatim, google, opencage, here, mapbox, photon, ban, pluscodes), `geolocation.type` (google / mozilla / opencellid / unwired / here / universal), extra options via `*.url`; nominatim, photon, ban, geocodejson and pluscodes need no `geocoder.key` (pluscodes is computed locally) |
 | Scheduling | `schedule.{expiration,temporary,inactive,deviceExpiration,events,positions,commands}.interval`, `schedule.{events,positions,commands}.retention` (0 = never delete) |
+| Expiration notices | `notification.expiration.user` / `notification.expiration.device` (true = on) and `notification.expiration.user.reminder` / `notification.expiration.device.reminder` (a Go duration such as `168h`). Mail only, checked hourly, needs the SMTP keys below |
 | Query cap | `report.maxPositions` (positions per `/api/positions` call and export; `0` = unlimited, default `50000`, same meaning as the reference) |
 
 ## Protocols
@@ -494,7 +495,7 @@ The interface and the API share an origin, so the session cookie and the socket 
 | Frontend | hosts the bundled traccar-web build directly (same-origin); `make web WEB_SRC=...` installs another | — |
 | Horizontal scale | Redis push | multicast; cross-node device sessions |
 | Video | upload / download, JT1078 to HLS, stream endpoint | audio and talk channels, which the reference does not decode either |
-| Scheduling | 10 | — |
+| Scheduling | 10, plus the hourly expiration notices | — |
 
 Next: add protocols and encoders for customer devices → attach the remaining `tc_*` tables (accounts,
 groups, geofences, events) the same way devices and positions are attached → JT1078 audio and talk.

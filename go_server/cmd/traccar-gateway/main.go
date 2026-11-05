@@ -584,10 +584,13 @@ func main() {
 		schedulerSettings := readSchedulerSettings(settings.Config)
 		generator := schedule.Generator(reportGenerator{service: report.New(store, reportConfig(settings.Config))})
 		var reporter schedule.Mailer
+		var notices schedule.NoticeMailer
 		if mailer != nil {
 			reporter = scheduledReportMailer{mail: mailer}
+			notices = expirationMailer{mail: mailer}
 		}
-		scheduler = buildScheduler(schedulerSettings, store, generator, reporter, socketHub.PublishEvent, log.Printf)
+		scheduler = buildScheduler(
+			schedulerSettings, store, generator, reporter, notices, socketHub.PublishEvent, log.Printf)
 		if names := scheduler.Tasks(); len(names) > 0 {
 			log.Printf("schedule: %v", names)
 			go scheduler.Run(ctx)

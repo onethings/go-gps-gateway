@@ -2,11 +2,15 @@ package gateway_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"traccar-server_go/go_server/internal/config"
 	"traccar-server_go/go_server/internal/gateway"
 	"traccar-server_go/go_server/internal/model"
 )
@@ -590,5 +594,41 @@ func TestRouterGT06EngineStopLayouts(t *testing.T) {
 	}
 	if got := encode(); got != "DYD#" {
 		t.Fatalf("content = %q, want %q", got, "DYD#")
+	}
+}
+
+// TestRouterEncodesVideoStartWithTheReferencePort pins the production wiring:
+// only web.url is configured, and the port comes from the configuration
+// default rather than from an operator.
+func TestRouterEncodesVideoStartWithTheReferencePort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traccar.xml")
+	content := `<?xml version='1.0' encoding='UTF-8'?>
+<properties>
+	<entry key='web.url'>http://video.example.com</entry>
+</properties>`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	cfg, err := config.Load(path, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	directory := gateway.NewMemoryDirectory()
+	if _, err := directory.Register("013800138000", "jt808"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	router := gateway.NewRouter(gateway.DefaultRegistry(), directory,
+		gateway.WithConfig(func(protocol, key string) string { return cfg.Protocol(protocol).String(key) }))
+
+	command := model.NewCommand(1, model.CommandVideoStart)
+	command.SetAttribute(model.CmdKeyIndex, 2)
+	payload, err := router.EncodeCommand("jt808", command)
+	if err != nil {
+		t.Fatalf("encode videoStart: %v", err)
+	}
+	want := "11" + hex.EncodeToString([]byte("video.example.com")) + "148f" + "0000" + "02" + "01" + "00"
+	if got := hex.EncodeToString(payload); !strings.Contains(got, want) {
+		t.Fatalf("frame = %s, want the videoStart body %s", got, want)
 	}
 }

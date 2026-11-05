@@ -120,8 +120,8 @@ Config / environment only:
 | Position attribute copy | `position.copyAttributes` (comma separated; empty = off) |
 | Device images | `deviceImage.path` (default `<media.path>/devices`) |
 | HLS streaming | `stream.path` (required by the JT1078 listener; segments go to `<path>/<deviceId>/<channel>/`, and `<path>/<deviceId>/index.m3u8` follows the main channel) |
-| JT1078 listener | `protocol.jt1078.address` (or `-jt1078`); empty = off, where the reference serves `jt1078` on 5263. It never reads `jt1078.port`, so a deployment that only advertises the port keeps running without a listener |
-| JT808 command layouts | `protocol.jt808.alternative` = true sends engine control as the oil control message some terminals need; `web.url` and `jt1078.port` fill the videoStart command |
+| JT1078 listener | `protocol.jt1078.address` (or `-jt1078`); empty = off. `jt1078.port` defaults to 5263, matching the reference, and only tells the terminal where to stream, so nothing is received until the address is set |
+| JT808 command layouts | `protocol.jt808.alternative` = true sends engine control as the oil control message some terminals need; `web.url` and `jt1078.port` (default 5263, matching the reference) fill the videoStart command |
 | GT06 command layouts | `protocol.gt06.alternative` = true sends the engine commands as `DYD,<password>` / `HFYD,<password>`; `protocol.gt06.language` adds the optional english field to every command frame; `protocol.gt06.devicePassword` is the password the alternative layout carries (default `123456`) |
 | TK103 command layouts | `protocol.tk103.alternative` = true sends the SMS2 layout (`[begin]sms2,...[end]`) instead of the legacy parenthesised sentences; `protocol.tk103.devicePassword` fills the `*master*` SOS command (default `123456`) |
 | Meitrack command layouts | `protocol.meitrack.alternative` = true sends arm/disarm as `B21,1` / `B21,0`; the default is the `C01` form |

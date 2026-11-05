@@ -122,16 +122,25 @@ const (
 	NotifyExpirationUserReminder   = "notification.expiration.user.reminder"
 	NotifyExpirationDevice         = "notification.expiration.device"
 	NotifyExpirationDeviceReminder = "notification.expiration.device.reminder"
-	SMSHTTPURL                     = "sms.http.url"
-	SMSHTTPTemplate                = "sms.http.template"
-	SMSHTTPAuthorizationHdr        = "sms.http.authorizationHeader"
-	SMSHTTPAuthorization           = "sms.http.authorization"
-	SMSHTTPUser                    = "sms.http.user"
-	SMSHTTPPassword                = "sms.http.password"
-	SMSAWSAccess                   = "sms.aws.access"
-	SMSAWSSecret                   = "sms.aws.secret"
-	SMSAWSRegion                   = "sms.aws.region"
-	SMSAWSEndpoint                 = "sms.aws.endpoint" // Go only: an SNS compatible endpoint
+
+	// Trip and motion thresholds. The names match the reference, where they may
+	// also be set as device attributes; this server reads them from the server
+	// configuration only.
+	TripNewLogic            = "report.trip.newLogic"
+	TripMinDistance         = "report.trip.minDistance"
+	TripMinDuration         = "report.trip.minDuration"
+	TripStopGap             = "report.trip.stopGap"
+	TripUseIgnition         = "report.trip.useIgnition"
+	SMSHTTPURL              = "sms.http.url"
+	SMSHTTPTemplate         = "sms.http.template"
+	SMSHTTPAuthorizationHdr = "sms.http.authorizationHeader"
+	SMSHTTPAuthorization    = "sms.http.authorization"
+	SMSHTTPUser             = "sms.http.user"
+	SMSHTTPPassword         = "sms.http.password"
+	SMSAWSAccess            = "sms.aws.access"
+	SMSAWSSecret            = "sms.aws.secret"
+	SMSAWSRegion            = "sms.aws.region"
+	SMSAWSEndpoint          = "sms.aws.endpoint" // Go only: an SNS compatible endpoint
 
 	// Report limits and trip detection. They match the Java Keys names and are
 	// read from the configuration file without a flag.
@@ -326,6 +335,16 @@ var KnownKeys = []string{
 	DispatchRedisKeyPrefix,
 	RedisURL,
 	RedisChannel,
+
+	NotifyExpirationUser,
+	NotifyExpirationUserReminder,
+	NotifyExpirationDevice,
+	NotifyExpirationDeviceReminder,
+	TripNewLogic,
+	TripMinDistance,
+	TripMinDuration,
+	TripStopGap,
+	TripUseIgnition,
 
 	NotifyWebhook,
 	NotifyWebhookAuth,

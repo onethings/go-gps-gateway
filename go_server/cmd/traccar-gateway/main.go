@@ -147,7 +147,7 @@ func main() {
 		store         *storage.Store
 		pipeline      *alert.Pipeline
 		dispatcher    *notify.Dispatcher
-		motion        *session.Motion
+		motionStage   handler.PositionHandler
 		sessions      *session.Manager
 		state         *eventState
 		forwarder     *forward.Service
@@ -264,11 +264,23 @@ func main() {
 			alert.WithPositionHook(positionHook))
 
 		// The motion state machine records deviceMoving / deviceStopped, so it
-		// needs somewhere to write them.
-		motion = session.NewMotion(session.MotionConfig{
-			Events: store,
-			Logger: log.Printf,
-		})
+		// needs somewhere to write them. report.trip.newLogic selects which one
+		// runs; the reference defaults it to the newer logic.
+		if settings.TripNewLogic {
+			motionStage = session.NewMovement(session.MovementConfig{
+				MinDistance: settings.TripMinDistance,
+				MinDuration: settings.TripMinDuration,
+				StopGap:     settings.TripStopGap,
+				UseIgnition: settings.TripUseIgnition,
+				Events:      store,
+				Logger:      log.Printf,
+			})
+		} else {
+			motionStage = session.NewMotion(session.MotionConfig{
+				Events: store,
+				Logger: log.Printf,
+			})
+		}
 
 		eventConfig := handler.EventConfig{
 			IgnoreDuplicateAlarms:  settings.IgnoreDuplicateAlerts,
@@ -423,7 +435,7 @@ func main() {
 				return nil
 			},
 			Stages: mergeStages(stages, map[string]handler.PositionHandler{
-				handler.StageMotion: motion,
+				handler.StageMotion: motionStage,
 				handler.StageAlertEvent: handler.RuleStage{
 					Stage: handler.StageAlertEvent,
 					Rules: []handler.EventRule{

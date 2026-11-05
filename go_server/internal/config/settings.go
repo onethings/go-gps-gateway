@@ -30,6 +30,15 @@ type ProtocolSettings struct {
 // Settings is the gateway configuration with the values parsed. Every field is
 // fed by one flag, whose default comes from the configuration file or the
 // environment, so a flag the operator did not pass keeps the configured value.
+// Defaults of the new movement logic, matching the reference keys: 200 m starts
+// a trip, 180 s without it ends one, and a gap over an hour is split by average
+// speed.
+const (
+	DefaultTripMinDistance = 200.0
+	DefaultTripMinDuration = 180 * time.Second
+	DefaultTripStopGap     = 3600 * time.Second
+)
+
 type Settings struct {
 	// Config is the layered configuration, kept for per-key lookups the typed
 	// fields do not cover.
@@ -66,6 +75,14 @@ type Settings struct {
 	// DisableShare refuses the share routes, which would otherwise mint a
 	// read only token for one device or group.
 	DisableShare bool
+
+	// TripNewLogic selects the movement state machine the reference introduced
+	// with report.trip.newLogic. It defaults to true, like the reference.
+	TripNewLogic    bool
+	TripMinDistance float64
+	TripMinDuration time.Duration
+	TripStopGap     time.Duration
+	TripUseIgnition bool
 
 	OverspeedKnots     float64
 	PowerCutVolts      float64
@@ -440,6 +457,24 @@ func (b *Binder) Settings() (Settings, error) {
 	settings.LoginMaxFailures = toInt("login-max-failures", raw.loginFailures)
 	settings.LoginLockDuration = toDuration("login-lock-duration", raw.loginLockout)
 	settings.DisableShare = toBool("disable-share", raw.disableShare)
+
+	settings.TripNewLogic = true
+	if text := strings.TrimSpace(b.cfg.String(TripNewLogic)); text != "" {
+		settings.TripNewLogic = toBool(TripNewLogic, text)
+	}
+	settings.TripMinDistance = DefaultTripMinDistance
+	if text := strings.TrimSpace(b.cfg.String(TripMinDistance)); text != "" {
+		settings.TripMinDistance = toFloat(TripMinDistance, text)
+	}
+	settings.TripMinDuration = DefaultTripMinDuration
+	if text := strings.TrimSpace(b.cfg.String(TripMinDuration)); text != "" {
+		settings.TripMinDuration = toDuration(TripMinDuration, text)
+	}
+	settings.TripStopGap = DefaultTripStopGap
+	if text := strings.TrimSpace(b.cfg.String(TripStopGap)); text != "" {
+		settings.TripStopGap = toDuration(TripStopGap, text)
+	}
+	settings.TripUseIgnition = toBool(TripUseIgnition, strings.TrimSpace(b.cfg.String(TripUseIgnition)))
 
 	settings.OverspeedKnots = toFloat("overspeed-knots", raw.overspeedKnots)
 	settings.PowerCutVolts = toFloat("power-cut-volts", raw.powerCutVolts)

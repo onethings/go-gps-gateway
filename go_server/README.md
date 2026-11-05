@@ -139,6 +139,7 @@ Config / environment only:
 | AMQP / Kafka forward | `forward.type` (`json` / `url` / `amqp` / `kafka`), `forward.url`, `forward.exchange` (default `traccar`), `forward.topic` (default `positions`); events use `event.forward.*` (topic default `events`) |
 | Geo services | `geocoder.type` (26 providers, e.g. nominatim, google, opencage, here, mapbox, photon, ban, pluscodes), `geolocation.type` (google / mozilla / opencellid / unwired / here / universal), extra options via `*.url`; nominatim, photon, ban, geocodejson and pluscodes need no `geocoder.key` (pluscodes is computed locally) |
 | Scheduling | `schedule.{expiration,temporary,inactive,deviceExpiration,events,positions,commands}.interval`, `schedule.{events,positions,commands}.retention` (0 = never delete) |
+| Movement logic | `report.trip.newLogic` (default true), `report.trip.minDistance` (200 m), `report.trip.minDuration` (180s), `report.trip.stopGap` (3600s), `report.trip.useIgnition` (false). They drive the live `deviceMoving` / `deviceStopped` events; the reference also lets a device override them, which this server does not read yet |
 | Expiration notices | `notification.expiration.user` / `notification.expiration.device` (true = on) and `notification.expiration.user.reminder` / `notification.expiration.device.reminder` (a Go duration such as `168h`). Mail only, checked hourly, needs the SMTP keys below |
 | Query cap | `report.maxPositions` (positions per `/api/positions` call and export; `0` = unlimited, default `50000`, same meaning as the reference) |
 
@@ -479,6 +480,8 @@ The interface and the API share an origin, so the session cookie and the socket 
 - TOTP / OpenID / LDAP / HLS / device images / Redis push are opt-in and answer 501 when unconfigured.
 - Event `position_id` is usually NULL (position batches do not return ids), so events and positions are
   not linked in reports.
+- The trips and stops reports still run the older `TripsConfig` detector, so with `report.trip.newLogic`
+  on their boundaries can differ from the live moving / stopped events.
 
 ## Differences from the reference
 

@@ -336,7 +336,8 @@ same-origin.
    GRANT ALL PRIVILEGES ON traccar.* TO 'traccar'@'127.0.0.1';
    ```
 
-2. Put the traccar-web build (`web/` from the official release zip, or `npm ci && npm run build` output)
+2. Put the traccar-web build (`web/` from the official release zip, the output of `npm ci && npm run build`,
+   or `make web WEB_SRC=<build>`)
    in `/opt/traccar/web`, then start:
 
    ```bash
@@ -432,6 +433,22 @@ timestamps, and sub-packages anything larger than one JT1078 body:
 length follows the key frame interval of the terminal: a stream with one key frame per second gives one
 second segments, and a stream with a single key frame at the start gives one long segment.
 
+### Frontend
+
+The repository ships a traccar-web build in `web/`, so a checkout serves the interface without node or a
+network:
+
+    make build          # builds the binaries and validates ./web
+    make run-sqlite     # serves the interface and the API on 127.0.0.1:8082
+
+Replace the tree with another build with `make web WEB_SRC=/path/to/traccar-web/build`, or point
+`WEB_SRC` at the official release `.zip`. `make web-check` fails when `index.html` names an asset that is
+missing. `make web-e2e` drives the same-origin path in process: the homepage, login, the device list, and
+the last position on the map.
+
+The interface and the API share an origin, so the session cookie and the socket need no CORS setup. A
+`web.path` that points at the installed tree is all the gateway needs; the `run-*` targets pass it.
+
 ## Known limitations
 
 - With `-dsn` REST requires credentials; `-api-key` or the first registered account grants admin.
@@ -460,7 +477,7 @@ second segments, and a stream with a single key frame at the start gives one lon
 | Output | JSON, URL, MQTT, Redis, Wialon, Network, AMQP, Kafka | — |
 | Database | PostgreSQL, MySQL 8.0+, SQLite (replaces H2); attaches `tc_devices` / `tc_positions` with `database.schema=reference` | H2 (Java only); on attach, accounts, groups, geofences, events and commands stay in the Go tables |
 | Auth | password, token, TOTP, OpenID, LDAP | 0 |
-| Frontend | hosts a traccar-web build directly (same-origin) | no bundled build; bring your own `web/` |
+| Frontend | hosts the bundled traccar-web build directly (same-origin); `make web WEB_SRC=...` installs another | — |
 | Horizontal scale | Redis push | multicast; cross-node device sessions |
 | Video | upload / download, JT1078 to HLS, stream endpoint | audio and talk channels |
 | Scheduling | 10 | — |
